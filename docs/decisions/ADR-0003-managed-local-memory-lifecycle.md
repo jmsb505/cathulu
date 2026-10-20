@@ -40,6 +40,16 @@ The memory foundation is implemented before automatic lifecycle maintenance. A l
 - A semantic index or Graphify integration is added only when evidence shows it improves retrieval. SQLite remains authoritative and local.
 - The read-only dashboard may show compact actionable memory health but does not become a memory mutation surface.
 
+## M2 implementation mapping
+
+- An additive SQLite v2 migration extends the existing database. Projects, objectives, tasks, decisions, workflow versions, runs, checks, events, and artifact references remain their own authorities; memory rows hold distinct claims and references.
+- Logical scopes use typed references for global/project/objective/task records plus opaque stable scope IDs for future overseer scopes; no parallel scope registry is introduced.
+- The memory row stores stable ID, normalized content hash, class, temperature, review state, importance/confidence, reuse data, validity interval, supersession links, and a structured freshness basis. Class and temperature can change independently without replacing the ID.
+- Canonical memories require a source reference. Artifact references and protection metadata are local; M2 does not copy or delete artifact contents. Event/projection changes are transactional, and event, decision, and workflow-version history is immutable through the exposed API.
+- Known-by records key a receiver scope to a content hash. Context-transfer rows store size/token estimates, retrieval method, and reuse metadata, while explicit transfer calls return content only for a requested full or delta transfer.
+- M2 currently produces Git commit freshness and selectively invalidates affected project memories. Graphify, contract, and dependency freshness inputs can be represented but do not become active invalidation sources until those snapshots exist.
+- M2 validates the deterministic substrate only. Promotion, consolidation, Gardener maintenance, semantic indexing, storage-growth experiments, and reference-aware garbage collection remain deferred.
+
 ## Reconsider if
 
 Measured retrieval shows that the metadata/provenance model is too costly or cannot preserve useful knowledge; supported Codex context-transfer signals make the transfer ledger inaccurate; SQLite cannot meet measured local scale; or safe reference-aware retention proves impractical. Any change must preserve local authority, temporal history, provenance, and bounded active context.

@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; published to `main` on 2026-10-21; see the evidence and remaining manual checks below
+Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED AND VALIDATED on Windows on `codex/phase1-workflow-state`, pending publication
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -16,6 +16,8 @@ The project definition identifies durable project state as the smallest end-to-e
 
 - At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source was checkpointed on `codex/phase1-foundation`; the validated progress and managed-memory plan are now published on the remote default branch `main` at `5f43dcb`.
 - Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
+- M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass.
+- The local dashboard preview was visually inspected. Its read-only label, page layout, local-state error, and visible keyboard focus render correctly; React tests cover empty/error states, active and blocked objectives, verified/blocked/failed runs, failed/inconclusive checks, and memory-health counters.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
 - Context7 resolution calls failed because the current monthly quota is exhausted. The source links listed below are the official vendor/project docs fallback. Retry Context7 before future library-specific implementation or API changes.
@@ -23,7 +25,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - The owner approved the MCP round-trip, Tauri snapshot/dashboard, and SQLite restart persistence test seams; implementation and test coverage for those boundaries have been authored.
 - Rust and npm dependencies were fetched after the package registries became available. The frontend uses React 19.3, TypeScript 5.9, Vite 8.3, and Vitest 5; the lockfiles pin resolved versions.
 - The official Visual Studio Build Tools 2022 v17.14.42, MSVC x64/x86 14.44.35207, Windows SDK 10.0.26100.0, and `link.exe` are installed. Use an x64 Visual Studio developer shell for native Rust builds.
-- `cargo test --offline --workspace` passes all four tests: one core Git parser test, two MCP vertical-slice tests, and one Tauri IPC command test. The React dashboard suite passes all three tests.
+- M1 validation passed four Rust tests. M2 validation passes seven Rust tests: one core unit test, five MCP/domain integration tests, and one Tauri IPC command test. The React dashboard suite passes all three tests.
 - `cargo tauri build --no-bundle -- --offline` builds `target/release/cathulu-desktop.exe`; the app was started with isolated temporary data directories, remained running for five seconds, and created its SQLite database.
 - Tauri test binaries on Windows need the Common Controls v6 application manifest. Without it, the unit-test executable exits before the harness with `STATUS_ENTRYPOINT_NOT_FOUND`; `apps/desktop/src-tauri/build.rs` embeds the manifest for Windows/MSVC targets.
 
@@ -73,7 +75,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - Adopt the brief's preferred Tauri 2 / React / TypeScript / Rust / SQLite stack because no existing implementation exists.
 - SQLite is the system of record; MCP never exposes generic SQL.
 - Registered repository contents and telemetry are untrusted; no secrets, raw prompts, or full transcripts are retained by default.
-- The validated M1 and accepted memory-plan refinement were first published to `origin/main` in `5f43dcb`. The local working branch remains `codex/phase1-workflow-state`; M2 implementation has not started.
+- The validated M1 and accepted memory-plan refinement were first published to `origin/main` in `5f43dcb`. The local working branch is `codex/phase1-workflow-state`; M2 is being implemented there.
 
 ## Supporting skills / tools
 
@@ -170,19 +172,19 @@ Goal: add the minimum durable records and quality rules for Phase 1 run tracking
 
 Subtasks:
 
-- [ ] Add an additive SQLite migration for dependencies, objectives, tasks, immutable decisions, immutable workflow versions, runs, checks, and append-only events; retain existing M1 project rows and read behavior.
-- [ ] Update run state and append its event in one transaction. Enforce that only passing mandatory checks can produce `verified_success`; missing or failed evidence remains blocked, failed, or inconclusive.
-- [ ] Add stable memory IDs, content hashes, kind/scope, created/updated timestamps, and independent `memory_class` (`working`, `canonical`, `episodic`, `evidence`, `aggregate`) and `temperature` (`hot`, `warm`, `cold`) fields. Do not use temperature as a class or class as a retrieval priority.
-- [ ] Map memory semantics onto existing domain/evidence records where possible. Add a distilled memory record only for a distinct knowledge claim; link it to its domain sources instead of copying their mutable current state. Candidate/review state is separate from memory class and temperature.
-- [ ] Add scope identity, bounded HOT-budget metadata, importance, evidence confidence, reuse and last-used metadata. The initial scope IDs should resolve to stable global/project/objective/task records; later Sub-Overseer scopes can use the same logical contract.
-- [ ] Add validity times, explicit supersession links, and freshness bases for repository/commit and other supported snapshots. Preserve superseded facts for history; current reads select valid, fresh, non-superseded knowledge. Start with the freshness inputs actually available and extend the typed basis as dependency/Graphify/contract snapshots are implemented.
-- [ ] Add provenance links to source events/domain records and artifact references. Canonical memory must have at least one traceable source. Add explicit protected-evidence state for important incidents and decisions.
-- [ ] Add known-by state keyed by receiver scope and content hash. An unchanged valid version is omitted, a changed version produces a delta/reference, and an invalidated version is replaced; temperature changes do not create a second memory identity.
-- [ ] Add a context-transfer ledger for Cathulu-controlled transfers, including run, sender/receiver scope, memory ID/hash, class, temperature, size, observable token count, first-time/reintroduced flag, retrieval method, timestamp, and downstream use when observable. Never retain raw prompt bodies just to populate this ledger.
-- [ ] Add deterministic HOT-budget enforcement with stable ordering by scope relevance, importance, and last use; demote eligible inactive items before overflow and never delete durable knowledge to fit a packet. WARM remains selective and COLD is not included in ordinary activation.
-- [ ] Keep memory state, transfer records, and all evidence local in the existing SQLite database and local artifact store. Do not add a hosted service, second database, vector package, continuously running LLM agent, or table-CRUD MCP surface.
-- [ ] Extend semantic MCP reads/writes and the read-only dashboard only where needed to inspect current workflow/quality state and compact scope memory health. Keep model/effort controls in their later separate settings surface.
-- [ ] Add migrations, transaction, restart, MCP, Tauri read, and memory-invariant tests at the existing public seams.
+- [x] Add an additive SQLite migration for dependencies, objectives, tasks, immutable decisions, immutable workflow versions, runs, checks, and append-only events; retain existing M1 project rows and read behavior.
+- [x] Update run state and append its event in one transaction. Enforce that only passing mandatory checks can produce `verified_success`; missing or failed evidence remains blocked, failed, or inconclusive.
+- [x] Add stable memory IDs, content hashes, kind/scope, created/updated timestamps, and independent `memory_class` (`working`, `canonical`, `episodic`, `evidence`, `aggregate`) and `temperature` (`hot`, `warm`, `cold`) fields. Do not use temperature as a class or class as a retrieval priority.
+- [x] Map memory semantics onto existing domain/evidence records where possible. Add a distilled memory record only for a distinct knowledge claim; link it to its domain sources instead of copying their mutable current state. Candidate/review state is separate from memory class and temperature.
+- [x] Add scope identity, bounded HOT-budget metadata, importance, evidence confidence, reuse and last-used metadata. Global, project, objective, and task IDs resolve to existing records; opaque stable `scope` IDs support future Main/Sub-Overseer logical scopes without adding a parallel scope authority.
+- [x] Add validity times, explicit supersession links, and freshness bases for repository/commit and other supported snapshots. Preserve superseded facts for history; current reads select valid, fresh, non-superseded knowledge. Start with the freshness inputs actually available and extend the typed basis as dependency/Graphify/contract snapshots are implemented.
+- [x] Add provenance links to source events/domain records and artifact references. Canonical memory must have at least one traceable source. Add explicit protected-evidence state for important incidents and decisions.
+- [x] Add known-by state keyed by receiver scope and content hash. An unchanged valid version is omitted, a changed version produces a delta/reference, and an invalidated version is replaced; temperature changes do not create a second memory identity.
+- [x] Add a context-transfer ledger for Cathulu-controlled transfers, including run, sender/receiver scope, memory ID/hash, class, temperature, size, observable token count, first-time/reintroduced flag, retrieval method, timestamp, and downstream use when observable. Never retain raw prompt bodies just to populate this ledger.
+- [x] Add deterministic HOT-budget enforcement with stable ordering by importance and last use; demote eligible inactive items before overflow and never delete durable knowledge to fit a packet. WARM remains selective and COLD is not included in ordinary activation.
+- [x] Keep memory state, transfer records, and all evidence references local in the existing SQLite database. Do not add a hosted service, second database, vector package, continuously running LLM agent, or table-CRUD MCP surface.
+- [x] Extend semantic MCP reads/writes and the read-only dashboard only where needed to inspect current workflow/quality state and compact scope memory health. Keep model/effort controls in their later separate settings surface.
+- [x] Add migrations, transaction, restart, MCP, Tauri read, and memory-invariant tests at the existing public seams.
 
 Affected areas: core schema/domain, MCP contract, dashboard query surface, migrations, tests, and source-of-truth documentation.
 
@@ -209,7 +211,8 @@ Validation:
 - Rust: additive migration with existing-data preservation; transaction rollback/atomicity; restart/recovery; state transitions and mandatory gates; class/temperature independence; stable identity/hash idempotence; supersession/history/current reads; selective freshness invalidation; known-by delta behavior; transfer-ledger provenance; budget overflow/demotion preserving durable records; COLD exclusion and protected/reference metadata.
 - MCP: typed schema/input and permission-boundary tests for semantic domain operations and reads; no generic SQL/table CRUD.
 - Tauri mock IPC and React tests for compact memory/workflow health rendering and empty/error states.
-- Manual UI check for empty, active, blocked, failed, and inconclusive states, including clear stale/history indicators and keyboard navigation.
+- Manual UI preview confirms layout, read-only presentation, local-state error, and visible keyboard focus. React tests verify empty/error states and the active/blocked/failed/inconclusive workflow and memory-health content; stale-memory count and protected-artifact indicators are included.
+- Native Windows release executable stayed running for five seconds and created an isolated SQLite database under `target/m2-smoke`.
 
 Documentation updates: update domain/architecture, API/MCP contract notes, roadmap, plan, and decision records with actual schema/API choices and evidence.
 
@@ -309,8 +312,9 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Managed-memory principles and staged M2/M4 boundaries recorded in architecture, definition, roadmap, plan, and ADR-0003 before M2 implementation.
 - [x] On 2026-10-21, re-ran `cargo fmt --all -- --check`, `cargo test --offline --workspace` (4 passed), `npm test` (3 passed), and `cargo tauri build --no-bundle -- --offline`; all passed.
 - [x] Published `5f43dcb` to the previously unborn `main` with a normal push; verified the remote SHA and default branch. No GitHub check runs or Actions runs were configured for the commit.
-- [ ] Optional visible UI and owner-controlled Codex connection smoke.
-- [ ] M2-M4 complete.
+- [x] On 2026-10-21, M2 validation passed: `cargo fmt --all -- --check`, `cargo test --offline --workspace` (7 passed), `npm test` (3 passed), `npm run build`, `cargo tauri build --no-bundle -- --offline`, and isolated Windows startup/database smoke.
+- [x] Visually inspected the local dashboard preview and confirmed visible keyboard focus; React tests cover the remaining populated and empty/error states.
+- [ ] Owner-controlled Codex MCP connection smoke; M3-M4 remain future milestones.
 
 ## Implementation discoveries / decisions
 
@@ -322,7 +326,8 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - 2026-10-20: Windows Tauri unit-test executables lacked the Common Controls v6 manifest and exited with `STATUS_ENTRYPOINT_NOT_FOUND`; the Windows/MSVC build script now embeds the application manifest so the approved IPC test can run.
 - 2026-10-20: The Tauri application built and started with isolated local data. The verified acceptance seams pass; visible UI inspection and connecting the owner's Codex app remain manual follow-ups.
 - 2026-10-20: Before starting M2, the owner specified a local managed-memory lifecycle. ADR-0003 records class/temperature separation, provenance/temporal history, bounded HOT activation, known-by/delta transfers, conservative forgetting, and the staged plan. M2 implements the substrate; automated gardening, compaction, collection, semantic indexing, and adaptive policy experiments are deferred.
+- 2026-10-21: M2 adds the v2 SQLite foundation without a duplicate scope authority. Only repository Git freshness is currently produced and automatically invalidated; Graphify, contract, and dependency freshness remain inactive until those snapshot sources exist. The dashboard command stays read-only, and context-transfer records keep metadata and hashes rather than bodies.
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks pass. The checks were repeated before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. A visible UI/Codex configuration smoke remains manual. M2 implementation has not started; its memory foundations and acceptance tests are now planned before the later M3 telemetry and M4 lifecycle work.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check now pass. The live Codex MCP connection remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.

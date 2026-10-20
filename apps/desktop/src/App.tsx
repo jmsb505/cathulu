@@ -13,6 +13,23 @@ type ProjectSnapshot = {
   reconciledAt: number;
 };
 
+type DashboardSnapshot = {
+  projects: ProjectSnapshot[];
+  objectives: { id: number; projectId: number; projectName: string; title: string; status: string; updatedAt: number }[];
+  blockers: { id: number; objectiveId: number; projectName: string; title: string; updatedAt: number }[];
+  recentRuns: {
+    id: number; projectName: string; objectiveTitle: string | null; taskTitle: string | null;
+    workflowKey: string | null; workflowVersion: number | null; status: string; summary: string;
+    startedAt: number; finishedAt: number | null;
+  }[];
+  failedChecks: { id: number; runId: number; projectName: string; checkKey: string; mandatory: boolean; status: string; details: unknown; updatedAt: number }[];
+  memoryHealth: {
+    hotBytes: number; warmBytes: number; coldBytes: number; canonicalCount: number;
+    episodicCount: number; evidenceCount: number; candidateCount: number;
+    invalidatedCount: number; protectedArtifactCount: number;
+  };
+};
+
 function shortHead(head: string | null) {
   return head ? head.slice(0, 8) : "No commit yet";
 }
@@ -26,17 +43,18 @@ function formatSnapshotTime(timestamp: number) {
 }
 
 export default function App() {
-  const [projects, setProjects] = useState<ProjectSnapshot[]>([]);
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const projects = snapshot?.projects ?? [];
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const loadSnapshot = () => {
-      invoke<ProjectSnapshot[]>("project_snapshot")
+      invoke<DashboardSnapshot>("dashboard_snapshot")
         .then((snapshot) => {
           if (!cancelled) {
-            setProjects(snapshot);
+            setSnapshot(snapshot);
             setError(null);
           }
         })
@@ -208,6 +226,109 @@ export default function App() {
             </div>
           )}
         </section>
+
+        {!loading && !error && snapshot && (
+          <section className="operations-section" aria-label="Workflow and memory overview">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">WORK IN MOTION</p>
+                <h2>Objectives &amp; runs</h2>
+              </div>
+              <p className="section-note">Current scope, recent verification, and review items.</p>
+            </div>
+
+            <div className="operations-grid">
+              <section className="overview-panel" aria-labelledby="objectives-title">
+                <div className="panel-heading">
+                  <h3 id="objectives-title">Active objectives</h3>
+                  <span>{snapshot.objectives.length.toString().padStart(2, "0")}</span>
+                </div>
+                {snapshot.objectives.length === 0 ? (
+                  <p className="panel-empty">No active objectives yet.</p>
+                ) : (
+                  <ul className="overview-list">
+                    {snapshot.objectives.map((objective) => (
+                      <li key={objective.id}>
+                        <div><strong>{objective.title}</strong><span>{objective.projectName}</span></div>
+                        <span className={`status-pill ${objective.status === "blocked" ? "status-attention" : "status-clean"}`}>{objective.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {snapshot.blockers.length > 0 && (
+                  <div className="blocker-list" aria-label="Blocked tasks">
+                    <p className="fact-label">BLOCKED TASKS</p>
+                    {snapshot.blockers.map((blocker) => (
+                      <div className="blocker-row" key={blocker.id}>
+                        <span className="blocker-mark" aria-hidden="true">!</span>
+                        <span><strong>{blocker.title}</strong><small>{blocker.projectName}</small></span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="overview-panel" aria-labelledby="runs-title">
+                <div className="panel-heading">
+                  <h3 id="runs-title">Recent runs</h3>
+                  <span>{snapshot.recentRuns.length.toString().padStart(2, "0")}</span>
+                </div>
+                {snapshot.recentRuns.length === 0 ? (
+                  <p className="panel-empty">No workflow runs recorded.</p>
+                ) : (
+                  <ul className="overview-list run-list">
+                    {snapshot.recentRuns.map((run) => (
+                      <li key={run.id}>
+                        <div>
+                          <strong>{(run.workflowKey ?? run.taskTitle ?? `Run ${run.id}`).replace(/_/g, " ")}</strong>
+                          <span>{run.projectName} · {run.summary || "In progress"}</span>
+                        </div>
+                        <span className={`status-pill ${run.status === "verified_success" ? "status-clean" : run.status === "running" ? "status-running" : "status-attention"}`}>{run.status.replace(/_/g, " ")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="overview-panel quality-panel" aria-labelledby="quality-title">
+                <div className="panel-heading">
+                  <h3 id="quality-title">Quality watch</h3>
+                  <span>{snapshot.failedChecks.length.toString().padStart(2, "0")}</span>
+                </div>
+                {snapshot.failedChecks.length === 0 ? (
+                  <p className="panel-empty">No failed or inconclusive checks.</p>
+                ) : (
+                  <ul className="overview-list">
+                    {snapshot.failedChecks.map((check) => (
+                      <li key={check.id}>
+                        <div><strong>{check.checkKey}</strong><span>{check.projectName} · run {check.runId}{check.mandatory ? " · required" : ""}</span></div>
+                        <span className="status-pill status-attention">{check.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="overview-panel memory-panel" aria-labelledby="memory-title">
+                <div className="panel-heading">
+                  <h3 id="memory-title">Memory health</h3>
+                  <span>LOCAL</span>
+                </div>
+                <div className="memory-stats">
+                  <div><span>HOT</span><strong>{formatBytes(snapshot.memoryHealth.hotBytes)}</strong></div>
+                  <div><span>WARM</span><strong>{formatBytes(snapshot.memoryHealth.warmBytes)}</strong></div>
+                  <div><span>COLD</span><strong>{formatBytes(snapshot.memoryHealth.coldBytes)}</strong></div>
+                  <div><span>Canonical</span><strong>{snapshot.memoryHealth.canonicalCount}</strong></div>
+                  <div><span>Episodic</span><strong>{snapshot.memoryHealth.episodicCount}</strong></div>
+                  <div><span>Review candidates</span><strong>{snapshot.memoryHealth.candidateCount}</strong></div>
+                  <div><span>Invalidated</span><strong>{snapshot.memoryHealth.invalidatedCount}</strong></div>
+                  <div><span>Protected artifacts</span><strong>{snapshot.memoryHealth.protectedArtifactCount}</strong></div>
+                </div>
+                <p className="memory-footnote">HOT memory is kept bounded per scope; detailed health remains in local SQLite.</p>
+              </section>
+            </div>
+          </section>
+        )}
       </main>
 
       <footer className="footer">
@@ -216,4 +337,9 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1_024) return `${bytes} B`;
+  return `${(bytes / 1_024).toFixed(bytes < 10_240 ? 1 : 0)} KiB`;
 }

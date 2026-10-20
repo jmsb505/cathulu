@@ -58,4 +58,12 @@ impl Connection {
         }
         Ok(result)
     }
+
+    pub(crate) fn raw(&self) -> &SqliteConnection {
+        &self.inner
+    }
+
+    pub(crate) fn raw_mut(&mut self) -> &mut SqliteConnection {
+        &mut self.inner
+    }
 }

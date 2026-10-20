@@ -1,4 +1,4 @@
-use cathulu_core::{default_data_dir, ProjectSnapshot, Store};
+use cathulu_core::{dashboard::DashboardSnapshot, default_data_dir, ProjectSnapshot, Store};
 use tauri::{Manager, State};
 
 struct DesktopState {
@@ -10,6 +10,11 @@ fn project_snapshot(state: State<'_, DesktopState>) -> Result<Vec<ProjectSnapsho
     state.store.list_projects()
 }
 
+#[tauri::command]
+fn dashboard_snapshot(state: State<'_, DesktopState>) -> Result<DashboardSnapshot, String> {
+    state.store.dashboard_snapshot()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -18,14 +23,17 @@ pub fn run() {
             app.manage(DesktopState { store });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![project_snapshot])
+        .invoke_handler(tauri::generate_handler![
+            project_snapshot,
+            dashboard_snapshot
+        ])
         .run(tauri::generate_context!())
         .expect("Cathulu desktop runtime failed");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{project_snapshot, DesktopState};
+    use super::{dashboard_snapshot, project_snapshot, DesktopState};
     use cathulu_core::Store;
     use std::path::Path;
     use std::process::Command;
@@ -61,13 +69,35 @@ mod tests {
         let registered = store.register_project(Path::new(&repo)).unwrap();
         let app = mock_builder()
             .manage(DesktopState { store })
-            .invoke_handler(tauri::generate_handler![project_snapshot])
+            .invoke_handler(tauri::generate_handler![
+                project_snapshot,
+                dashboard_snapshot
+            ])
             .build(mock_context(noop_assets()))
             .unwrap();
         let window = WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .unwrap();
         let response = tauri::test::get_ipc_response(
+            &window,
+            InvokeRequest {
+                cmd: "dashboard_snapshot".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_string(),
+            },
+        )
+        .unwrap();
+        let displayed = response
+            .deserialize::<cathulu_core::dashboard::DashboardSnapshot>()
+            .unwrap();
+        assert_eq!(displayed.projects, vec![registered]);
+        assert_eq!(displayed.memory_health.hot_bytes, 0);
+
+        let compatibility_response = tauri::test::get_ipc_response(
             &window,
             InvokeRequest {
                 cmd: "project_snapshot".into(),
@@ -80,10 +110,10 @@ mod tests {
             },
         )
         .unwrap();
-        let displayed = response
+        let projects = compatibility_response
             .deserialize::<Vec<cathulu_core::ProjectSnapshot>>()
             .unwrap();
-        assert_eq!(displayed, vec![registered]);
+        assert_eq!(projects, displayed.projects);
         let _ = std::fs::remove_dir_all(temp);
     }
 }

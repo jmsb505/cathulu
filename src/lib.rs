@@ -1,6 +1,13 @@
+pub mod dashboard;
+mod events;
+mod hash;
 pub mod mcp;
+pub mod memory;
+mod migrations;
 mod sqlite;
+pub mod workflow;
 
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -79,36 +86,76 @@ impl Store {
     pub fn register_project(&self, input_path: &Path) -> Result<ProjectSnapshot, String> {
         let git = inspect_git_repository(input_path)?;
         let now = unix_time();
-        let connection = self.connection()?;
-        connection.execute("BEGIN IMMEDIATE")?;
-        let result = (|| {
-            let path = sql_string(&git.path)?;
-            let name = sql_string(&git.name)?;
-            let branch = sql_optional_string(git.branch.as_deref())?;
-            let head = sql_optional_string(git.head.as_deref())?;
-            let changed_paths = sql_string(
-                &serde_json::to_string(&git.changed_paths).map_err(|error| error.to_string())?,
+        let changed_paths = serde_json::to_string(&git.changed_paths)
+            .map_err(|error| format!("cannot serialize changed paths: {error}"))?;
+        let dirty = !git.changed_paths.is_empty();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction()
+            .map_err(|error| format!("cannot begin project registration: {error}"))?;
+        let existed = transaction
+            .query_row(
+                "SELECT id FROM projects WHERE path = ?1",
+                params![git.path],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| format!("cannot inspect existing project: {error}"))?
+            .is_some();
+        transaction
+            .execute(
+                "INSERT INTO projects
+                 (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                 ON CONFLICT(path) DO UPDATE SET
+                   name = excluded.name, git_branch = excluded.git_branch, git_head = excluded.git_head,
+                   git_dirty = excluded.git_dirty, changed_paths_json = excluded.changed_paths_json,
+                   reconciled_at = excluded.reconciled_at",
+                params![git.name, git.path, git.branch, git.head, dirty, changed_paths, now],
+            )
+            .map_err(|error| format!("cannot save project registration: {error}"))?;
+        let id = transaction
+            .query_row(
+                "SELECT id FROM projects WHERE path = ?1",
+                params![git.path],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("cannot read registered project id: {error}"))?;
+        let invalidated =
+            Self::invalidate_project_memories(&transaction, id, git.head.as_deref(), now)?;
+        crate::events::append_event(
+            &transaction,
+            "project",
+            id,
+            if existed {
+                "project_reconciled"
+            } else {
+                "project_registered"
+            },
+            &serde_json::json!({
+                "head": git.head,
+                "branch": git.branch,
+                "dirty": dirty,
+                "changedPathCount": git.changed_paths.len()
+            }),
+            now,
+        )?;
+        for memory_id in invalidated {
+            crate::events::append_event(
+                &transaction,
+                "memory",
+                memory_id,
+                "memory_invalidated",
+                &serde_json::json!({ "reason": "git_commit_changed", "repoId": id }),
+                now,
             )?;
-            let dirty = if git.changed_paths.is_empty() { 0 } else { 1 };
-            connection.execute(&format!(
-                "INSERT INTO projects \
-                 (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at) \
-                 VALUES ({name}, {path}, {branch}, {head}, {dirty}, {changed_paths}, {now}, {now}) \
-                 ON CONFLICT(path) DO UPDATE SET \
-                 name = excluded.name, git_branch = excluded.git_branch, git_head = excluded.git_head, \
-                 git_dirty = excluded.git_dirty, changed_paths_json = excluded.changed_paths_json, \
-                 reconciled_at = excluded.reconciled_at"
-            ))?;
-            let rows = connection.query(&format!("SELECT id FROM projects WHERE path = {path}"))?;
-            let id = row_i64(rows.first(), 0)?;
-            connection.execute("COMMIT")?;
-            self.get_project(id)?
-                .ok_or_else(|| "registered project disappeared from the database".to_string())
-        })();
-        if result.is_err() {
-            let _ = connection.execute("ROLLBACK");
         }
-        result
+        transaction
+            .commit()
+            .map_err(|error| format!("cannot commit project registration: {error}"))?;
+        self.get_project(id)?
+            .ok_or_else(|| "registered project disappeared from the database".to_string())
     }
 
     pub fn reconcile_project(&self, id: i64) -> Result<ProjectSnapshot, String> {
@@ -117,19 +164,57 @@ impl Store {
             .ok_or_else(|| format!("project {id} is not registered"))?;
         let git = inspect_git_repository(Path::new(&existing.path))?;
         let now = unix_time();
-        let connection = self.connection()?;
-        let branch = sql_optional_string(git.branch.as_deref())?;
-        let head = sql_optional_string(git.head.as_deref())?;
-        let changed_paths = sql_string(
-            &serde_json::to_string(&git.changed_paths).map_err(|error| error.to_string())?,
+        let changed_paths = serde_json::to_string(&git.changed_paths)
+            .map_err(|error| format!("cannot serialize changed paths: {error}"))?;
+        let dirty = !git.changed_paths.is_empty();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction()
+            .map_err(|error| format!("cannot begin project reconciliation: {error}"))?;
+        transaction
+            .execute(
+                "UPDATE projects SET name = ?1, git_branch = ?2, git_head = ?3,
+                   git_dirty = ?4, changed_paths_json = ?5, reconciled_at = ?6 WHERE id = ?7",
+                params![
+                    git.name,
+                    git.branch,
+                    git.head,
+                    dirty,
+                    changed_paths,
+                    now,
+                    id
+                ],
+            )
+            .map_err(|error| format!("cannot update reconciled project: {error}"))?;
+        let invalidated =
+            Self::invalidate_project_memories(&transaction, id, git.head.as_deref(), now)?;
+        crate::events::append_event(
+            &transaction,
+            "project",
+            id,
+            "project_reconciled",
+            &serde_json::json!({
+                "head": git.head,
+                "branch": git.branch,
+                "dirty": dirty,
+                "changedPathCount": git.changed_paths.len()
+            }),
+            now,
         )?;
-        let dirty = if git.changed_paths.is_empty() { 0 } else { 1 };
-        connection.execute(&format!(
-            "UPDATE projects SET name = {}, git_branch = {branch}, git_head = {head}, \
-             git_dirty = {dirty}, changed_paths_json = {changed_paths}, reconciled_at = {now} \
-             WHERE id = {id}",
-            sql_string(&git.name)?
-        ))?;
+        for memory_id in invalidated {
+            crate::events::append_event(
+                &transaction,
+                "memory",
+                memory_id,
+                "memory_invalidated",
+                &serde_json::json!({ "reason": "git_commit_changed", "repoId": id }),
+                now,
+            )?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("cannot commit project reconciliation: {error}"))?;
         self.get_project(id)?
             .ok_or_else(|| format!("project {id} disappeared during reconciliation"))
     }
@@ -147,6 +232,11 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
+        if version > 2 {
+            return Err(format!(
+                "Cathulu database schema version {version} is newer than this application supports"
+            ));
+        }
         if version < 1 {
             connection.execute("BEGIN IMMEDIATE")?;
             let migration = connection.execute(
@@ -170,10 +260,18 @@ impl Store {
             }
             connection.execute("COMMIT")?;
         }
+        if version < 2 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_2) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
         Ok(())
     }
 
-    fn connection(&self) -> Result<sqlite::Connection, String> {
+    pub(crate) fn connection(&self) -> Result<sqlite::Connection, String> {
         sqlite::Connection::open(&self.database_path)
     }
 }
@@ -326,20 +424,6 @@ fn row_i64(row: Option<&Vec<Option<String>>>, index: usize) -> Result<i64, Strin
         .ok_or_else(|| format!("database row is missing integer column {index}"))?
         .parse::<i64>()
         .map_err(|error| format!("database integer column {index} is invalid: {error}"))
-}
-
-fn sql_string(value: &str) -> Result<String, String> {
-    if value.contains('\0') {
-        return Err("SQLite text values cannot contain a NUL character".to_string());
-    }
-    Ok(format!("'{}'", value.replace('\'', "''")))
-}
-
-fn sql_optional_string(value: Option<&str>) -> Result<String, String> {
-    value
-        .map(sql_string)
-        .transpose()
-        .map(|value| value.unwrap_or_else(|| "NULL".to_string()))
 }
 
 fn unix_time() -> i64 {
