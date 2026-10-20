@@ -318,6 +318,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Published M2 commit `a3ca960` to `origin/main` with a normal fast-forward push; verified remote `refs/heads/main` resolves to `a3ca960b9f03efbe25e6824d4d7dd4e0ed85b599`.
 - [x] On 2026-10-21, M3 validation passed: `cargo fmt --all -- --check`; 11 Rust tests; 3 React tests; `npm run build`; `cargo tauri build --no-bundle -- --offline`; `git diff --check`; and an isolated five-second Windows desktop startup/database check.
 - [x] Published M3 commit `1d445f691bf23b957661d298aa60c0decbf7e20f` to `origin/main` with a normal fast-forward push and verified the remote SHA.
+- [x] GitHub reports no commit status checks for the documentation follow-up and zero Actions workflow runs for the repository; local validation is the available gate.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
 
 ## Implementation discoveries / decisions
