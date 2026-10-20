@@ -1,10 +1,10 @@
 # Cathulu project definition
 
-Status: NORMATIVE for product boundaries. Initial definition recorded 2026-10-20 from `CATHULU_PROJECT_KICKOFF.md` and updated with the owner's platform and selector-surface decisions.
+Status: NORMATIVE for product boundaries. Initial definition recorded 2026-10-20 from `CATHULU_PROJECT_KICKOFF.md` and refined through 2026-10-21 with the owner's platform, selector-surface, and managed-memory decisions.
 
 ## Purpose
 
-Cathulu is a fully local desktop application that adds durable portfolio state, memory, workflow history, quality evidence, and observability around the Codex app. The owner continues to work through Codex. Cathulu is not a second chat surface or a general-purpose agent runtime.
+Cathulu is a fully local desktop application that adds durable portfolio state, managed memory, workflow history, quality evidence, and observability around the Codex app. It should become better informed over time without proportional growth in active context. The owner continues to work through Codex. Cathulu is not a second chat surface or a general-purpose agent runtime.
 
 The product question is whether durable, selectively disclosed state improves verified software work, or achieves equivalent verified quality with less context reconstruction and resource use, compared with ordinary Codex use.
 
@@ -42,22 +42,26 @@ register a local repository
 → verify the flow with automated tests
 ```
 
-The wider Phase 1 foundation then adds objectives, tasks, immutable decisions and workflow versions, append-only run events, quality evidence, available Codex telemetry, and recovery behavior.
+The wider Phase 1 foundation then adds objectives, tasks, immutable decisions and workflow versions, append-only run events, quality evidence, available Codex telemetry, recovery behavior, and the provenance-preserving memory substrate with bounded scope activation.
 
 ### Explicitly deferred
 
 - A custom agent/worker runtime or permanent model processes.
 - Durable Sub-Overseers before measured repeated cross-project reconstruction.
 - Graphify integration, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, cloud services, and reinforcement learning.
+- Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
 - Advanced convergence and adaptive routing before trustworthy run evidence exists.
 - Model/reasoning selectors in the first increment. Cathulu will host selectors in a later milestone; the Codex configuration pathway and per-role support must be verified before implementation. The portfolio dashboard remains read-only; selector controls belong in a separate settings surface.
 
 ## Domain terms and invariants
 
 - **Project:** a registered local repository plus its current deterministic Git snapshot and durable project-level state.
-- **Scope:** a context and ownership boundary spanning one or more projects; optional until evidence justifies it.
+- **Scope:** a logical context and ownership boundary spanning one or more projects; it may initially key off stable global/project/objective/task identities without a separate scope registry. Persistent Sub-Overseer scopes remain optional until evidence justifies them.
 - **Run:** one Overseer-controlled workflow execution, tied permanently to a workflow ID and immutable version.
 - **Evidence:** a traceable artifact or deterministic check result supporting a finding or outcome.
+- **Memory class:** the kind of information (`working`, `canonical`, `episodic`, `evidence`, or `aggregate`).
+- **Memory temperature:** retrieval readiness (`hot`, `warm`, or `cold`), independent of class. HOT is bounded per logical scope; WARM is selective; COLD is not automatically injected.
+- **Canonical memory:** a distilled durable knowledge claim with a stable identity, content hash, temporal validity, provenance, and explicit supersession history. It supplements and links to authoritative domain records; it does not copy their mutable state.
 - **Candidate success:** an agent's report that work appears complete; it is not a terminal verified outcome.
 - **Verified success:** a terminal result with acceptance criteria and mandatory quality gates recorded as passing.
 
@@ -70,6 +74,13 @@ Invariants:
 5. Cathulu's database, MCP server, and local artifacts remain local. Raw transcripts, secrets, and prompt text are not retained by default.
 6. Context moves progressively from portfolio to project/scope to task and finally to exact evidence; raw transcripts are not propagated upward.
 7. Additional layers must earn their cost through measured improvement in verified outcomes.
+8. Raw experience becomes durable agent memory only after useful knowledge is extracted and its provenance retained; raw evidence may have temporary retention.
+9. Memory class and temperature remain separate. Temperature changes update one stable record and do not duplicate or delete knowledge.
+10. Current and historical truth remain distinguishable through temporal validity and supersession; canonical knowledge is never silently overwritten.
+11. Context is scope-specific and bounded. Unchanged, valid context already known by a receiver is not resent in full; transfers preserve a ledger of hashes and provenance without retaining raw prompt bodies.
+12. SQLite remains authoritative. Search indexes return candidate IDs only, and COLD evidence is accessed only for explicit historical, audit, debugging, or evaluation needs.
+13. Unique important provenance is protected conservatively. Redundant evidence may be compacted only after its useful knowledge has been preserved; deletion is deterministic and reference-aware.
+14. Summaries are projections, not authority. Justified durable knowledge and unique provenance may remain indefinitely while active context stays bounded.
 
 ## Constraints and quality drivers
 
@@ -77,8 +88,9 @@ Invariants:
 | --- | --- | --- | --- |
 | 1 | Verified quality and correctness | Deterministic gates dominate agent self-report; retain provenance for each result. | Gate bypass tests, acceptance checks, and run evidence. |
 | 2 | Local privacy and authority | No hosted Cathulu service; local IPC/stdio; avoid prompt/transcript storage; keep Codex approvals in force. | Configuration review, permission-boundary tests, and inspection of stored payloads. |
-| 3 | Durability and recovery | SQLite transactions, migrations, append-only events plus current-state projections, Git reconciliation after restart. | Migration, atomicity, restart, and recovery tests. |
-| 4 | Low operational and cognitive overhead | Reuse Codex-native agents, tools, MCP, hooks, Git and telemetry; defer speculative infrastructure. | Dependency and architecture review plus phased comparison against plain Codex. |
+| 3 | Knowledge retention with bounded active context | Keep durable knowledge justified by evidence, compact redundant representation, and budget HOT context per scope. | Supersession/provenance tests, HOT-budget tests, known-by and transfer-ledger checks, growth and context-reuse measures. |
+| 4 | Durability and recovery | SQLite transactions, migrations, append-only events plus current-state projections, Git reconciliation after restart. | Migration, atomicity, restart, and recovery tests. |
+| 5 | Low operational and cognitive overhead | Reuse Codex-native agents, tools, MCP, hooks, Git and telemetry; defer speculative infrastructure. | Dependency and architecture review plus phased comparison against plain Codex. |
 
 Windows is the Phase 1 platform; cross-platform support is a later option. No numeric performance or evaluation threshold is set without a measured baseline.
 
@@ -86,6 +98,6 @@ Windows is the Phase 1 platform; cross-platform support is a later option. No nu
 
 The first increment succeeds when a registered local repository survives restart, its Git snapshot is current after reconciliation, Codex can read its compact state through local MCP, and the read-only dashboard renders the same state. Automated tests cover the project-registration path and the important persistence/Git/MCP invariants.
 
-Phase 1 success further requires durable objectives/tasks/decisions/workflows/runs, event and state integrity, QA evidence that gates `verified_success`, supported local Codex telemetry ingestion, dashboard visibility for blockers and failed QA, and restart recovery. Later evaluation compares Cathulu-assisted runs with ordinary Codex runs using verified success, regressions, rework, context reconstruction, tool/resource use, stalls, and human intervention.
+Phase 1 success further requires durable objectives/tasks/decisions/workflows/runs, event and state integrity, QA evidence that gates `verified_success`, supported local Codex telemetry ingestion, dashboard visibility for blockers and failed QA, and restart recovery. Its memory foundation must also keep class separate from temperature, preserve stable identity/content hashes and provenance, support temporal validity/supersession and freshness, track known-by state and context transfers, and enforce bounded HOT scope budgets without deleting durable knowledge. Automatic consolidation, semantic indexing, adaptive policies, and evidence garbage collection are later capabilities, not Phase 1 entry conditions. Later evaluation compares Cathulu-assisted runs with ordinary Codex runs using verified success, regressions, rework, context reconstruction, tool/resource use, stalls, and human intervention.
 
 The exact first test seams and evaluation thresholds are selected in the implementation plan from the chosen public interfaces and measurable baseline. No vanity metric or model sentiment can substitute for deterministic evidence.

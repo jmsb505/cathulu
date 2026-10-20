@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE; implementation boundaries are the accepted Phase 1 starting design and remain subject to evidence from the first milestone.
+Status: product boundaries are NORMATIVE. M1 is implemented; the managed-memory architecture in ADR-0003 is accepted for M2 and later milestones, with implementation details gated by their validation evidence.
 
 ## System boundary
 
@@ -10,10 +10,11 @@ Owner
 Codex app / Main Overseer
   ↕ local MCP (domain reads and state transitions)
 Cathulu Core ───── local SQLite database
-  ├─ project and objective state
-  ├─ event, decision, run, QA, and workflow history
+  ├─ project, objective, task, and run state
+  ├─ append-only event, decision, QA, and workflow history
+  ├─ managed memory lifecycle over domain records and evidence
   ├─ Git reconciliation
-  └─ local telemetry normalization
+  └─ local telemetry normalization and context-transfer ledger
        ↕ read-only query boundary (M1 dashboard)
 Tauri desktop app / React UI
 ```
@@ -37,9 +38,49 @@ The M1 implementation uses Tauri 2, React/TypeScript, `rusqlite` with bundled SQ
 
 ## Data and transaction model
 
-SQLite is the source of truth. Use relational columns for projects, dependencies, objectives, tasks, decisions, workflow identities/versions, runs, quality checks, and state needed for filtering. Use JSON for heterogeneous event payloads only. Each important transition appends its domain event and updates the corresponding current-state projection in one transaction. Decisions and workflow versions are immutable. Artifacts are stored as local references and hashes where possible, not copied into prompts.
+SQLite is the source of truth. Use relational columns for projects, dependencies, objectives, tasks, decisions, workflow identities/versions, runs, quality checks, memory lifecycle metadata, and state needed for filtering. Use JSON for bounded heterogeneous event payloads only. Each important transition appends its domain event and updates the corresponding current-state projection in one transaction. Decisions and workflow versions are immutable. Artifacts are stored as local references and hashes where possible, not copied into prompts.
 
-The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs database migrations. In M1, registration captures a Git snapshot and the explicit `reconcile_project` MCP tool refreshes it; startup does not yet reconcile every registered repository. Later Phase 1 milestones can define restart recovery and broader reconciliation checks.
+The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs database migrations. In M1, registration captures a Git snapshot and the explicit `reconcile_project` MCP tool refreshes it; startup does not yet reconcile every registered repository. Later milestones add memory metadata and broader reconciliation checks without creating another database, replacing the event model, or copying current-state tables into a parallel memory store.
+
+### Managed memory lifecycle
+
+Cathulu manages knowledge through **experience → evidence → extraction → candidate → consolidation → durable knowledge**. Raw evidence is not permanent agent memory by default. Durable knowledge is a distilled, content-hashed record with provenance; no model-generated summary replaces its sources or the authoritative domain record it describes.
+
+Memory class and temperature are independent dimensions:
+
+| Class | Meaning | Typical use | Usual temperature |
+| --- | --- | --- | --- |
+| `working` | Current context needed by a logical scope | Objective, blockers, active constraints | HOT |
+| `canonical` | Durable, accepted knowledge | Decisions, facts, contracts, procedures, lessons | HOT when active; otherwise WARM or COLD if superseded/historical |
+| `episodic` | Reusable historical experience | Incidents, migrations, outcomes, failure patterns | WARM; HOT when strongly relevant; COLD after inactivity |
+| `evidence` | What happened and its supporting artifacts | Run events, check results, diffs, bounded logs | COLD |
+| `aggregate` | Compact statistics derived from multiple observations | Workflow and memory-policy outcomes | WARM |
+
+Temperature is retrieval policy, not storage class. `hot` is in the small activation set for a scope; `warm` is selectively retrieved; `cold` is excluded from automatic context and opened for provenance, debugging, audit, or evaluation. A temperature transition updates the same stable record; it does not duplicate or erase it. Classes describe the information and are not inferred from temperature.
+
+Existing domain entities remain authoritative. Memory metadata may point at an objective, decision, workflow version, run, check, or artifact, but must not mirror that entity's mutable state or create a competing copy of its meaning. A distilled canonical or episodic record is a separate knowledge claim and must link to the evidence and events that support it. Current project/Git state stays in its domain tables; exact state is read from SQLite, not semantic search.
+
+Memory records need stable IDs and content hashes; class, temperature, kind, and scope; created/updated times; optional validity bounds; supersession links; importance, evidence confidence, reuse count, and last-use time; freshness bases such as repository commit, contract hash, dependency snapshot, or graph snapshot; and source-event and artifact references. Confidence represents strength/quality of evidence, not a model's confidence score. Provenance may point to source files and commits, test results, accepted decisions, contracts, Graphify snapshots, runs, artifacts, command results, and human instructions. Canonical memory requires provenance. Changing a fact creates a successor or explicit new version; old facts remain queryable historically and are never silently overwritten. Current retrieval favors valid, non-superseded, fresh facts. A freshness mismatch invalidates only records depending on that basis. An episodic record may move WARM → HOT when strongly relevant and later return to WARM or COLD without changing its class or identity.
+
+Raw experiences and evidence may have temporary retention. Evidence can be protected when it explains a major decision, security incident, serious regression, rare failure, human correction, or benchmark. Deletion is reference-aware and deterministic: eligible evidence must have no live memory, decision, investigation, QA, or protection reference, and its useful extraction/aggregate must already be preserved. Retention is configurable and evidence-driven; do not hardcode arbitrary age cutoffs or let an LLM delete records.
+
+### Bounded activation and provenance-preserving transfer
+
+Each logical context scope has a configurable HOT-memory budget. Main Overseer, project/scope, and worker/task packets receive only their relevant state. When a budget is exceeded, deterministic policy first demotes inactive knowledge from HOT to WARM, consolidates or replaces detail with references when justified, and may route transient detail to evidence retention. Overflow never triggers arbitrary deletion of durable knowledge.
+
+Known-by state is keyed by logical receiver scope and the memory content hash. If the same still-valid version is already known, omit it; if a reminder is useful, send a compact reference; if it changed, send a delta; if invalidated, replace it. Every Cathulu-controlled transfer records its run, sender and receiver scope, memory ID/hash, class and temperature, byte size, observable token count, retrieval method, whether it is new or reintroduced, timestamp, and downstream use when observable. Do not store the transferred prompt body merely to measure context.
+
+Resumption starts from a compact scope snapshot, then checks Git, Graphify, dependency, and contract deltas, invalidates stale knowledge, promotes relevant WARM memories, and sends only changed/relevant context. Transcript replay is not the resumption mechanism. Context-transfer records and memory metadata are the shared foundation; telemetry must populate that ledger rather than introduce a second transfer system.
+
+### Retrieval and maintenance boundaries
+
+Retrieval specializes by source: current exact state from SQLite; named knowledge and errors from SQL/FTS; code structure from Graphify; historically similar experience from optional semantic retrieval; large evidence through artifact references. After identifying the task scope, load its bounded HOT packet, query exact current state and canonical constraints, then add relevant WARM knowledge from SQL/FTS, Graphify, or optional semantic candidates. Deduplicate, filter already-known content, validate freshness and supersession, fit the result to the scope budget, and record controlled transfers. COLD evidence is never injected automatically. Semantic search, if later justified, returns candidate IDs only; every result resolves to an authoritative SQLite record. Limit semantic candidates primarily to WARM canonical and episodic knowledge. Do not embed raw telemetry, transcripts, full logs, exact current state, dependency edges, or whole Graphify snapshots by default.
+
+The future local **Memory Gardener** is deterministic maintenance logic, not a continuously running LLM agent. It may run manually, at startup, periodically, after a run threshold, or when storage thresholds are reached. It may identify duplicates, stale summaries, supersession, consolidation candidates, missing provenance, orphaned artifacts, index entries to remove, and memory-health issues. Any model assistance proposes classifications or summaries; validated evidence and explicit policy control promotion, demotion, protection, and deletion. The foundation milestone implements the records and invariants first; automatic consolidation, memory-assisted semantic indexing, compaction, adaptive temperature policy, and garbage collection remain later work.
+
+Telemetry compaction follows evidence utility rather than a fixed age rule: recent runs may retain bounded full events, older runs can retain a summary and anomalies, and long-term history can retain workflow aggregates, significant run summaries, and protected failures. Before removing raw evidence, verify that useful knowledge, aggregate updates, supporting provenance, and unusual anomalies have been preserved. Duplicate observations are easier to compact than unique explanations for important decisions.
+
+Memory-health and self-improvement evidence can include HOT/WARM/COLD size; class counts; duplicate, stale, and orphan rates; per-scope HOT size; reuse and promotion counts; consolidation and temperature-transition rates; retrieval precision/usefulness; context reintroduction/amplification; and bytes compacted/collected. Track SQLite, artifact, and optional index size and growth by run/project/workflow, plus raw-evidence-to-canonical ratio. Version memory policies and compare them on verified success, missing-context failures, regressions, rework, context volume, latency, and human intervention. These are local optimization measures; the dashboard need show only actionable health summaries.
 
 ## Codex integration and feasibility evidence
 
@@ -57,13 +98,13 @@ Telemetry adapters are optional and degrade to manual semantic MCP event recordi
 ### Protected assets and trust boundaries
 
 - Local repository paths and their Git metadata.
-- Durable decisions, objectives, event history, run outcomes, and quality artifacts.
+- Durable decisions, objectives, memory, event history, run outcomes, provenance, and quality artifacts.
 - Model/tool telemetry that may contain untrusted repository text or sensitive command arguments.
 - Codex's approval, sandbox, and permission decisions, which remain owned by Codex.
 
 Repository files and telemetry inputs are untrusted. MCP input is validated and mapped to domain operations. Registered paths are canonicalized and restricted to the explicit registry. No generic SQL operation is exposed. No unnecessary TCP listener is opened; use stdio/local IPC and loopback-only telemetry when a supported exporter requires it. Never treat hooks as an authorization boundary. Preserve Codex's sandbox and approval mechanisms for consequential operations.
 
-Do not persist secrets, raw prompts, or full agent transcripts by default. Store provenance, event type, identifiers, bounded/sanitized metadata, and artifact references. Treat any future prompt retention as a separate privacy decision. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery.
+Do not persist secrets, raw prompts, or full agent transcripts by default. Store provenance, event type, identifiers, bounded/sanitized metadata, content hashes, and artifact references. Treat any future prompt retention as a separate privacy decision. Keep all memory, artifacts, telemetry, indexes, and policy experiments local. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
 
 ## Dashboard interaction contract
 

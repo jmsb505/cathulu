@@ -2,7 +2,7 @@
   "schema_version": 1,
   "phase": "CHECKPOINTED",
   "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
-  "last_updated": "2026-10-20",
+  "last_updated": "2026-10-21",
   "repository_revision": null,
   "inspected_sources": [
     {
@@ -168,6 +168,19 @@
       "blocking": false,
       "owner": "project owner",
       "next_action": null
+    },
+    {
+      "id": "C-009",
+      "dimension": "INTENT",
+      "scope": "memory lifecycle",
+      "claim": "Cathulu should preserve justified durable knowledge and provenance while keeping active scope context bounded. Memory class and retrieval temperature are independent; SQLite remains authoritative; raw evidence is promoted, compacted, or deleted only through a staged, evidence-based lifecycle.",
+      "status": "KNOWN",
+      "sources": [{"type": "USER_DECISION", "locator": "User memory-system refinement, sections 1-32", "date": "2026-10-20"}],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
     }
   ],
   "questions": [
@@ -229,5 +242,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M1 automated validation and isolated Windows startup smoke passed. Continue with M2 durable workflow and quality state; verify selector integration before the delegation milestone."
+  "next_action": "M1 automated validation and isolated Windows startup smoke passed. M2 has a reviewed memory foundation and acceptance plan in ADR-0003 and PLAN-001; implement that before M3 telemetry. Verify selector integration before the delegation milestone."
 }

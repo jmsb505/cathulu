@@ -2,7 +2,7 @@
 
 Status: M1 IMPLEMENTED AND VALIDATED on Windows; see the evidence and remaining manual checks below
 Created: 2026-10-20
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 
 ## Objective
 
@@ -15,6 +15,7 @@ The project definition identifies durable project state as the smallest end-to-e
 ## Current state
 
 - At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source is now present locally on `codex/phase1-foundation`.
+- Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
 - Context7 resolution calls failed because the current monthly quota is exhausted. The source links listed below are the official vendor/project docs fallback. Retry Context7 before future library-specific implementation or API changes.
@@ -32,6 +33,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - A Rust core library owning project validation, SQLite persistence, and Git reconciliation.
 - A local stdio MCP executable reusing that core and exposing semantic project registration/reconciliation plus compact read resources.
 - A read-only desktop view that reads the same durable project snapshot through a narrow Tauri command boundary.
+- A shared SQLite memory substrate that references existing domain records instead of duplicating their authority, and can later support bounded scope activation and selective retrieval.
 - A local setup note for connecting the MCP executable to Codex. The implementation must not edit the owner's global Codex configuration automatically.
 
 ## Scope
@@ -60,16 +62,18 @@ The project definition identifies durable project state as the smallest end-to-e
 - `docs/readiness/definition-gate.md`: retain the definition PASS; milestone acceptance is tracked here separately.
 - Root `README.md`: app overview and local setup entry point.
 - `docs/local-mcp.md`: user-controlled Codex MCP setup and runtime limitations.
+- `docs/decisions/ADR-0003-managed-local-memory-lifecycle.md`: accepted memory lifecycle, authority, retention, and staged implementation constraints.
 
 ## Existing decisions and constraints
 
 - [ADR-0001](../decisions/ADR-0001-cathulu-is-the-local-evidence-layer.md): Codex owns interaction and agent execution; Cathulu owns local state/evidence; dashboard is read-only.
 - [ADR-0002](../decisions/ADR-0002-cathulu-hosted-agent-selectors.md): Cathulu will host future agent model/effort selectors in a separate settings surface; the Codex integration remains unverified.
+- [ADR-0003](../decisions/ADR-0003-managed-local-memory-lifecycle.md): memory is a provenance-preserving lifecycle over the existing SQLite domain and evidence records, with independent class/temperature dimensions and bounded active context.
 - The owner selected Windows first, cross-platform later.
 - Adopt the brief's preferred Tauri 2 / React / TypeScript / Rust / SQLite stack because no existing implementation exists.
 - SQLite is the system of record; MCP never exposes generic SQL.
 - Registered repository contents and telemetry are untrusted; no secrets, raw prompts, or full transcripts are retained by default.
-- No known commit exists on `main`; do not advance it. Work on `codex/phase1-foundation`.
+- No known commit exists on `main`; do not advance it. M1 is checkpointed on `codex/phase1-foundation`; the next work is isolated on `codex/phase1-workflow-state`.
 
 ## Supporting skills / tools
 
@@ -94,6 +98,8 @@ The project definition identifies durable project state as the smallest end-to-e
 - Git paths may be invalid, detached, dirty, or unsafe. Canonicalize and validate paths, return explicit errors, and avoid partial database writes.
 - The dashboard must stay read-only even though the MCP server has semantic write operations.
 - Codex hook/OTel events and model/effort selection remain unverified runtime details; neither blocks the project-registry slice.
+- The memory taxonomy spans several existing/future domain records. M2 must map those records to memory semantics without creating parallel copies of project state, decisions, workflow versions, runs, or evidence. Candidate status is a lifecycle state, not another memory class or temperature.
+- A semantic-index interface or vector dependency may be premature before retrieval gaps are measured. SQLite remains authoritative; add an index only in a later milestone if evidence justifies it.
 
 ## Owner-approved public test seams
 
@@ -158,36 +164,54 @@ Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `ui-ux
 
 Expected Git checkpoint: validated local commit `2ec0f0b` on `codex/phase1-foundation`. Push/PR progression remains a separate GitHub action and must use repository controls; the remote currently has no commit or `main` branch.
 
-### M2 — Durable workflow and quality state
+### M2 — Durable workflow, quality, and memory foundation
 
-Goal: add the minimum durable records and quality rules required for Phase 1 run tracking.
+Goal: add the minimum durable records and quality rules for Phase 1 run tracking, plus the memory metadata and deterministic boundaries needed to preserve knowledge without unbounded active context. This is a storage/contract foundation, not automatic memory management.
 
 Subtasks:
 
-- [ ] Add dependencies, objectives, tasks, immutable decisions, and immutable workflow versions.
-- [ ] Add append-only run events and materialized run state with transactional transitions.
-- [ ] Add quality checks and terminal states; enforce that `verified_success` requires all mandatory checks.
-- [ ] Add restart, migration, transaction atomicity, and FTS tests as retrieval is introduced.
-- [ ] Extend MCP semantic resources/tools and read-only Overview/Activity/Project views.
+- [ ] Add an additive SQLite migration for dependencies, objectives, tasks, immutable decisions, immutable workflow versions, runs, checks, and append-only events; retain existing M1 project rows and read behavior.
+- [ ] Update run state and append its event in one transaction. Enforce that only passing mandatory checks can produce `verified_success`; missing or failed evidence remains blocked, failed, or inconclusive.
+- [ ] Add stable memory IDs, content hashes, kind/scope, created/updated timestamps, and independent `memory_class` (`working`, `canonical`, `episodic`, `evidence`, `aggregate`) and `temperature` (`hot`, `warm`, `cold`) fields. Do not use temperature as a class or class as a retrieval priority.
+- [ ] Map memory semantics onto existing domain/evidence records where possible. Add a distilled memory record only for a distinct knowledge claim; link it to its domain sources instead of copying their mutable current state. Candidate/review state is separate from memory class and temperature.
+- [ ] Add scope identity, bounded HOT-budget metadata, importance, evidence confidence, reuse and last-used metadata. The initial scope IDs should resolve to stable global/project/objective/task records; later Sub-Overseer scopes can use the same logical contract.
+- [ ] Add validity times, explicit supersession links, and freshness bases for repository/commit and other supported snapshots. Preserve superseded facts for history; current reads select valid, fresh, non-superseded knowledge. Start with the freshness inputs actually available and extend the typed basis as dependency/Graphify/contract snapshots are implemented.
+- [ ] Add provenance links to source events/domain records and artifact references. Canonical memory must have at least one traceable source. Add explicit protected-evidence state for important incidents and decisions.
+- [ ] Add known-by state keyed by receiver scope and content hash. An unchanged valid version is omitted, a changed version produces a delta/reference, and an invalidated version is replaced; temperature changes do not create a second memory identity.
+- [ ] Add a context-transfer ledger for Cathulu-controlled transfers, including run, sender/receiver scope, memory ID/hash, class, temperature, size, observable token count, first-time/reintroduced flag, retrieval method, timestamp, and downstream use when observable. Never retain raw prompt bodies just to populate this ledger.
+- [ ] Add deterministic HOT-budget enforcement with stable ordering by scope relevance, importance, and last use; demote eligible inactive items before overflow and never delete durable knowledge to fit a packet. WARM remains selective and COLD is not included in ordinary activation.
+- [ ] Keep memory state, transfer records, and all evidence local in the existing SQLite database and local artifact store. Do not add a hosted service, second database, vector package, continuously running LLM agent, or table-CRUD MCP surface.
+- [ ] Extend semantic MCP reads/writes and the read-only dashboard only where needed to inspect current workflow/quality state and compact scope memory health. Keep model/effort controls in their later separate settings surface.
+- [ ] Add migrations, transaction, restart, MCP, Tauri read, and memory-invariant tests at the existing public seams.
 
-Affected areas: core schema/domain, MCP contract, dashboard query surface, documentation.
+Affected areas: core schema/domain, MCP contract, dashboard query surface, migrations, tests, and source-of-truth documentation.
 
 Dependencies: M1 validated; public MCP and Tauri read seams remain stable.
 
 Acceptance criteria:
 
-- Events and current state update atomically; events cannot be edited through model-facing tools.
+- Existing M1 projects survive migration/reopen unchanged, and all new events/projections use the existing SQLite authority.
+- Events and current state update atomically; event rows cannot be edited through model-facing tools.
 - Decision and workflow-version history is immutable and superseded by new records.
 - No agent claim or timeout can set verified success with a failed/missing mandatory gate.
-- Dashboard shows objectives, blockers, recent runs, and failed QA without write actions.
+- A memory's class and temperature can vary independently; HOT/WARM/COLD transitions update one stable identity without duplicating or deleting the record.
+- Content-identical durable knowledge is idempotent within the same scope and kind; content hashes change when the distilled body changes.
+- Canonical memory has provenance; validity and supersession keep old truth historically queryable while current retrieval favors fresh, valid records.
+- A changed Git/freshness basis invalidates only dependent memories; an unrelated project's memories remain valid.
+- Known-by filtering does not resend unchanged valid content to a receiver; changed content produces a delta, with the transfer ledger recording the operation.
+- HOT records remain within configured per-scope budgets after deterministic demotion. Durable knowledge and its provenance remain available in WARM/COLD state.
+- COLD evidence is absent from ordinary activation; protection and reference metadata are queryable. M2 does not implement evidence deletion or garbage collection.
+- Context-transfer accounting contains metadata/hashes and does not store raw prompt/transcript content.
+- Dashboard shows objectives, blockers, recent runs, failed QA, and compact memory health without write actions.
 
 Validation:
 
-- Migration, transaction rollback/atomicity, restart/recovery, state transition, and mandatory-gate tests.
-- MCP schema/input and permission-boundary tests.
-- Manual UI check for empty, active, blocked, failed, and inconclusive states.
+- Rust: additive migration with existing-data preservation; transaction rollback/atomicity; restart/recovery; state transitions and mandatory gates; class/temperature independence; stable identity/hash idempotence; supersession/history/current reads; selective freshness invalidation; known-by delta behavior; transfer-ledger provenance; budget overflow/demotion preserving durable records; COLD exclusion and protected/reference metadata.
+- MCP: typed schema/input and permission-boundary tests for semantic domain operations and reads; no generic SQL/table CRUD.
+- Tauri mock IPC and React tests for compact memory/workflow health rendering and empty/error states.
+- Manual UI check for empty, active, blocked, failed, and inconclusive states, including clear stale/history indicators and keyboard navigation.
 
-Documentation updates: update domain/architecture, API/MCP contract notes, roadmap, plan, and decision records.
+Documentation updates: update domain/architecture, API/MCP contract notes, roadmap, plan, and decision records with actual schema/API choices and evidence.
 
 Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `tdd`, `impeccable`; Context7 for current crate/API details.
 
@@ -201,13 +225,13 @@ Subtasks:
 
 - [ ] Verify available Codex hooks and local OpenTelemetry fields on the target Windows app version.
 - [ ] Normalize only supported non-sensitive signals; keep raw prompts and transcripts disabled.
-- [ ] Add context transfer records and content hashes only if they can be captured without storing raw prompt bodies.
+- [ ] Populate the M2 context-transfer ledger from supported local telemetry or explicit semantic operations; do not add a parallel transfer model or store raw prompt bodies.
 - [ ] Show run history, blockers, and failed QA in the dashboard.
-- [ ] Reconcile Git state after app restart and make telemetry ingestion idempotent.
+- [ ] Reconcile Git/freshness state after app restart and make telemetry ingestion idempotent.
 
 Affected areas: telemetry adapter, event model, database migration, MCP evidence resources, Activity/Evidence views.
 
-Dependencies: M2 run/evidence model; local Codex runtime experiment.
+Dependencies: M2 run/evidence and memory metadata/transfer model; local Codex runtime experiment.
 
 Acceptance criteria:
 
@@ -228,9 +252,46 @@ Applicable specialized skills: `milestone-delivery`, `openai-docs`, `ponytail-ba
 
 Expected Git checkpoint: validated milestone commit; release-readiness remains separate.
 
+### M4 — Memory lifecycle and context-efficiency experiments (later phase)
+
+Goal: make Cathulu better informed over time while keeping active context and redundant evidence bounded. This milestone builds on measured M1-M3 state; it does not block the Phase 1 memory substrate.
+
+Subtasks:
+
+- [ ] Add selective SQL/FTS retrieval for named canonical and episodic knowledge, with explicit freshness, supersession, known-by, and HOT-budget filtering.
+- [ ] Introduce the local deterministic Memory Gardener as a manual/threshold-triggered maintenance job, not a continuously running LLM agent.
+- [ ] Propose or apply policy-bounded duplicate detection, consolidation, promotion/demotion, stale-summary detection, and compact aggregate updates with full source links.
+- [ ] Add configurable reference-aware evidence retention and garbage collection. Preserve protected evidence and any source needed by canonical memory, decisions, active QA, or investigations; collect only after useful extraction is verified.
+- [ ] Track actionable memory health and storage growth: class/temperature sizes, duplicates/stale/orphans, per-scope HOT use, reuse, retrieval usefulness, context reintroduction/amplification, and compacted/collected bytes.
+- [ ] Version memory policies and compare outcomes (verified success, missing-context failures, regressions, rework, context volume, latency, and human intervention).
+- [ ] Add a replaceable semantic-index boundary only if measured SQL/FTS retrieval gaps justify it. The index returns candidate IDs; every result is loaded and freshness-checked from SQLite. Do not index raw telemetry, full logs, transcripts, exact current state, or whole Graphify exports by default.
+- [ ] If an index is justified, index primarily WARM canonical/episodic memories and remove or deactivate entries when their memory is superseded, archived, or irrelevant; support rebuild/removal without changing SQLite authority.
+- [ ] Add Graphify/contract/dependency invalidation as those snapshot sources become available; preserve exact provenance for graph facts and context resumption deltas.
+
+Acceptance criteria:
+
+- Repeated supported observations can consolidate into a single durable lesson while retaining lightweight, queryable source references.
+- Current exact state and current canonical knowledge outrank historical/semantic matches; WARM results are selective and COLD evidence is never automatically injected.
+- Superseded and stale knowledge cannot override current facts. Promotion/demotion changes temperature or lifecycle state without duplicating stable identities.
+- Garbage collection is deterministic and reference-aware, protects protected evidence, and removes eligible evidence only after useful knowledge and provenance survive.
+- Semantic candidates resolve to authoritative SQLite records and can be removed/rebuilt without losing memories.
+- Memory-health metrics expose excess growth or low knowledge density without dumping the full evidence archive into active context.
+- A matched experiment can compare versioned policies against verified work and context/resource measures.
+
+Validation:
+
+- Tests for repeated-evidence consolidation, unique-source retention, provenance validation, policy versioning, configurable retention, protected/reference-aware collection, and storage accounting.
+- Retrieval tests for HOT preference, exact state precedence, WARM selectivity, COLD exclusion, stale/superseded suppression, and budget fit.
+- If a semantic index is implemented: candidate-ID resolution, stale/deleted candidate filtering, rebuild/remove correctness, and proof SQLite remains authoritative.
+- Manual checks for reviewable Gardener proposals, explainable actions, and no model-controlled evidence deletion.
+
+Dependencies: M2 memory foundation; M3 run/telemetry evidence; measured retrieval and storage need before optional semantic indexing.
+
+Expected Git checkpoint: separate validated milestone commit/branch following repository policy.
+
 ## Final integration validation
 
-After M1-M3, install/start the Windows desktop build from a clean local state, register a disposable repository, record and retrieve project/run/QA evidence through MCP, verify the dashboard remains read-only, restart Cathulu, and confirm durable state and Git reconciliation. Run the workspace test/build checks and review privacy, security, and integration limitations. This is Phase 1 milestone validation, not public release approval.
+After M1-M3, install/start the Windows desktop build from a clean local state, register a disposable repository, record and retrieve project/run/QA and memory provenance/transfer state through MCP, verify bounded current context and that the dashboard remains read-only, restart Cathulu, and confirm durable state and Git/freshness reconciliation. Run workspace checks and review privacy, security, and integration limits. This is Phase 1 milestone validation, not public release approval; M4 memory policy experiments remain later work.
 
 ## Rollback / recovery
 
@@ -245,8 +306,9 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] M1 implementation started and implementation/test sources authored.
 - [x] M1 automated validation and isolated Windows app-startup smoke complete.
 - [x] M1 committed locally as `2ec0f0b` on `codex/phase1-foundation`.
+- [x] Managed-memory principles and staged M2/M4 boundaries recorded in architecture, definition, roadmap, plan, and ADR-0003 before M2 implementation.
 - [ ] Optional visible UI and owner-controlled Codex connection smoke.
-- [ ] M2 and M3 complete.
+- [ ] M2-M4 complete.
 
 ## Implementation discoveries / decisions
 
@@ -257,7 +319,8 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - 2026-10-20: Context7 monthly quota was exhausted. Official primary docs were used as a fallback; no API calls should be copied from memory.
 - 2026-10-20: Windows Tauri unit-test executables lacked the Common Controls v6 manifest and exited with `STATUS_ENTRYPOINT_NOT_FOUND`; the Windows/MSVC build script now embeds the application manifest so the approved IPC test can run.
 - 2026-10-20: The Tauri application built and started with isolated local data. The verified acceptance seams pass; visible UI inspection and connecting the owner's Codex app remain manual follow-ups.
+- 2026-10-20: Before starting M2, the owner specified a local managed-memory lifecycle. ADR-0003 records class/temperature separation, provenance/temporal history, bounded HOT activation, known-by/delta transfers, conservative forgetting, and the staged plan. M2 implements the substrate; automated gardening, compaction, collection, semantic indexing, and adaptive policy experiments are deferred.
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks pass. A visible UI/Codex configuration smoke remains manual, and M2/M3 are still planned work.
+M1's build, automated test seams, and isolated Windows startup checks pass. A visible UI/Codex configuration smoke remains manual. M2 implementation has not started; its memory foundations and acceptance tests are now planned before the later M3 telemetry and M4 lifecycle work.
