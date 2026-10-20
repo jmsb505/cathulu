@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; see the evidence and remaining manual checks below
+Status: M1 IMPLEMENTED AND VALIDATED on Windows; published to `main` on 2026-10-21; see the evidence and remaining manual checks below
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -14,12 +14,12 @@ The project definition identifies durable project state as the smallest end-to-e
 
 ## Current state
 
-- At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source is now present locally on `codex/phase1-foundation`.
+- At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source was checkpointed on `codex/phase1-foundation`; the validated progress and managed-memory plan are now published on the remote default branch `main` at `5f43dcb`.
 - Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
 - Context7 resolution calls failed because the current monthly quota is exhausted. The source links listed below are the official vendor/project docs fallback. Retry Context7 before future library-specific implementation or API changes.
-- The repo's original `main` is unborn. A local orphan milestone branch `codex/phase1-foundation` was created before implementation.
+- At implementation start, the remote `main` was unborn. On 2026-10-21, after local validation and confirmation that the repository had no branch rulesets, the owner requested publication; `5f43dcb` was pushed without force and GitHub now recognizes `main` as the default branch.
 - The owner approved the MCP round-trip, Tauri snapshot/dashboard, and SQLite restart persistence test seams; implementation and test coverage for those boundaries have been authored.
 - Rust and npm dependencies were fetched after the package registries became available. The frontend uses React 19.3, TypeScript 5.9, Vite 8.3, and Vitest 5; the lockfiles pin resolved versions.
 - The official Visual Studio Build Tools 2022 v17.14.42, MSVC x64/x86 14.44.35207, Windows SDK 10.0.26100.0, and `link.exe` are installed. Use an x64 Visual Studio developer shell for native Rust builds.
@@ -73,7 +73,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - Adopt the brief's preferred Tauri 2 / React / TypeScript / Rust / SQLite stack because no existing implementation exists.
 - SQLite is the system of record; MCP never exposes generic SQL.
 - Registered repository contents and telemetry are untrusted; no secrets, raw prompts, or full transcripts are retained by default.
-- No known commit exists on `main`; do not advance it. M1 is checkpointed on `codex/phase1-foundation`; the next work is isolated on `codex/phase1-workflow-state`.
+- The validated M1 and accepted memory-plan refinement were first published to `origin/main` in `5f43dcb`. The local working branch remains `codex/phase1-workflow-state`; M2 implementation has not started.
 
 ## Supporting skills / tools
 
@@ -307,6 +307,8 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] M1 automated validation and isolated Windows app-startup smoke complete.
 - [x] M1 committed locally as `2ec0f0b` on `codex/phase1-foundation`.
 - [x] Managed-memory principles and staged M2/M4 boundaries recorded in architecture, definition, roadmap, plan, and ADR-0003 before M2 implementation.
+- [x] On 2026-10-21, re-ran `cargo fmt --all -- --check`, `cargo test --offline --workspace` (4 passed), `npm test` (3 passed), and `cargo tauri build --no-bundle -- --offline`; all passed.
+- [x] Published `5f43dcb` to the previously unborn `main` with a normal push; verified the remote SHA and default branch. No GitHub check runs or Actions runs were configured for the commit.
 - [ ] Optional visible UI and owner-controlled Codex connection smoke.
 - [ ] M2-M4 complete.
 
@@ -323,4 +325,4 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks pass. A visible UI/Codex configuration smoke remains manual. M2 implementation has not started; its memory foundations and acceptance tests are now planned before the later M3 telemetry and M4 lifecycle work.
+M1's build, automated test seams, and isolated Windows startup checks pass. The checks were repeated before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. A visible UI/Codex configuration smoke remains manual. M2 implementation has not started; its memory foundations and acceptance tests are now planned before the later M3 telemetry and M4 lifecycle work.

@@ -2,7 +2,7 @@
 
 This roadmap preserves the phase order from the project brief and distinguishes planned work from delivered evidence.
 
-**Current status (2026-10-21):** M1's Windows release build, four Rust workspace tests, three React dashboard tests, formatting check, and isolated app-startup smoke passed on `codex/phase1-foundation` on 2026-10-20. A visible UI inspection and live Codex connection remain manual follow-ups. The managed-memory architecture and revised M2/M4 acceptance plan are recorded in [ADR-0003](decisions/ADR-0003-managed-local-memory-lifecycle.md) and [PLAN-001](plans/PLAN-001-phase1-first-slice.md); M2 implementation has not started on `codex/phase1-workflow-state`.
+**Current status (2026-10-21):** M1's Windows release build, four Rust workspace tests, three React dashboard tests, and formatting check passed again before publishing `5f43dcb` to the remote default branch `main`. GitHub reported no hosted check runs. A visible UI inspection and live Codex connection remain manual follow-ups. The managed-memory architecture and revised M2/M4 acceptance plan are recorded in [ADR-0003](decisions/ADR-0003-managed-local-memory-lifecycle.md) and [PLAN-001](plans/PLAN-001-phase1-first-slice.md); M2 implementation has not started on the local working branch `codex/phase1-workflow-state`.
 
 ## Phase 1 — Instrumentation and state foundation
 
