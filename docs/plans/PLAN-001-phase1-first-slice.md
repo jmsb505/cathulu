@@ -156,7 +156,7 @@ Documentation updates:
 
 Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `ui-ux-research`, `impeccable`, `tdd`, Context7 (retry), `openai-docs` for Codex integration.
 
-Expected Git checkpoint: validated local commit on `codex/phase1-foundation`. Push/PR progression remains a separate GitHub action and must use repository controls; the remote currently has no commit or `main` branch.
+Expected Git checkpoint: validated local commit `2ec0f0b` on `codex/phase1-foundation`. Push/PR progression remains a separate GitHub action and must use repository controls; the remote currently has no commit or `main` branch.
 
 ### M2 — Durable workflow and quality state
 
@@ -244,6 +244,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Public test seams confirmed.
 - [x] M1 implementation started and implementation/test sources authored.
 - [x] M1 automated validation and isolated Windows app-startup smoke complete.
+- [x] M1 committed locally as `2ec0f0b` on `codex/phase1-foundation`.
 - [ ] Optional visible UI and owner-controlled Codex connection smoke.
 - [ ] M2 and M3 complete.
 
