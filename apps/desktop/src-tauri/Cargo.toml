@@ -1,0 +1,20 @@
+[package]
+name = "cathulu-desktop"
+version = "0.1.0"
+description = "A local, read-only project evidence dashboard for Cathulu"
+authors = ["Cathulu"]
+edition = "2021"
+
+[lib]
+name = "cathulu_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+cathulu-core = { path = "../../.." }
+tauri = { version = "2.10.3", features = [] }
+
+[dev-dependencies]
+tauri = { version = "2.10.3", features = ["test"] }

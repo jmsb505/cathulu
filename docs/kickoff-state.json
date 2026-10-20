@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "phase": "CHECKPOINTED",
+  "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
+  "last_updated": "2026-10-20",
+  "repository_revision": null,
+  "inspected_sources": [
+    {
+      "type": "USER_DECISION",
+      "locator": "C:\\Users\\sjuan\\Downloads\\CATHULU_PROJECT_KICKOFF.md",
+      "date": "2026-10-20",
+      "scope": "Initial project requirements, MVP, phases, constraints, and first Codex task"
+    },
+    {
+      "type": "USER_DECISION",
+      "locator": "User answer to Phase 1 platform question",
+      "date": "2026-10-20",
+      "scope": "Windows first; cross-platform later"
+    },
+    {
+      "type": "CODE",
+      "locator": "C:\\Users\\sjuan\\Desktop\\cathulu",
+      "date": "2026-10-20",
+      "revision": null,
+      "scope": "Empty local checkout: no source files, project manifest, commits, or prior documentation"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "GitHub connector: jmsb505/cathulu metadata, branches, and contents",
+      "date": "2026-10-20",
+      "scope": "Public repository; default branch main; no commits or branches"
+    },
+    {
+      "type": "CANONICAL_DOC",
+      "locator": "https://learn.chatgpt.com/docs/extend/mcp; https://learn.chatgpt.com/docs/hooks; https://learn.chatgpt.com/docs/config-file/config-reference",
+      "date": "2026-10-20",
+      "scope": "Current official Codex MCP, hooks, and OTel configuration support"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "Context7 resolve-library-id calls for Tauri 2, React, rmcp, and rusqlite",
+      "date": "2026-10-20",
+      "scope": "All requests returned monthly quota exhausted; official vendor documentation used as fallback"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "Visual Studio Build Tools 2022, MSVC x64/x86, Windows SDK, cargo test/build, and isolated app startup smoke",
+      "date": "2026-10-20",
+      "scope": "Windows prerequisites installed and M1 validation passed on codex/phase1-foundation"
+    }
+  ],
+  "claims": [
+    {
+      "id": "C-001",
+      "dimension": "INTENT",
+      "scope": "product",
+      "claim": "Cathulu is a local evidence/state/memory layer around Codex; Codex remains the agent and user interaction surface.",
+      "status": "KNOWN",
+      "sources": [{"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §§Purpose, 1, 2.1, 29", "date": "2026-10-20"}],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "C-002",
+      "dimension": "INTENT",
+      "scope": "desktop UI",
+      "claim": "The dashboard is read-only and has Overview, Activity, Project/Scope, and Evidence views.",
+      "status": "KNOWN",
+      "sources": [{"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §19", "date": "2026-10-20"}],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "C-003",
+      "dimension": "INTENT",
+      "scope": "first platform",
+      "claim": "Phase 1 targets Windows first; cross-platform support is later.",
+      "status": "KNOWN",
+      "sources": [{"type": "USER_DECISION", "locator": "User answer to Phase 1 platform question", "date": "2026-10-20"}],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "C-004",
+      "dimension": "INTENT",
+      "scope": "initial technology stack",
+      "claim": "Use the brief's preferred Tauri 2, React/TypeScript, Rust, and SQLite stack because the empty repository supplies no existing-stack reason to choose otherwise.",
+      "status": "INFERRED",
+      "sources": [
+        {"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §§3 and 25", "date": "2026-10-20"},
+        {"type": "CODE", "locator": "Local checkout and GitHub repository are empty", "date": "2026-10-20"}
+      ],
+      "decision_status": "ACCEPTED",
+      "rationale": "The brief explicitly prefers this stack unless an existing repository has a strong contrary reason; none exists.",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "C-005",
+      "dimension": "INTENT",
+      "scope": "agent configuration",
+      "claim": "Cathulu will host future model and effort selectors for the Main Overseer and sub-agents; the Codex configuration pathway and per-role support remain unresolved.",
+      "status": "KNOWN",
+      "sources": [
+        {"type": "USER_DECISION", "locator": "User parenthetical on future orchestrator/sub-agent model and effort selectors", "date": "2026-10-20"},
+        {"type": "USER_DECISION", "locator": "User clarification: Cathulu selectors later", "date": "2026-10-20"}
+      ],
+      "decision_status": "ACCEPTED",
+      "rationale": "The owner chose Cathulu as the future selector surface. The mechanism for applying values to Codex and distinct role support must be verified before implementation.",
+      "related_question": "Q-005",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": "Verify the Codex configuration pathway and separate role-level support before Phase 3."
+    },
+    {
+      "id": "C-006",
+      "dimension": "OBSERVED",
+      "scope": "repository baseline",
+      "claim": "The local checkout and personal GitHub repository have no source files or commits as of 2026-10-20.",
+      "status": "KNOWN",
+      "sources": [
+        {"type": "CODE", "locator": "git status --short --branch and local workspace listing", "date": "2026-10-20"},
+        {"type": "RUNTIME", "locator": "GitHub connector: repository metadata, empty branches list, empty contents result", "date": "2026-10-20"}
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "C-007",
+      "dimension": "OBSERVED",
+      "scope": "Codex integration feasibility",
+      "claim": "Current official docs describe local MCP configuration, local lifecycle/tool hooks, and OpenTelemetry configuration; target Windows runtime behavior remains untested.",
+      "status": "KNOWN",
+      "sources": [
+        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/extend/mcp", "date": "2026-10-20"},
+        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/hooks", "date": "2026-10-20"},
+        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/config-file/config-reference", "date": "2026-10-20"}
+      ],
+      "decision_status": "PROVISIONAL",
+      "related_question": "Q-003",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": "Verify local MCP launch/restart and a minimal telemetry path in the implementation milestone."
+    },
+    {
+      "id": "C-008",
+      "dimension": "OBSERVED",
+      "scope": "local toolchain",
+      "claim": "The host has Rust 1.91.1, Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.",
+      "status": "KNOWN",
+      "sources": [{"type": "RUNTIME", "locator": "rustc --version; cargo --version; node --version; npm --version; Get-Command git", "date": "2026-10-20"}],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q-001",
+      "text": "Which desktop platform should Phase 1 target?",
+      "status": "RESOLVED",
+      "answer": "Windows first, cross-platform later",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "Q-002",
+      "text": "Should future model and effort selectors be hosted in Cathulu?",
+      "status": "RESOLVED",
+      "answer": "Cathulu will host the selectors in a later milestone.",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": null
+    },
+    {
+      "id": "Q-005",
+      "text": "How can Cathulu apply selected model and effort values to Codex, and can distinct values be applied per role?",
+      "status": "OPEN_NONBLOCKING",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": "Verify supported configuration and per-role behavior against the target Codex runtime before implementing the selector surface."
+    },
+    {
+      "id": "Q-003",
+      "text": "Which local Codex hook and OpenTelemetry events are available on the target Windows desktop release, and what can be safely normalized without transcripts or secrets?",
+      "status": "OPEN_NONBLOCKING",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": "Inspect and exercise the target runtime during Phase 1; semantic MCP events remain available independently."
+    },
+    {
+      "id": "Q-004",
+      "text": "What data retention/export and repository license/distribution policy should apply before public or broader use?",
+      "status": "OPEN_NONBLOCKING",
+      "blocking": false,
+      "owner": "project owner",
+      "next_action": "Decide before meaningful public release; it does not block the local first increment."
+    }
+  ],
+  "document_authority": [
+    {"concern": "Purpose, actors, scope, invariants, MVP, success criteria", "document": "docs/project-definition.md"},
+    {"concern": "Architecture, security, profile, feasibility", "document": "docs/architecture.md"},
+    {"concern": "Phase order", "document": "docs/roadmap.md"},
+    {"concern": "Accepted decisions", "document": "docs/decisions/"},
+    {"concern": "Definition gate", "document": "docs/readiness/definition-gate.md"}
+  ],
+  "profile_location": "docs/architecture.md#development-skills--tooling-profile",
+  "gate_location": "docs/readiness/definition-gate.md",
+  "interview": {
+    "pass_number": 1,
+    "questions_in_pass": 1,
+    "completed_passes": [1],
+    "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
+  },
+  "next_action": "M1 automated validation and isolated Windows startup smoke passed. Continue with M2 durable workflow and quality state; verify selector integration before the delegation milestone."
+}

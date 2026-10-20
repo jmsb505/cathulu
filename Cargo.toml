@@ -1,0 +1,21 @@
+[workspace]
+members = [".", "apps/desktop/src-tauri"]
+default-members = ["."]
+resolver = "3"
+
+[package]
+name = "cathulu-core"
+version = "0.1.0"
+edition = "2021"
+default-run = "cathulu-mcp"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rmcp = { version = "3.6.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+
+[[bin]]
+name = "cathulu-mcp"
+path = "src/bin/cathulu-mcp.rs"
