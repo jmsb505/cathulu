@@ -136,6 +136,37 @@ The dashboard polls the same local store through the read-only `dashboard_snapsh
 
 Both the desktop app and MCP server attempt to refresh registered Git snapshots at process startup. A missing repository is reported on stderr while other projects continue to reconcile and the application remains available.
 
+## 5. Memory lifecycle and local maintenance
+
+- `search_memory_candidates` returns IDs, hashes, HOT candidates, and selective WARM matches. It does not return WARM bodies; call `prepare_context_transfer` for an auditable full or delta transfer. COLD, stale, invalidated, and superseded memories are not injected.
+- `consolidate_memories` creates a reviewable canonical candidate from accepted episodic/evidence memories while retaining their memory IDs, provenance, and artifact links.
+- `run_memory_gardener` records deterministic, reviewable proposals. `review_memory_maintenance_proposal` can apply only safe memory class/temperature changes. Neither tool collects evidence.
+- `create_memory_policy`, `record_memory_policy_evaluation`, and `compare_memory_policy_experiment` record immutable policy versions and compare measured results tied to completed, quality-classified Cathulu runs.
+
+Build the local owner maintenance utility from the repository root:
+
+```powershell
+cargo build --release --bin cathulu-maintain
+```
+
+It uses the same `%LOCALAPPDATA%\Cathulu` database as the MCP server unless `CATHULU_DATA_DIR` is set. Preview evidence collection before configuring retention:
+
+```powershell
+target\release\cathulu-maintain.exe evidence-gc preview
+```
+
+Collection is disabled until an owner configures a minimum age. To configure a 30-day interval, create extraction receipts for eligible evidence as needed, review the preview, and then run the interactive confirmation:
+
+```powershell
+# Replace the example IDs with the artifact and accepted canonical/aggregate memory IDs.
+target\release\cathulu-maintain.exe evidence-gc set-retention 2592000
+target\release\cathulu-maintain.exe evidence-gc mark-extracted 17 42
+target\release\cathulu-maintain.exe evidence-gc preview
+target\release\cathulu-maintain.exe evidence-gc collect
+```
+
+The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks policy, extraction, protected state, direct memory references, active holds, QA outcome, and legacy URI-bearing events before each change. It replaces only the local URI with a tombstone and preserves the artifact row, stable ID, hashes, extraction receipt, and external file. Collection does not delete external files or promise physical SQLite disk compaction. Use `evidence-gc hold ARTIFACT_ID REASON` and `evidence-gc release-hold HOLD_ID` to maintain an auditable investigation hold. `evidence-gc disable-retention` returns collection to its disabled-by-default state.
+
 ## Data location
 
 By default the database is `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you set `CATHULU_DATA_DIR`, use the same absolute path in both the MCP server and desktop app environments. Otherwise the dashboard may open the default database while MCP writes to the override. Cathulu retains local domain state, bounded event metadata, distilled memory records, provenance links, and artifact references. Do not add secrets, raw prompts, or full transcripts. Detailed artifacts should remain local and be referenced by local paths or artifact identifiers.

@@ -309,13 +309,25 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 3);
+    assert_eq!(schema_version, 4);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");
     migrated_database
         .prepare("SELECT run_id FROM codex_turn_runs LIMIT 0")
         .expect("version-three Codex turn mapping");
+    migrated_database
+        .prepare("SELECT rowid FROM memory_fts LIMIT 0")
+        .expect("version-four FTS5 memory index");
+    migrated_database
+        .prepare("SELECT minimum_support FROM memory_maintenance_proposals LIMIT 0")
+        .expect("deterministic gardener proposals");
+    migrated_database
+        .prepare("SELECT extraction_receipt_id FROM evidence_gc_ledger LIMIT 0")
+        .expect("reference-aware evidence collection ledger");
+    migrated_database
+        .prepare("SELECT policy_id FROM memory_policy_evaluations LIMIT 0")
+        .expect("versioned memory policy evaluations");
     drop(migrated_database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
@@ -951,6 +963,226 @@ fn memory_identity_provenance_known_by_freshness_and_hot_budget_are_preserved() 
     );
 
     fs::remove_dir_all(root).expect("remove memory fixture");
+}
+
+#[test]
+fn memory_retrieval_prefers_hot_filters_history_and_marks_known_warm_candidates() {
+    let root = unique_temp_dir("memory-retrieval");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    let project_id = register_repo(&data_dir, &repo);
+
+    let hot = tool_text(&call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "memory_class": "canonical", "temperature": "hot", "kind": "contract",
+            "body": "Current state: C depends on A.ContractV3.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "m4-hot" }],
+            "importance": 1.0, "confidence": 1.0, "active": true
+        }),
+    ));
+    let hot_id = hot["id"].as_i64().expect("HOT memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": hot_id, "decision": "accepted" }),
+    );
+
+    let warm = create_memory(
+        &data_dir,
+        project_id,
+        "Migration timeout follows schema mismatch in migration tools.",
+        "lesson",
+        "warm",
+        vec![json!({ "source_type": "human_instruction", "source_id": "m4-warm" })],
+        json!({}),
+        0.8,
+        false,
+        None,
+    );
+    let warm_id = warm["id"].as_i64().expect("WARM memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": warm_id, "decision": "accepted" }),
+    );
+
+    let cold = create_memory(
+        &data_dir,
+        project_id,
+        "A cold migration timeout record mentions schema mismatch.",
+        "lesson",
+        "cold",
+        vec![json!({ "source_type": "human_instruction", "source_id": "m4-cold" })],
+        json!({}),
+        0.7,
+        false,
+        None,
+    );
+    let cold_id = cold["id"].as_i64().expect("COLD memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": cold_id, "decision": "accepted" }),
+    );
+
+    let stale = tool_text(&call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "memory_class": "episodic", "temperature": "warm", "kind": "lesson",
+            "body": "Historical migration timeout followed a schema mismatch.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "m4-stale" }],
+            "valid_until": 1, "importance": 0.5, "confidence": 0.7
+        }),
+    ));
+    let stale_id = stale["id"].as_i64().expect("stale memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": stale_id, "decision": "accepted" }),
+    );
+
+    let search = tool_text(&call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "query": "migration timeout", "receiver_scope_type": "scope",
+            "receiver_scope_id": "Scope_M4", "limit": 10
+        }),
+    ));
+    let hot_ids = search["hot"].as_array().expect("HOT candidate list");
+    let warm_ids = search["warm"].as_array().expect("WARM candidate list");
+    assert_eq!(
+        hot_ids.first().and_then(|row| row["memoryId"].as_i64()),
+        Some(hot_id)
+    );
+    assert_eq!(
+        warm_ids.first().and_then(|row| row["memoryId"].as_i64()),
+        Some(warm_id)
+    );
+    assert!(!warm_ids.iter().any(|row| row["memoryId"] == json!(cold_id)));
+    assert!(!warm_ids
+        .iter()
+        .any(|row| row["memoryId"] == json!(stale_id)));
+    assert!(warm_ids.first().and_then(|row| row.get("body")).is_none());
+
+    let transfer = transfer_memory(&data_dir, warm_id, project_id, "Scope_M4", "fts");
+    assert_eq!(transfer["action"], json!("full"));
+    let refreshed_search = tool_text(&call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "query": "migration timeout", "receiver_scope_type": "scope",
+            "receiver_scope_id": "Scope_M4", "limit": 10
+        }),
+    ));
+    assert!(refreshed_search["alreadyKnown"]
+        .as_array()
+        .expect("known memories")
+        .iter()
+        .any(|row| row["memoryId"] == json!(warm_id)));
+    assert!(!refreshed_search["warm"]
+        .as_array()
+        .expect("WARM candidates")
+        .iter()
+        .any(|row| row["memoryId"] == json!(warm_id)));
+
+    fs::remove_dir_all(root).expect("remove retrieval fixture");
+}
+
+#[test]
+fn memory_consolidation_creates_a_provenance_linked_candidate_without_removing_episodes() {
+    let root = unique_temp_dir("memory-consolidation");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    let project_id = register_repo(&data_dir, &repo);
+
+    let first = tool_text(&call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "memory_class": "episodic", "temperature": "warm", "kind": "failure_pattern",
+            "body": "Migration run 1 timed out after Contract V2 changed.",
+            "sources": [{ "source_type": "test_result", "source_id": "run-1-check" }],
+            "importance": 0.6, "confidence": 0.8
+        }),
+    ));
+    let first_id = first["id"].as_i64().expect("first episode ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": first_id, "decision": "accepted" }),
+    );
+    let second = tool_text(&call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "memory_class": "episodic", "temperature": "warm", "kind": "failure_pattern",
+            "body": "Migration run 2 timed out after Contract V2 changed.",
+            "sources": [{ "source_type": "test_result", "source_id": "run-2-check" }],
+            "importance": 0.7, "confidence": 0.85
+        }),
+    ));
+    let second_id = second["id"].as_i64().expect("second episode ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": second_id, "decision": "accepted" }),
+    );
+
+    let consolidated = tool_text(&call_tool(
+        &data_dir,
+        "consolidate_memories",
+        json!({
+            "scope_type": "project", "scope_id": project_id.to_string(),
+            "source_memory_ids": [first_id, second_id],
+            "body": "Contract V2 changes can cause the migration to time out.",
+            "kind": "failure_pattern", "importance": 0.9, "confidence": 0.9
+        }),
+    ));
+    let consolidated_id = consolidated["id"].as_i64().expect("consolidated memory ID");
+    assert_eq!(consolidated["memoryClass"], json!("canonical"));
+    assert_eq!(consolidated["reviewState"], json!("candidate"));
+    let sources = consolidated["sources"]
+        .as_array()
+        .expect("consolidated provenance");
+    assert!(sources
+        .iter()
+        .any(|source| source["sourceType"] == json!("memory")
+            && source["sourceId"] == json!(first_id.to_string())));
+    assert!(sources
+        .iter()
+        .any(|source| source["sourceType"] == json!("memory")
+            && source["sourceId"] == json!(second_id.to_string())));
+    assert!(sources
+        .iter()
+        .any(|source| source["sourceId"] == json!("run-1-check")));
+    assert!(sources
+        .iter()
+        .any(|source| source["sourceId"] == json!("run-2-check")));
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": consolidated_id, "decision": "accepted" }),
+    );
+    assert_eq!(read_memory(&data_dir, first_id)["id"], json!(first_id));
+    assert_eq!(read_memory(&data_dir, second_id)["id"], json!(second_id));
+    assert_eq!(
+        read_memory(&data_dir, consolidated_id)["reviewState"],
+        json!("accepted")
+    );
+
+    fs::remove_dir_all(root).expect("remove consolidation fixture");
 }
 
 fn start_test_run(

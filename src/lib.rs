@@ -1,5 +1,6 @@
 pub mod dashboard;
 mod events;
+pub mod gardener;
 mod hash;
 pub mod mcp;
 pub mod memory;
@@ -297,7 +298,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 3 {
+        if version > 4 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -336,6 +337,14 @@ impl Store {
         if version < 3 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_3) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 4 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_4) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }

@@ -38,7 +38,7 @@ describe("read-only project dashboard", () => {
         { id: 5, runId: 6, projectName: "Atlas", checkKey: "integration", mandatory: true, status: "failed", details: {}, updatedAt: 1_800_000_115 },
         { id: 9, runId: 8, projectName: "Atlas", checkKey: "packaging", mandatory: false, status: "inconclusive", details: {}, updatedAt: 1_800_000_116 },
       ],
-      memoryHealth: { hotBytes: 512, warmBytes: 2048, coldBytes: 4096, canonicalCount: 3, episodicCount: 4, evidenceCount: 5, candidateCount: 1, invalidatedCount: 2, protectedArtifactCount: 1 },
+      memoryHealth: { hotBytes: 512, warmBytes: 2048, coldBytes: 4096, hotScopeCount: 2, largestScopeHotBytes: 256, canonicalCount: 3, episodicCount: 4, evidenceCount: 5, candidateCount: 1, invalidatedCount: 2, protectedArtifactCount: 1, duplicateMemoryGroups: 0, staleMemoryCount: 2, reusedMemoryCount: 8, contextTransferBytes: 1000, contextReintroducedBytes: 128, contextReintroductionBasisPoints: 1280, contextAmplificationBasisPoints: 15000, retrievalUsefulnessBasisPoints: 7500, pendingMaintenanceProposals: 2, sqliteBytes: 8192, sqliteGrowthBytes: 2048, orphanedEvidenceCount: 1, duplicateArtifactGroups: 0, bytesCollected: 0 },
     } as never);
 
     render(<App />);
@@ -57,9 +57,16 @@ describe("read-only project dashboard", () => {
     expect(screen.getByRole("heading", { name: "Quality watch" })).toBeTruthy();
     expect(screen.getByText("integration")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Memory health" })).toBeTruthy();
+    expect(screen.getByText("HOT scopes")).toBeTruthy();
+    expect(screen.getByText("Largest scope HOT")).toBeTruthy();
+    expect(screen.getByText("256 B")).toBeTruthy();
     expect(screen.getByText("2.0 KiB")).toBeTruthy();
     expect(screen.getByText("Invalidated")).toBeTruthy();
     expect(screen.getByText("Protected artifacts")).toBeTruthy();
+    expect(screen.getByText(/12\.8%/)).toBeTruthy();
+    expect(screen.getByText("150.0%")).toBeTruthy();
+    expect(screen.getByText("75.0%")).toBeTruthy();
+    expect(screen.getByText("2.0 KiB")).toBeTruthy();
     expect(screen.getByText("Resolve CI gate")).toBeTruthy();
     expect(invokeMock).toHaveBeenCalledWith("dashboard_snapshot");
     expect(screen.getByRole("link", { name: "Cathulu home" })).toBeTruthy();
@@ -69,7 +76,7 @@ describe("read-only project dashboard", () => {
   it("shows the empty state when no projects are registered", async () => {
     invokeMock.mockResolvedValueOnce({
       projects: [], objectives: [], blockers: [], recentRuns: [], failedChecks: [],
-      memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0 },
+      memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
     } as never);
 
     render(<App />);

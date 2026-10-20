@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED (code `a3ca960`, documentation follow-up `2c05089`); M3 IMPLEMENTED, VALIDATED, AND PUBLISHED (`1d445f6`)
+Status: M1-M3 IMPLEMENTED, VALIDATED, AND PUBLISHED; M4 IMPLEMENTED AND VALIDATED LOCALLY on `codex/phase2-memory-lifecycle`; publication is pending.
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -256,37 +256,40 @@ Applicable specialized skills: `milestone-delivery`, `openai-docs`, `ponytail-ba
 
 Expected Git checkpoint: validated milestone commit; release-readiness remains separate.
 
-### M4 — Memory lifecycle and context-efficiency experiments (later phase)
+### M4 — Memory lifecycle and context-efficiency experiments (implemented; locally validated)
 
 Goal: make Cathulu better informed over time while keeping active context and redundant evidence bounded. This milestone builds on measured M1-M3 state; it does not block the Phase 1 memory substrate.
 
+Implementation constraints: keep the deterministic Gardener manually invoked and proposal-first; keep evidence collection out of agent-callable MCP tools and require an explicit local owner confirmation; disable collection by default until a retention interval is configured. Use SQLite FTS only if the bundled Windows SQLite build supports it. Do not add a semantic index without measured retrieval gaps or Graphify invalidation without a real graph snapshot source. Evidence collection may remove only Cathulu's local artifact reference metadata; it must never delete files referenced by artifact URIs.
+
 Subtasks:
 
-- [ ] Add selective SQL/FTS retrieval for named canonical and episodic knowledge, with explicit freshness, supersession, known-by, and HOT-budget filtering.
-- [ ] Introduce the local deterministic Memory Gardener as a manual/threshold-triggered maintenance job, not a continuously running LLM agent.
-- [ ] Propose or apply policy-bounded duplicate detection, consolidation, promotion/demotion, stale-summary detection, and compact aggregate updates with full source links.
-- [ ] Add configurable reference-aware evidence retention and garbage collection. Preserve protected evidence and any source needed by canonical memory, decisions, active QA, or investigations; collect only after useful extraction is verified.
-- [ ] Track actionable memory health and storage growth: class/temperature sizes, duplicates/stale/orphans, per-scope HOT use, reuse, retrieval usefulness, context reintroduction/amplification, and compacted/collected bytes.
-- [ ] Version memory policies and compare outcomes (verified success, missing-context failures, regressions, rework, context volume, latency, and human intervention).
-- [ ] Add a replaceable semantic-index boundary only if measured SQL/FTS retrieval gaps justify it. The index returns candidate IDs; every result is loaded and freshness-checked from SQLite. Do not index raw telemetry, full logs, transcripts, exact current state, or whole Graphify exports by default.
-- [ ] If an index is justified, index primarily WARM canonical/episodic memories and remove or deactivate entries when their memory is superseded, archived, or irrelevant; support rebuild/removal without changing SQLite authority.
-- [ ] Add Graphify/contract/dependency invalidation as those snapshot sources become available; preserve exact provenance for graph facts and context resumption deltas.
+- [x] Add selective SQL/FTS retrieval for named canonical and episodic knowledge, with explicit freshness, supersession, known-by, and HOT-budget filtering.
+- [x] Introduce the local deterministic Memory Gardener as a manual, proposal-first maintenance job, not a continuously running LLM agent.
+- [x] Detect repeated accepted episodic/evidence knowledge; provide explicit consolidation into a reviewable canonical candidate while preserving source memories, provenance, and artifact links. Propose supported promotion and safe demotion without changing stable IDs.
+- [x] Add configurable reference-aware evidence retention and collection. Preserve protected evidence and sources needed by canonical memory, decisions, active QA, or holds; require durable extraction receipts by default. Collection archives only Cathulu's URI metadata and never deletes external files.
+- [x] Track actionable memory health and storage growth, including class/temperature sizes, duplicate/stale/orphan counts, HOT scope count and largest scope use, reuse, retrieval usefulness, context reintroduction/amplification, and logical URI bytes archived.
+- [x] Version memory policies and compare outcomes including verified success, missing-context failures, regressions, rework, context volume, latency, retrieval usefulness, and human intervention.
+- [x] Evaluate whether SQL/FTS retrieval justifies a semantic index. No measured gap exists yet, so no semantic index was added; SQLite remains authoritative.
+- [ ] Add an index only if future measurements justify it. If added, index primarily WARM canonical/episodic memories, return candidate IDs, revalidate through SQLite, and support rebuild/removal without changing SQLite authority.
+- [x] Keep invalidation limited to available repository Git freshness. Defer Graphify, contract, and dependency invalidation until those snapshot sources exist.
+- [ ] Defer stale-summary detection, aggregate-memory refresh, and raw telemetry compaction until Cathulu has enough retained run data to validate the policies.
 
 Acceptance criteria:
 
-- Repeated supported observations can consolidate into a single durable lesson while retaining lightweight, queryable source references.
+- Repeated supported observations can consolidate into a provenance-linked canonical review candidate while original episodes and their source references remain queryable.
 - Current exact state and current canonical knowledge outrank historical/semantic matches; WARM results are selective and COLD evidence is never automatically injected.
 - Superseded and stale knowledge cannot override current facts. Promotion/demotion changes temperature or lifecycle state without duplicating stable identities.
-- Garbage collection is deterministic and reference-aware, protects protected evidence, and removes eligible evidence only after useful knowledge and provenance survive.
-- Semantic candidates resolve to authoritative SQLite records and can be removed/rebuilt without losing memories.
-- Memory-health metrics expose excess growth or low knowledge density without dumping the full evidence archive into active context.
+- Evidence collection is deterministic and reference-aware, protects protected/referenced evidence, and archives eligible local URI metadata only after useful knowledge and provenance survive; external files remain untouched.
+- No semantic candidates are produced unless measured SQL/FTS retrieval gaps justify an index. If that later condition is met, candidates must resolve to authoritative SQLite records and support index rebuild/removal.
+- Memory-health metrics expose excess growth or low knowledge density, including per-scope HOT use, without dumping the evidence archive into active context.
 - A matched experiment can compare versioned policies against verified work and context/resource measures.
 
 Validation:
 
-- Tests for repeated-evidence consolidation, unique-source retention, provenance validation, policy versioning, configurable retention, protected/reference-aware collection, and storage accounting.
+- Tests for repeated-evidence consolidation and duplicate detection, unique-source retention, provenance validation, policy versioning, configurable retention, protected/reference-aware collection, and storage accounting.
 - Retrieval tests for HOT preference, exact state precedence, WARM selectivity, COLD exclusion, stale/superseded suppression, and budget fit.
-- If a semantic index is implemented: candidate-ID resolution, stale/deleted candidate filtering, rebuild/remove correctness, and proof SQLite remains authoritative.
+- If a semantic index is implemented later: candidate-ID resolution, stale/deleted candidate filtering, rebuild/remove correctness, and proof SQLite remains authoritative. The condition is not met in M4.
 - Manual checks for reviewable Gardener proposals, explainable actions, and no model-controlled evidence deletion.
 
 Dependencies: M2 memory foundation; M3 run/telemetry evidence; measured retrieval and storage need before optional semantic indexing.
@@ -295,7 +298,7 @@ Expected Git checkpoint: separate validated milestone commit/branch following re
 
 ## Final integration validation
 
-After M1-M3, install/start the Windows desktop build from a clean local state, register a disposable repository, record and retrieve project/run/QA and memory provenance/transfer state through MCP, verify bounded current context and that the dashboard remains read-only, restart Cathulu, and confirm durable state and Git/freshness reconciliation. Run workspace checks and review privacy, security, and integration limits. This is Phase 1 milestone validation, not public release approval; M4 memory policy experiments remain later work.
+After M1-M4, install/start the Windows desktop build from a clean local state, register a disposable repository, record and retrieve project/run/QA and memory provenance/transfer state through MCP, verify bounded current context and that the dashboard remains read-only, restart Cathulu, and confirm durable state and Git/freshness reconciliation. Run workspace checks and review privacy, security, and integration limits. Milestone-local M4 validation is complete; this combined Phase 1 integration pass remains outstanding and is not public release approval.
 
 ## Rollback / recovery
 
@@ -319,7 +322,12 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] On 2026-10-21, M3 validation passed: `cargo fmt --all -- --check`; 11 Rust tests; 3 React tests; `npm run build`; `cargo tauri build --no-bundle -- --offline`; `git diff --check`; and an isolated five-second Windows desktop startup/database check.
 - [x] Published M3 commit `1d445f691bf23b957661d298aa60c0decbf7e20f` to `origin/main` with a normal fast-forward push and verified the remote SHA.
 - [x] GitHub reports no commit status checks for the documentation follow-up and zero Actions workflow runs for the repository; local validation is the available gate.
+- [x] On 2026-10-21, M4 validation passed: `cargo fmt --all -- --check`; all 17 Rust workspace tests (1 core, 11 MCP/domain, 4 memory lifecycle, 1 Tauri command); all 3 React tests; `npm run build`; `cargo build --offline --release --bin cathulu-maintain`; `cargo tauri build --no-bundle -- --offline`; and `git diff --check`.
+- [x] M4 manual local checks passed: the maintenance CLI Gardener and evidence-GC preview ran against a disposable SQLite directory; the Windows desktop remained running for five seconds and created a SQLite database in a unique isolated data directory.
+- [x] The M3 base commit has no GitHub status checks or associated workflow runs. The repository owner account has push/admin permission; local M4 checks are the available validation gate.
+- [ ] Publish the validated M4 checkpoint to `origin/main` with a normal fast-forward push and verify the resulting remote SHA.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
+- [ ] Combined M1-M4 end-to-end integration validation remains outstanding; it is separate from M4's acceptance checks.
 
 ## Implementation discoveries / decisions
 
@@ -334,7 +342,9 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - 2026-10-21: M2 adds the v2 SQLite foundation without a duplicate scope authority. Only repository Git freshness is currently produced and automatically invalidated; Graphify, contract, and dependency freshness remain inactive until those snapshot sources exist. The dashboard command stays read-only, and context-transfer records keep metadata and hashes rather than bodies.
 - 2026-10-21: M3 uses the existing MCP connection with an allowlisted Codex `mcp_tool` hook for `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt`. It persists event names, coarse tool categories, and hashes—not prompt/tool bodies, transcript paths, raw IDs, or the supplied working directory. Observed turns are never considered verified success; stop/interruption is inconclusive unless Cathulu QA already established a terminal result.
 - 2026-10-21: OTel is not enabled. The official catalog includes tool-result output snippets, while the first M3 metrics need only lifecycle identity and tool category. Startup Git reconciliation is best-effort per project; a missing repository does not block other refreshes or app startup.
+- 2026-10-21: M4 keeps SQLite authoritative and adds FTS5 candidate retrieval, manual Gardener proposals, explicit source-linked consolidation candidates, reference-aware URI metadata collection, immutable policy experiments, run-linked storage snapshots, and aggregate HOT scope health. No semantic index is added without measured retrieval gaps; Graphify/contract/dependency invalidation waits for usable snapshots. Raw telemetry compaction and automatic summary/aggregate maintenance remain later work until real run data can test those policies.
+- 2026-10-21: M4 collection is opt-in through an owner-configured age policy, confirms the exact previewed artifact ID set, revalidates eligibility transactionally, and only tombstones Cathulu's local URI metadata. External files and stable artifact records remain intact. Legacy URI-bearing immutable events, active QA, holds, protection, references, or missing extraction receipts prevent collection.
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. The live Codex MCP/hook trust smoke remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred to M4.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke have passed; its publication to `main` is pending. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The live Codex MCP/hook trust smoke and combined M1-M4 integration validation remain outstanding.

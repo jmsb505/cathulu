@@ -55,6 +55,8 @@ pub struct FailedCheckSummary {
 #[serde(rename_all = "camelCase")]
 pub struct MemoryHealthSummary {
     pub hot_bytes: i64,
+    pub hot_scope_count: i64,
+    pub largest_scope_hot_bytes: i64,
     pub warm_bytes: i64,
     pub cold_bytes: i64,
     pub canonical_count: i64,
@@ -63,6 +65,20 @@ pub struct MemoryHealthSummary {
     pub candidate_count: i64,
     pub invalidated_count: i64,
     pub protected_artifact_count: i64,
+    pub duplicate_memory_groups: i64,
+    pub stale_memory_count: i64,
+    pub reused_memory_count: i64,
+    pub context_transfer_bytes: i64,
+    pub context_reintroduced_bytes: i64,
+    pub context_reintroduction_basis_points: i64,
+    pub context_amplification_basis_points: i64,
+    pub retrieval_usefulness_basis_points: i64,
+    pub pending_maintenance_proposals: i64,
+    pub sqlite_bytes: i64,
+    pub sqlite_growth_bytes: i64,
+    pub orphaned_evidence_count: i64,
+    pub duplicate_artifact_groups: i64,
+    pub bytes_collected: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -187,7 +203,7 @@ impl Store {
             .map_err(sqlite_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sqlite_error)?;
-        let memory_health = connection
+        let mut memory_health = connection
             .raw()
             .query_row(
                 "SELECT
@@ -204,6 +220,8 @@ impl Store {
                 |row| {
                     Ok(MemoryHealthSummary {
                         hot_bytes: row.get(0)?,
+                        hot_scope_count: 0,
+                        largest_scope_hot_bytes: 0,
                         warm_bytes: row.get(1)?,
                         cold_bytes: row.get(2)?,
                         canonical_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
@@ -212,8 +230,36 @@ impl Store {
                         candidate_count: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
                         invalidated_count: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
                         protected_artifact_count: 0,
+                        duplicate_memory_groups: 0,
+                        stale_memory_count: 0,
+                        reused_memory_count: 0,
+                        context_transfer_bytes: 0,
+                        context_reintroduced_bytes: 0,
+                        context_reintroduction_basis_points: 0,
+                        context_amplification_basis_points: 0,
+                        retrieval_usefulness_basis_points: 0,
+                        pending_maintenance_proposals: 0,
+                        sqlite_bytes: 0,
+                        sqlite_growth_bytes: 0,
+                        orphaned_evidence_count: 0,
+                        duplicate_artifact_groups: 0,
+                        bytes_collected: 0,
                     })
                 },
+            )
+            .map_err(sqlite_error)?;
+        (
+            memory_health.hot_scope_count,
+            memory_health.largest_scope_hot_bytes,
+        ) = connection
+            .raw()
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(scope_bytes), 0) FROM (
+               SELECT scope_key, SUM(length(CAST(body AS BLOB))) AS scope_bytes
+               FROM memories WHERE temperature = 'hot' GROUP BY scope_key
+             )",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(sqlite_error)?;
         let protected_artifact_count: i64 = connection
@@ -224,8 +270,78 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sqlite_error)?;
-        let mut memory_health = memory_health;
         memory_health.protected_artifact_count = protected_artifact_count;
+        let (duplicate_memory_groups, reused_memory_count): (i64, i64) = connection.raw().query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM (SELECT scope_key, kind, content_hash FROM memories
+                WHERE review_state = 'accepted' AND superseded_by_id IS NULL AND invalidated_at IS NULL
+                GROUP BY scope_key, kind, content_hash HAVING COUNT(*) > 1)),
+               COALESCE((SELECT SUM(reuse_count) FROM memories), 0)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(sqlite_error)?;
+        memory_health.duplicate_memory_groups = duplicate_memory_groups;
+        memory_health.reused_memory_count = reused_memory_count;
+        memory_health.stale_memory_count = connection.raw().query_row(
+            "SELECT COUNT(*) FROM memories WHERE invalidated_at IS NOT NULL OR superseded_by_id IS NOT NULL
+             OR (valid_until IS NOT NULL AND valid_until <= CAST(strftime('%s','now') AS INTEGER))",
+            [], |row| row.get(0),
+        ).map_err(sqlite_error)?;
+        (memory_health.context_transfer_bytes, memory_health.context_reintroduced_bytes) = connection.raw().query_row(
+            "SELECT COALESCE(SUM(size_bytes), 0), COALESCE(SUM(CASE WHEN reintroduced = 1 THEN size_bytes ELSE 0 END), 0)
+             FROM context_transfers",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(sqlite_error)?;
+        if memory_health.context_transfer_bytes > 0 {
+            memory_health.context_reintroduction_basis_points = memory_health
+                .context_reintroduced_bytes
+                .saturating_mul(10_000)
+                / memory_health.context_transfer_bytes;
+        }
+        let unique_memory_transfer_bytes: i64 = connection
+            .raw()
+            .query_row(
+                "SELECT COALESCE(SUM(bytes), 0) FROM (
+               SELECT memory_id, content_hash, MAX(size_bytes) AS bytes FROM context_transfers
+               GROUP BY memory_id, content_hash
+             )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if unique_memory_transfer_bytes > 0 {
+            memory_health.context_amplification_basis_points =
+                memory_health.context_transfer_bytes.saturating_mul(10_000)
+                    / unique_memory_transfer_bytes;
+        }
+        let (useful_retrievals, retrieval_count): (i64, i64) = connection
+            .raw()
+            .query_row(
+                "SELECT COALESCE(SUM(useful_retrievals), 0), COALESCE(SUM(retrieval_count), 0)
+             FROM memory_policy_evaluations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(sqlite_error)?;
+        if retrieval_count > 0 {
+            memory_health.retrieval_usefulness_basis_points =
+                useful_retrievals.saturating_mul(10_000) / retrieval_count;
+        }
+        memory_health.pending_maintenance_proposals = connection
+            .raw()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_maintenance_proposals WHERE status = 'proposed'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if let Some(snapshot) = self.latest_storage_snapshot()? {
+            memory_health.sqlite_bytes = snapshot.sqlite_bytes;
+            memory_health.sqlite_growth_bytes = snapshot.growth_bytes;
+            memory_health.orphaned_evidence_count = snapshot.orphaned_evidence_count;
+            memory_health.duplicate_artifact_groups = snapshot.duplicate_artifact_groups;
+            memory_health.bytes_collected = snapshot.bytes_collected;
+        }
         Ok(DashboardSnapshot {
             projects,
             objectives,

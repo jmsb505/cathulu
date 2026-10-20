@@ -89,6 +89,8 @@ pub struct EvidenceArtifact {
     pub content_hash: Option<String>,
     pub protected: bool,
     pub created_at: i64,
+    pub archived_at: Option<i64>,
+    pub uri_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -789,6 +791,9 @@ impl Store {
             now,
         )?;
         transaction.commit().map_err(sqlite_error)?;
+        if let Err(error) = self.capture_storage_snapshot(Some(run_id)) {
+            eprintln!("Cathulu storage-health sampling failed for run {run_id}: {error}");
+        }
         self.get_run(run_id)?
             .ok_or_else(|| format!("run {run_id} disappeared from the database"))
     }
@@ -920,19 +925,21 @@ impl Store {
             validate_text("artifact content hash", hash, 128, true)?;
         }
         let now = now();
+        let uri_hash = crate::hash::content_hash(uri.trim());
         let mut connection = self.connection()?;
         let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
-        transaction
+        let inserted = transaction
             .execute(
-                "INSERT INTO evidence_artifacts (run_id, artifact_kind, uri, content_hash, protected, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO evidence_artifacts (run_id, artifact_kind, uri, content_hash, protected, created_at, uri_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(uri) DO NOTHING",
-                params![run_id, artifact_kind.trim(), uri.trim(), content_hash, protected, now],
+                params![run_id, artifact_kind.trim(), uri.trim(), content_hash, protected, now, uri_hash],
             )
             .map_err(sqlite_error)?;
         let artifact = transaction
             .query_row(
-                "SELECT id, run_id, artifact_kind, uri, content_hash, protected, created_at
+                "SELECT id, run_id, artifact_kind, uri, content_hash, protected, created_at,
+                        archived_at, uri_hash
                  FROM evidence_artifacts WHERE uri = ?1",
                 params![uri.trim()],
                 artifact_from_row,
@@ -945,20 +952,31 @@ impl Store {
                     params![artifact.id],
                 )
                 .map_err(sqlite_error)?;
+            append_event(
+                &transaction,
+                "evidence_artifact",
+                artifact.id,
+                "evidence_protected",
+                &json!({ "protected": true }),
+                now,
+            )?;
         }
-        append_event(
-            &transaction,
-            "evidence_artifact",
-            artifact.id,
-            "evidence_artifact_recorded",
-            &json!({
-                "runId": run_id,
-                "artifactKind": artifact_kind.trim(),
-                "uri": uri.trim(),
-                "protected": protected
-            }),
-            now,
-        )?;
+        if inserted > 0 {
+            append_event(
+                &transaction,
+                "evidence_artifact",
+                artifact.id,
+                "evidence_artifact_recorded",
+                &json!({
+                    "runId": run_id,
+                    "artifactKind": artifact_kind.trim(),
+                    "contentHash": content_hash,
+                    "uriHash": uri_hash,
+                    "protected": protected
+                }),
+                now,
+            )?;
+        }
         transaction.commit().map_err(sqlite_error)?;
         if protected && !artifact.protected {
             return self
@@ -973,7 +991,8 @@ impl Store {
         connection
             .raw()
             .query_row(
-                "SELECT id, run_id, artifact_kind, uri, content_hash, protected, created_at
+                "SELECT id, run_id, artifact_kind, uri, content_hash, protected, created_at,
+                        archived_at, uri_hash
                  FROM evidence_artifacts WHERE id = ?1",
                 params![id],
                 artifact_from_row,
@@ -1112,6 +1131,8 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceArtifa
         content_hash: row.get(4)?,
         protected: row.get(5)?,
         created_at: row.get(6)?,
+        archived_at: row.get(7)?,
+        uri_hash: row.get(8)?,
     })
 }
 

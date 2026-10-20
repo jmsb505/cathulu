@@ -24,9 +24,16 @@ type DashboardSnapshot = {
   }[];
   failedChecks: { id: number; runId: number; projectName: string; checkKey: string; mandatory: boolean; status: string; details: unknown; updatedAt: number }[];
   memoryHealth: {
-    hotBytes: number; warmBytes: number; coldBytes: number; canonicalCount: number;
+    hotBytes: number; hotScopeCount: number; largestScopeHotBytes: number;
+    warmBytes: number; coldBytes: number; canonicalCount: number;
     episodicCount: number; evidenceCount: number; candidateCount: number;
     invalidatedCount: number; protectedArtifactCount: number;
+    duplicateMemoryGroups: number; staleMemoryCount: number; reusedMemoryCount: number;
+    contextTransferBytes: number; contextReintroducedBytes: number; contextReintroductionBasisPoints: number;
+    contextAmplificationBasisPoints: number;
+    retrievalUsefulnessBasisPoints: number; pendingMaintenanceProposals: number;
+    sqliteBytes: number; sqliteGrowthBytes: number; orphanedEvidenceCount: number;
+    duplicateArtifactGroups: number; bytesCollected: number;
   };
 };
 
@@ -316,13 +323,23 @@ export default function App() {
                 </div>
                 <div className="memory-stats">
                   <div><span>HOT</span><strong>{formatBytes(snapshot.memoryHealth.hotBytes)}</strong></div>
+                  <div><span>HOT scopes</span><strong>{snapshot.memoryHealth.hotScopeCount}</strong></div>
+                  <div><span>Largest scope HOT</span><strong>{formatBytes(snapshot.memoryHealth.largestScopeHotBytes)}</strong></div>
                   <div><span>WARM</span><strong>{formatBytes(snapshot.memoryHealth.warmBytes)}</strong></div>
                   <div><span>COLD</span><strong>{formatBytes(snapshot.memoryHealth.coldBytes)}</strong></div>
                   <div><span>Canonical</span><strong>{snapshot.memoryHealth.canonicalCount}</strong></div>
                   <div><span>Episodic</span><strong>{snapshot.memoryHealth.episodicCount}</strong></div>
                   <div><span>Review candidates</span><strong>{snapshot.memoryHealth.candidateCount}</strong></div>
                   <div><span>Invalidated</span><strong>{snapshot.memoryHealth.invalidatedCount}</strong></div>
+                  <div><span>Stale or superseded</span><strong>{snapshot.memoryHealth.staleMemoryCount}</strong></div>
                   <div><span>Protected artifacts</span><strong>{snapshot.memoryHealth.protectedArtifactCount}</strong></div>
+                  <div><span>SQLite storage</span><strong>{formatBytes(snapshot.memoryHealth.sqliteBytes)}</strong></div>
+                  <div><span>Storage growth</span><strong>{formatSignedBytes(snapshot.memoryHealth.sqliteGrowthBytes)}</strong></div>
+                  <div><span>Orphan evidence</span><strong>{snapshot.memoryHealth.orphanedEvidenceCount}</strong></div>
+                  <div><span>Maintenance proposals</span><strong>{snapshot.memoryHealth.pendingMaintenanceProposals}</strong></div>
+                  <div><span>Context reintroduced</span><strong>{formatBytes(snapshot.memoryHealth.contextReintroducedBytes)} · {formatBasisPoints(snapshot.memoryHealth.contextReintroductionBasisPoints)}</strong></div>
+                  <div><span>Context amplification</span><strong>{formatBasisPoints(snapshot.memoryHealth.contextAmplificationBasisPoints)}</strong></div>
+                  <div><span>Retrieval usefulness</span><strong>{formatBasisPoints(snapshot.memoryHealth.retrievalUsefulnessBasisPoints)}</strong></div>
                 </div>
                 <p className="memory-footnote">HOT memory is kept bounded per scope; detailed health remains in local SQLite.</p>
               </section>
@@ -342,4 +359,12 @@ export default function App() {
 function formatBytes(bytes: number) {
   if (bytes < 1_024) return `${bytes} B`;
   return `${(bytes / 1_024).toFixed(bytes < 10_240 ? 1 : 0)} KiB`;
+}
+
+function formatSignedBytes(bytes: number) {
+  return `${bytes < 0 ? "−" : "+"}${formatBytes(Math.abs(bytes))}`;
+}
+
+function formatBasisPoints(value: number) {
+  return `${(value / 100).toFixed(1)}%`;
 }

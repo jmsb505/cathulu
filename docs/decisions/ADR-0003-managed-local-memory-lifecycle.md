@@ -36,8 +36,11 @@ The memory foundation is implemented before automatic lifecycle maintenance. A l
 - M2 adds stable identities, class and temperature, hashes, provenance, temporal validity/supersession, freshness markers, known-by tracking, transfer records, artifact references, protected evidence metadata, and bounded HOT-scope budgets alongside workflow/quality state.
 - M2 tests the memory invariants, not automatic learning: class/temperature independence, stable identity and idempotence, historical/current retrieval, selective invalidation, transfer deltas, and budget demotion without knowledge loss.
 - M3 populates the existing transfer/evidence model from supported sanitized telemetry; unavailable telemetry does not block semantic operations.
-- A later milestone adds selective FTS retrieval and deterministic gardening, consolidation, retention/GC, actionable memory-health metrics, storage-growth accounting, and versioned policy experiments.
-- A semantic index or Graphify integration is added only when evidence shows it improves retrieval. SQLite remains authoritative and local.
+- M4 adds bundled SQLite FTS5 retrieval for current HOT and selective WARM candidates, with stale/superseded/freshness filtering and known-by metadata. Full memory bodies still flow only through the auditable context-transfer operation.
+- M4 adds a deterministic, manually invoked Gardener that records explainable proposals. Reviewed changes preserve stable memory IDs; consolidation creates a canonical review candidate with source links. Pending duplicate proposals are suppressed.
+- Evidence retention remains disabled until configured. M4 requires valid extraction receipts when policy requests them, preserves protected/referenced/held/QA evidence, and uses a local exact-ID confirmation before archiving Cathulu URI metadata. The artifact row, ID, hashes, and external file remain intact. Legacy immutable events containing a raw URI block collection.
+- M4 records immutable memory-policy versions and run-linked evaluations, plus SQLite/WAL storage snapshots and compact dashboard health metrics, including HOT scope count and largest per-scope HOT size. Archived URI byte counts are logical metadata bytes, not a claim that external files or SQLite pages were physically deleted.
+- A semantic index or Graphify integration is added only when evidence shows it improves retrieval and a real snapshot source is available. SQLite remains authoritative and local.
 - The read-only dashboard may show compact actionable memory health but does not become a memory mutation surface.
 
 ## M2 implementation mapping
@@ -47,8 +50,8 @@ The memory foundation is implemented before automatic lifecycle maintenance. A l
 - The memory row stores stable ID, normalized content hash, class, temperature, review state, importance/confidence, reuse data, validity interval, supersession links, and a structured freshness basis. Class and temperature can change independently without replacing the ID.
 - Canonical memories require a source reference. Artifact references and protection metadata are local; M2 does not copy or delete artifact contents. Event/projection changes are transactional, and event, decision, and workflow-version history is immutable through the exposed API.
 - Known-by records key a receiver scope to a content hash. Context-transfer rows store size/token estimates, retrieval method, and reuse metadata, while explicit transfer calls return content only for a requested full or delta transfer.
-- M2 currently produces Git commit freshness and selectively invalidates affected project memories. Graphify, contract, and dependency freshness inputs can be represented but do not become active invalidation sources until those snapshots exist.
-- M2 validates the deterministic substrate only. Promotion, consolidation, Gardener maintenance, semantic indexing, storage-growth experiments, and reference-aware garbage collection remain deferred.
+- M2 produces Git commit freshness and selectively invalidates affected project memories. Graphify, contract, and dependency freshness inputs can be represented but do not become active invalidation sources until those snapshots exist.
+- M4 validates SQL/FTS retrieval, proposal-first maintenance, evidence-reference archival, policy comparison, and storage accounting. It does not create a vector index, delete external files, compact raw telemetry, or automatically tune policies.
 
 ## Reconsider if
 

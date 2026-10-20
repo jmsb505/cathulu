@@ -1,3 +1,4 @@
+use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::telemetry::CodexHookEvent;
 use crate::workflow::EventRecord;
@@ -202,12 +203,83 @@ struct ReadMemoriesArgs {
     #[serde(default)]
     include_cold: bool,
 }
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SearchMemoryArgs {
+    scope_type: String,
+    #[serde(default)]
+    scope_id: Option<String>,
+    query: String,
+    receiver_scope_type: String,
+    #[serde(default)]
+    receiver_scope_id: Option<String>,
+    #[serde(default = "default_memory_search_limit")]
+    limit: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ConsolidateMemoriesArgs {
+    scope_type: String,
+    #[serde(default)]
+    scope_id: Option<String>,
+    source_memory_ids: Vec<i64>,
+    body: String,
+    kind: String,
+    importance: f64,
+    confidence: f64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct RunMemoryGardenerArgs {
+    #[serde(default = "default_promotion_support")]
+    minimum_promotion_support: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ReviewMaintenanceProposalArgs {
+    proposal_id: i64,
+    decision: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CreateMemoryPolicyArgs {
+    policy_key: String,
+    version: i64,
+    retrieval_method: String,
+    hot_budget_bytes: i64,
+    warm_candidate_limit: i64,
+    minimum_promotion_support: i64,
+    #[serde(default)]
+    retention_minimum_age_seconds: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct RecordMemoryPolicyEvaluationArgs {
+    policy_id: i64,
+    experiment_key: String,
+    task_type: String,
+    run_id: i64,
+    missing_context_failures: i64,
+    regressions: i64,
+    rework_count: i64,
+    context_bytes: i64,
+    reintroduced_bytes: i64,
+    useful_retrievals: i64,
+    retrieval_count: i64,
+    #[serde(default)]
+    latency_ms: Option<i64>,
+    human_interventions: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CompareMemoryPolicyArgs {
+    experiment_key: String,
+}
 
 fn empty_object() -> Value {
     serde_json::json!({})
 }
 fn default_retrieval_method() -> String {
     "explicit".to_string()
+}
+fn default_memory_search_limit() -> i64 {
+    10
+}
+fn default_promotion_support() -> i64 {
+    2
 }
 
 #[tool_router]
@@ -488,6 +560,134 @@ impl CathuluServer {
                 a.include_history,
                 a.include_cold,
             )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Find compact HOT and selective WARM memory candidates. Results contain IDs and hashes only; use prepare_context_transfer to send an auditable body or delta."
+    )]
+    fn search_memory_candidates(
+        &self,
+        Parameters(a): Parameters<SearchMemoryArgs>,
+    ) -> CallToolResult {
+        self.store
+            .search_memory_candidates(
+                &a.scope_type,
+                a.scope_id.as_deref(),
+                &a.query,
+                &a.receiver_scope_type,
+                a.receiver_scope_id.as_deref(),
+                a.limit,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Create a reviewable canonical memory candidate from accepted episodic/evidence memories, retaining their memory IDs, provenance, and artifact references."
+    )]
+    fn consolidate_memories(
+        &self,
+        Parameters(a): Parameters<ConsolidateMemoriesArgs>,
+    ) -> CallToolResult {
+        self.store
+            .consolidate_memories(
+                &a.scope_type,
+                a.scope_id.as_deref(),
+                &a.source_memory_ids,
+                &a.body,
+                &a.kind,
+                a.importance,
+                a.confidence,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Run deterministic local memory maintenance checks and return auditable proposals. This never deletes evidence."
+    )]
+    fn run_memory_gardener(
+        &self,
+        Parameters(a): Parameters<RunMemoryGardenerArgs>,
+    ) -> CallToolResult {
+        self.store
+            .run_memory_gardener(a.minimum_promotion_support)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Review a Memory Gardener proposal. Accepted proposals can promote supported episodic memory or change temperature; evidence deletion is not available through MCP."
+    )]
+    fn review_memory_maintenance_proposal(
+        &self,
+        Parameters(a): Parameters<ReviewMaintenanceProposalArgs>,
+    ) -> CallToolResult {
+        self.store
+            .review_memory_maintenance_proposal(a.proposal_id, &a.decision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Create an immutable local memory-policy version for measured experiments. Does not change model or effort selectors."
+    )]
+    fn create_memory_policy(
+        &self,
+        Parameters(a): Parameters<CreateMemoryPolicyArgs>,
+    ) -> CallToolResult {
+        self.store
+            .create_memory_policy(&MemoryPolicyInput {
+                policy_key: a.policy_key,
+                version: a.version,
+                retrieval_method: a.retrieval_method,
+                hot_budget_bytes: a.hot_budget_bytes,
+                warm_candidate_limit: a.warm_candidate_limit,
+                minimum_promotion_support: a.minimum_promotion_support,
+                retention_minimum_age_seconds: a.retention_minimum_age_seconds,
+            })
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record memory-policy measurements against a completed, quality-classified Cathulu run."
+    )]
+    fn record_memory_policy_evaluation(
+        &self,
+        Parameters(a): Parameters<RecordMemoryPolicyEvaluationArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_memory_policy_evaluation(&MemoryPolicyEvaluationInput {
+                policy_id: a.policy_id,
+                experiment_key: a.experiment_key,
+                task_type: a.task_type,
+                run_id: a.run_id,
+                missing_context_failures: a.missing_context_failures,
+                regressions: a.regressions,
+                rework_count: a.rework_count,
+                context_bytes: a.context_bytes,
+                reintroduced_bytes: a.reintroduced_bytes,
+                useful_retrievals: a.useful_retrievals,
+                retrieval_count: a.retrieval_count,
+                latency_ms: a.latency_ms,
+                human_interventions: a.human_interventions,
+            })
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Compare verified outcomes and resource measures for the policies recorded under one experiment key."
+    )]
+    fn compare_memory_policy_experiment(
+        &self,
+        Parameters(a): Parameters<CompareMemoryPolicyArgs>,
+    ) -> CallToolResult {
+        self.store
+            .compare_memory_policy_experiment(&a.experiment_key)
             .map(success)
             .unwrap_or_else(tool_error)
     }

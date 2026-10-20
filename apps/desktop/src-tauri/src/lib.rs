@@ -43,7 +43,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{dashboard_snapshot, project_snapshot, DesktopState};
-    use cathulu_core::Store;
+    use cathulu_core::{
+        memory::{FreshnessBasis, MemoryCreateInput, MemorySource},
+        Store,
+    };
     use std::path::Path;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,6 +79,36 @@ mod tests {
         assert!(status.success());
         let store = Store::open(&data).unwrap();
         let registered = store.register_project(Path::new(&repo)).unwrap();
+        let first_body = "First scope HOT memory";
+        let second_body = "Second scope has longer HOT memory";
+        for (scope_id, body, source_id) in [
+            ("scope-1", first_body, "decision-1"),
+            ("scope-2", second_body, "decision-2"),
+        ] {
+            store
+                .create_memory(&MemoryCreateInput {
+                    scope_type: "scope".into(),
+                    scope_id: Some(scope_id.into()),
+                    memory_class: "canonical".into(),
+                    temperature: "hot".into(),
+                    kind: "fact".into(),
+                    body: body.into(),
+                    sources: vec![MemorySource {
+                        source_type: "human_instruction".into(),
+                        source_id: source_id.into(),
+                    }],
+                    artifact_ids: vec![],
+                    valid_from: None,
+                    valid_until: None,
+                    supersedes_id: None,
+                    freshness_basis: FreshnessBasis::default(),
+                    importance: 0.8,
+                    confidence: 1.0,
+                    active: true,
+                    protected: false,
+                })
+                .unwrap();
+        }
         let app = mock_builder()
             .manage(DesktopState { store })
             .invoke_handler(tauri::generate_handler![
@@ -104,7 +137,15 @@ mod tests {
             .deserialize::<cathulu_core::dashboard::DashboardSnapshot>()
             .unwrap();
         assert_eq!(displayed.projects, vec![registered]);
-        assert_eq!(displayed.memory_health.hot_bytes, 0);
+        assert_eq!(
+            displayed.memory_health.hot_bytes,
+            (first_body.len() + second_body.len()) as i64
+        );
+        assert_eq!(displayed.memory_health.hot_scope_count, 2);
+        assert_eq!(
+            displayed.memory_health.largest_scope_hot_bytes,
+            second_body.len() as i64
+        );
 
         let compatibility_response = tauri::test::get_ipc_response(
             &window,

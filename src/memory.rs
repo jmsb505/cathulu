@@ -117,6 +117,27 @@ pub struct ContextTransferRecord {
     pub transferred_at: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRetrievalCandidate {
+    pub memory_id: i64,
+    pub content_hash: String,
+    pub memory_class: String,
+    pub temperature: String,
+    pub kind: String,
+    pub relevance: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRetrievalResult {
+    pub hot: Vec<MemoryRetrievalCandidate>,
+    pub warm: Vec<MemoryRetrievalCandidate>,
+    pub already_known: Vec<MemoryRetrievalCandidate>,
+    pub hot_bytes: i64,
+    pub hot_budget_bytes: i64,
+}
+
 impl Store {
     pub fn create_memory(&self, input: &MemoryCreateInput) -> Result<MemoryRecord, String> {
         validate_memory_input(input)?;
@@ -384,6 +405,224 @@ impl Store {
                     .ok_or_else(|| format!("memory {id} disappeared during listing"))
             })
             .collect()
+    }
+
+    pub fn search_memory_candidates(
+        &self,
+        scope_type: &str,
+        scope_id: Option<&str>,
+        query: &str,
+        receiver_scope_type: &str,
+        receiver_scope_id: Option<&str>,
+        limit: i64,
+    ) -> Result<MemoryRetrievalResult, String> {
+        if !(1..=50).contains(&limit) {
+            return Err("memory search limit must be between 1 and 50".to_string());
+        }
+        if query.len() > 1_000 || query.contains('\0') {
+            return Err(
+                "memory search query must be at most 1000 bytes and contain no NUL".to_string(),
+            );
+        }
+        let fts_query = quoted_fts_query(query)?;
+        let scope_key = scope_key_from_parts(scope_type, scope_id)?;
+        let receiver_scope_key = scope_key_from_parts(receiver_scope_type, receiver_scope_id)?;
+        let now = now();
+        let connection = self.connection()?;
+        let hot_budget_bytes = connection
+            .raw()
+            .query_row(
+                "SELECT hot_budget_bytes FROM memory_scope_budgets WHERE scope_key = ?1",
+                params![scope_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .unwrap_or(DEFAULT_HOT_BUDGET_BYTES);
+
+        let mut hot_statement = connection
+            .raw()
+            .prepare(
+                "SELECT m.id, m.content_hash, m.memory_class, m.temperature, m.kind,
+                        length(CAST(m.body AS BLOB)),
+                        EXISTS(SELECT 1 FROM memory_known_by k WHERE k.memory_id = m.id
+                          AND k.receiver_scope_key = ?2 AND k.content_hash = m.content_hash)
+                 FROM memories m LEFT JOIN projects p ON p.id = m.freshness_repo_id
+                 WHERE m.scope_key = ?1 AND m.temperature = 'hot' AND m.active = 1
+                   AND m.review_state = 'accepted' AND m.superseded_by_id IS NULL
+                   AND m.invalidated_at IS NULL
+                   AND (m.valid_from IS NULL OR m.valid_from <= ?3)
+                   AND (m.valid_until IS NULL OR m.valid_until > ?3)
+                   AND (m.freshness_repo_id IS NULL OR
+                        (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                 ORDER BY m.importance DESC, COALESCE(m.last_used_at, 0) DESC, m.created_at DESC, m.id DESC",
+            )
+            .map_err(sqlite_error)?;
+        let hot_rows = hot_statement
+            .query_map(params![scope_key, receiver_scope_key, now], |row| {
+                Ok((
+                    MemoryRetrievalCandidate {
+                        memory_id: row.get(0)?,
+                        content_hash: row.get(1)?,
+                        memory_class: row.get(2)?,
+                        temperature: row.get(3)?,
+                        kind: row.get(4)?,
+                        relevance: 1.0,
+                    },
+                    row.get::<_, bool>(6)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let hot_bytes = hot_rows
+            .iter()
+            .fold(0_i64, |total, (_, _, size)| total.saturating_add(*size));
+        let mut hot = Vec::new();
+        let mut already_known = Vec::new();
+        for (candidate, known, _) in hot_rows {
+            if known {
+                already_known.push(candidate);
+            } else {
+                hot.push(candidate);
+            }
+        }
+
+        let mut warm_statement = connection
+            .raw()
+            .prepare(
+                "SELECT m.id, m.content_hash, m.memory_class, m.temperature, m.kind,
+                        bm25(memory_fts),
+                        EXISTS(SELECT 1 FROM memory_known_by k WHERE k.memory_id = m.id
+                          AND k.receiver_scope_key = ?2 AND k.content_hash = m.content_hash)
+                 FROM memory_fts JOIN memories m ON m.id = memory_fts.rowid
+                 LEFT JOIN projects p ON p.id = m.freshness_repo_id
+                 WHERE memory_fts MATCH ?1 AND m.scope_key = ?3 AND m.temperature = 'warm'
+                   AND m.memory_class IN ('canonical', 'episodic') AND m.review_state = 'accepted'
+                   AND m.superseded_by_id IS NULL AND m.invalidated_at IS NULL
+                   AND (m.valid_from IS NULL OR m.valid_from <= ?4)
+                   AND (m.valid_until IS NULL OR m.valid_until > ?4)
+                   AND (m.freshness_repo_id IS NULL OR
+                        (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                 ORDER BY bm25(memory_fts), CASE m.memory_class WHEN 'canonical' THEN 0 ELSE 1 END,
+                          m.importance DESC, COALESCE(m.last_used_at, 0) DESC, m.id DESC
+                 LIMIT ?5",
+            )
+            .map_err(sqlite_error)?;
+        let warm_rows = warm_statement
+            .query_map(
+                params![fts_query, receiver_scope_key, scope_key, now, limit],
+                |row| {
+                    Ok((
+                        MemoryRetrievalCandidate {
+                            memory_id: row.get(0)?,
+                            content_hash: row.get(1)?,
+                            memory_class: row.get(2)?,
+                            temperature: row.get(3)?,
+                            kind: row.get(4)?,
+                            relevance: -row.get::<_, f64>(5)?,
+                        },
+                        row.get::<_, bool>(6)?,
+                    ))
+                },
+            )
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let mut warm = Vec::new();
+        for (candidate, known) in warm_rows {
+            if known {
+                already_known.push(candidate);
+            } else {
+                warm.push(candidate);
+            }
+        }
+        Ok(MemoryRetrievalResult {
+            hot,
+            warm,
+            already_known,
+            hot_bytes,
+            hot_budget_bytes,
+        })
+    }
+
+    pub fn consolidate_memories(
+        &self,
+        scope_type: &str,
+        scope_id: Option<&str>,
+        source_memory_ids: &[i64],
+        body: &str,
+        kind: &str,
+        importance: f64,
+        confidence: f64,
+    ) -> Result<MemoryRecord, String> {
+        if !(2..=64).contains(&source_memory_ids.len()) {
+            return Err("memory consolidation requires 2 to 64 source memories".to_string());
+        }
+        let target_scope_key = scope_key_from_parts(scope_type, scope_id)?;
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut source_refs = std::collections::BTreeSet::new();
+        let mut artifact_ids = std::collections::BTreeSet::new();
+        let mut protected = false;
+        for id in source_memory_ids {
+            if !seen_ids.insert(*id) {
+                return Err(format!(
+                    "memory {id} appears more than once in consolidation"
+                ));
+            }
+            let memory = self
+                .get_memory(*id)?
+                .ok_or_else(|| format!("source memory {id} was not found"))?;
+            if scope_key_from_parts(&memory.scope_type, memory.scope_id.as_deref())?
+                != target_scope_key
+            {
+                return Err(
+                    "consolidated memories must have the requested logical scope".to_string(),
+                );
+            }
+            if !matches!(memory.memory_class.as_str(), "episodic" | "evidence")
+                || memory.review_state != "accepted"
+            {
+                return Err(format!(
+                    "source memory {id} must be accepted episodic or evidence memory"
+                ));
+            }
+            protected |= memory.protected;
+            source_refs.insert(("memory".to_string(), id.to_string()));
+            source_refs.extend(
+                memory
+                    .sources
+                    .into_iter()
+                    .map(|source| (source.source_type, source.source_id)),
+            );
+            artifact_ids.extend(memory.artifact_ids);
+        }
+        let input = MemoryCreateInput {
+            scope_type: scope_type.to_string(),
+            scope_id: scope_id.map(str::to_string),
+            memory_class: "canonical".to_string(),
+            temperature: "warm".to_string(),
+            kind: kind.to_string(),
+            body: body.to_string(),
+            sources: source_refs
+                .into_iter()
+                .map(|(source_type, source_id)| MemorySource {
+                    source_type,
+                    source_id,
+                })
+                .collect(),
+            artifact_ids: artifact_ids.into_iter().collect(),
+            valid_from: None,
+            valid_until: None,
+            supersedes_id: None,
+            freshness_basis: FreshnessBasis::default(),
+            importance,
+            confidence,
+            active: false,
+            protected,
+        };
+        self.create_memory(&input)
     }
 
     pub fn review_memory_candidate(&self, id: i64, decision: &str) -> Result<MemoryRecord, String> {
@@ -814,6 +1053,21 @@ impl Store {
     }
 }
 
+fn quoted_fts_query(query: &str) -> Result<String, String> {
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    if terms.is_empty() {
+        return Err("memory search query must contain at least one term".to_string());
+    }
+    if terms.len() > 16 {
+        return Err("memory search query cannot contain more than 16 terms".to_string());
+    }
+    Ok(terms
+        .into_iter()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND "))
+}
+
 fn validate_memory_input(input: &MemoryCreateInput) -> Result<(), String> {
     if !matches!(
         input.memory_class.as_str(),
@@ -952,6 +1206,7 @@ fn validate_memory_sources(
             return Err("memory source identifiers must be non-empty local references".to_string());
         }
         let table = match source.source_type.as_str() {
+            "memory" => Some("memories"),
             "event" => Some("events"),
             "project" => Some("projects"),
             "objective" => Some("objectives"),
