@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod memory;
 mod migrations;
 mod sqlite;
+pub mod telemetry;
 pub mod workflow;
 
 use rusqlite::{params, OptionalExtension};
@@ -26,6 +27,21 @@ pub struct ProjectSnapshot {
     pub changed_paths: Vec<String>,
     pub registered_at: i64,
     pub reconciled_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationFailure {
+    pub project_id: i64,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationReport {
+    pub checked: usize,
+    pub refreshed: usize,
+    pub failures: Vec<ReconciliationFailure>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +235,55 @@ impl Store {
             .ok_or_else(|| format!("project {id} disappeared during reconciliation"))
     }
 
+    pub fn reconcile_registered_projects(&self) -> Result<ReconciliationReport, String> {
+        let projects = self.list_projects()?;
+        let mut report = ReconciliationReport {
+            checked: projects.len(),
+            ..ReconciliationReport::default()
+        };
+        for project in projects {
+            match self.reconcile_project(project.id) {
+                Ok(_) => report.refreshed += 1,
+                Err(message) => report.failures.push(ReconciliationFailure {
+                    project_id: project.id,
+                    message,
+                }),
+            }
+        }
+        Ok(report)
+    }
+
+    pub(crate) fn registered_project_id_for_path(
+        &self,
+        input_path: &Path,
+    ) -> Result<Option<i64>, String> {
+        let Ok(canonical_input) = input_path.canonicalize() else {
+            return Ok(None);
+        };
+        if !canonical_input.is_dir() {
+            return Ok(None);
+        }
+        let Ok(root_output) = git(&canonical_input, &["rev-parse", "--show-toplevel"]) else {
+            return Ok(None);
+        };
+        let root_text = String::from_utf8_lossy(&root_output).trim().to_string();
+        let root = PathBuf::from(root_text)
+            .canonicalize()
+            .map_err(|_| "Git repository root could not be resolved".to_string())?;
+        let root_path = display_path(&root);
+        self.connection()?
+            .raw()
+            .query_row(
+                "SELECT id FROM projects WHERE path = ?1",
+                params![root_path],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                format!("cannot match hook directory to a registered project: {error}")
+            })
+    }
+
     fn initialize(&self) -> Result<(), String> {
         let connection = self.connection()?;
         connection.execute(
@@ -232,7 +297,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 2 {
+        if version > 3 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -263,6 +328,14 @@ impl Store {
         if version < 2 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_2) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 3 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_3) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }

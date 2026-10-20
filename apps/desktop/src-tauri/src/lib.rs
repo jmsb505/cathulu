@@ -20,6 +20,15 @@ pub fn run() {
         .setup(|app| {
             let data_dir = default_data_dir().map_err(std::io::Error::other)?;
             let store = Store::open(data_dir).map_err(std::io::Error::other)?;
+            let report = store
+                .reconcile_registered_projects()
+                .map_err(std::io::Error::other)?;
+            for failure in report.failures {
+                eprintln!(
+                    "Cathulu startup Git reconciliation skipped project {}: {}",
+                    failure.project_id, failure.message
+                );
+            }
             app.manage(DesktopState { store });
             Ok(())
         })

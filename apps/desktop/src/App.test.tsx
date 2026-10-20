@@ -32,6 +32,7 @@ describe("read-only project dashboard", () => {
         { id: 4, projectName: "Atlas", objectiveTitle: "Ship memory foundations", taskTitle: "Verify", workflowKey: "windows_release", workflowVersion: 1, status: "verified_success", summary: "All checks passed.", startedAt: 1_800_000_110, finishedAt: 1_800_000_140 },
         { id: 7, projectName: "Atlas", objectiveTitle: null, taskTitle: "Complete required review", workflowKey: "windows_release", workflowVersion: 1, status: "blocked", summary: "A required gate is missing.", startedAt: 1_800_000_109, finishedAt: 1_800_000_141 },
         { id: 8, projectName: "Atlas", objectiveTitle: null, taskTitle: "Run migration", workflowKey: "migration", workflowVersion: 1, status: "failed", summary: "A required check failed.", startedAt: 1_800_000_108, finishedAt: 1_800_000_142 },
+        { id: 9, projectName: "Atlas", objectiveTitle: null, taskTitle: null, workflowKey: null, workflowVersion: null, status: "inconclusive", summary: "Codex turn ended; Cathulu verification was not recorded.", startedAt: 1_800_000_107, finishedAt: 1_800_000_143 },
       ],
       failedChecks: [
         { id: 5, runId: 6, projectName: "Atlas", checkKey: "integration", mandatory: true, status: "failed", details: {}, updatedAt: 1_800_000_115 },
@@ -51,7 +52,8 @@ describe("read-only project dashboard", () => {
     expect(screen.getAllByText("windows release").length).toBe(2);
     expect(screen.getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("failed").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("inconclusive")).toBeTruthy();
+    expect(screen.getByText(/Codex turn ended; Cathulu verification was not recorded\./)).toBeTruthy();
+    expect(screen.getAllByText("inconclusive").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("heading", { name: "Quality watch" })).toBeTruthy();
     expect(screen.getByText("integration")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Memory health" })).toBeTruthy();

@@ -88,14 +88,16 @@ Memory-health and self-improvement evidence can include HOT/WARM/COLD size; clas
 
 ## Codex integration and feasibility evidence
 
-Current official Codex documentation describes local MCP server configuration in the desktop app and through `~/.codex/config.toml`, plus Codex hook events including session, tool, and subagent lifecycle events. Current configuration documentation also describes OpenTelemetry exporters. The Cathulu app launch and local MCP stdio contract have passed isolated checks; Codex app registration/restart and hook behavior still need a runtime check when the owner connects the server.
+Current official Codex documentation describes local MCP servers and lifecycle hooks. On 2026-10-21, the installed Windows CLI reported `codex-cli 0.146.1`; the live owner Codex hook trust/configuration path remains unmodified and has not been exercised. The hook contract was verified against current official documentation and synthetic MCP integration tests. See [ADR-0004](decisions/ADR-0004-local-codex-hook-telemetry.md) and the optional [hook setup](local-mcp.md#3-optional-local-codex-activity-hooks).
 
 - [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp) documents local STDIO servers and desktop configuration.
-- [Codex hooks](https://learn.chatgpt.com/docs/hooks) documents local lifecycle/tool hooks and their trust requirements. Hooks are telemetry/context mechanisms, not a complete security or audit boundary.
-- [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents OpenTelemetry settings and that raw prompts require explicit opt-in. Cathulu leaves raw prompt export disabled and filters/sanitizes event payloads.
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks) documents MCP tool hooks, their reviewed/trusted configuration, shared session/turn fields, and tool lifecycle payloads. Cathulu uses only `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt`; the MCP schema and optional hook snippet omit prompt, transcript, tool-input, and tool-response fields.
+- [Codex monitoring and telemetry](https://learn.chatgpt.com/docs/agent-approvals-security#monitoring-and-telemetry) documents opt-in OpenTelemetry and event categories. Cathulu does not enable OTel because tool-result events may contain output snippets; an external collector is not required for the local hook path.
 - [Local MCP in desktop plugins](https://developers.openai.com/plugins/deploy/desktop-only) is an alternative packaging path if settings-based launch is insufficient.
 
-Telemetry adapters are optional and degrade to manual semantic MCP event recording if an emitter is unavailable. The app does not depend on an OpenAI API key or cloud service for Cathulu persistence. Codex's own model/provider behavior remains outside Cathulu's service boundary.
+The `record_codex_hook_event` operation validates event names, hashes session/turn/tool-use/source-event identifiers, maps `cwd` to an already registered Git root without persisting the directory string, and reduces tool names to a coarse category. A session/turn maps to one existing run; stop/interruption is recorded as inconclusive and cannot establish verified success. Repeated events are deduplicated in the append-only event journal. Missing MCP connections, unsupported hook events, invalid directories, and unregistered projects do not create partial state. Context-transfer records continue to come from the existing explicit `prepare_context_transfer` operation; Codex hooks do not expose transfer bodies or token counts to Cathulu.
+
+Desktop and MCP process startup both attempt Git reconciliation for every registered project. A failure for one path is reported to stderr and does not block other project refreshes or startup. The app does not depend on an OpenAI API key or cloud service for Cathulu persistence. Codex's own model/provider behavior remains outside Cathulu's service boundary.
 
 ## Security and privacy baseline
 
@@ -106,7 +108,7 @@ Telemetry adapters are optional and degrade to manual semantic MCP event recordi
 - Model/tool telemetry that may contain untrusted repository text or sensitive command arguments.
 - Codex's approval, sandbox, and permission decisions, which remain owned by Codex.
 
-Repository files and telemetry inputs are untrusted. MCP input is validated and mapped to domain operations. Registered paths are canonicalized and restricted to the explicit registry. No generic SQL operation is exposed. No unnecessary TCP listener is opened; use stdio/local IPC and loopback-only telemetry when a supported exporter requires it. Never treat hooks as an authorization boundary. Preserve Codex's sandbox and approval mechanisms for consequential operations.
+Repository files and telemetry inputs are untrusted. MCP input is validated and mapped to domain operations. Registered paths are canonicalized and restricted to the explicit registry. No generic SQL operation is exposed. No unnecessary TCP listener is opened. Never treat hooks as an authorization boundary or as proof that a tool succeeded; preserve Codex's sandbox and approval mechanisms for consequential operations.
 
 Do not persist secrets, raw prompts, or full agent transcripts by default. Store provenance, event type, identifiers, bounded/sanitized metadata, content hashes, and artifact references. Treat any future prompt retention as a separate privacy decision. Keep all memory, artifacts, telemetry, indexes, and policy experiments local. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
 

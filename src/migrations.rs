@@ -216,3 +216,19 @@ BEGIN SELECT RAISE(ABORT, 'protected evidence cannot be automatically unprotecte
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (2, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_3: &str = r#"
+ALTER TABLE events ADD COLUMN external_event_id TEXT;
+CREATE UNIQUE INDEX events_external_event_id_idx ON events(external_event_id);
+
+CREATE TABLE codex_turn_runs (
+  session_hash TEXT NOT NULL,
+  turn_hash TEXT NOT NULL,
+  run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+  last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY(session_hash, turn_hash)
+);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (3, CAST(strftime('%s','now') AS INTEGER));
+"#;

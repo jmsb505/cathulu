@@ -57,7 +57,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 
 - **Project:** a registered local repository plus its current deterministic Git snapshot and durable project-level state.
 - **Scope:** a logical context and ownership boundary spanning one or more projects; it may initially key off stable global/project/objective/task identities without a separate scope registry. Persistent Sub-Overseer scopes remain optional until evidence justifies them.
-- **Run:** one Overseer-controlled workflow execution, tied permanently to a workflow ID and immutable version.
+- **Run:** one recorded Overseer execution unit. A run may be an explicit Cathulu workflow execution tied to an immutable workflow version, or a sanitized observed Codex turn with no implied workflow, transcript, or success claim.
 - **Evidence:** a traceable artifact or deterministic check result supporting a finding or outcome.
 - **Memory class:** the kind of information (`working`, `canonical`, `episodic`, `evidence`, or `aggregate`).
 - **Memory temperature:** retrieval readiness (`hot`, `warm`, or `cold`), independent of class. HOT is bounded per logical scope; WARM is selective; COLD is not automatically injected.

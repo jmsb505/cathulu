@@ -1,3 +1,4 @@
+use cathulu_core::{telemetry::CodexHookEvent, Store};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
@@ -255,7 +256,7 @@ fn register_reconcile_read_and_reopen_through_mcp() {
 }
 
 #[test]
-fn m1_project_rows_survive_additive_m2_migration_and_restart() {
+fn m1_project_rows_survive_additive_migrations_and_restart() {
     let root = unique_temp_dir("migration-preserves-project");
     let data_dir = root.join("data");
     fs::create_dir_all(&data_dir).expect("create data directory");
@@ -301,6 +302,21 @@ fn m1_project_rows_survive_additive_m2_migration_and_restart() {
     let dashboard = resource_text(response(&migrated, 3));
     assert_eq!(dashboard.pointer("/projects/0/id"), Some(&json!(1)));
     assert_eq!(dashboard.pointer("/memoryHealth/hotBytes"), Some(&json!(0)));
+    let migrated_database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open migrated database");
+    let schema_version: i64 = migrated_database
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("read migrated schema version");
+    assert_eq!(schema_version, 3);
+    migrated_database
+        .prepare("SELECT external_event_id FROM events LIMIT 0")
+        .expect("version-three external event identity column");
+    migrated_database
+        .prepare("SELECT run_id FROM codex_turn_runs LIMIT 0")
+        .expect("version-three Codex turn mapping");
+    drop(migrated_database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
 
@@ -1119,5 +1135,354 @@ fn invalid_repository_is_reported_without_creating_a_project() {
             .map(Vec::len),
         Some(0)
     );
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn codex_hook_events_are_sanitized_idempotent_and_recover_after_restart() {
+    let root = unique_temp_dir("codex-hooks");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    let project_id = register_repo(&data_dir, &repo);
+
+    let discovery = run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let telemetry_tool = response(&discovery, 2)
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name") == Some(&json!("record_codex_hook_event")))
+        })
+        .expect("safe Codex hook ingestion tool is discoverable");
+    let properties = telemetry_tool
+        .pointer("/inputSchema/properties")
+        .and_then(Value::as_object)
+        .expect("telemetry tool has a typed input schema");
+    for sensitive_field in ["prompt", "tool_input", "tool_response", "transcript_path"] {
+        assert!(
+            !properties.contains_key(sensitive_field),
+            "telemetry input must not accept {sensitive_field}"
+        );
+    }
+
+    let rejected_sensitive_input = call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "synthetic-session-rejected",
+            "turn_id": "synthetic-turn-rejected",
+            "cwd": repo.to_string_lossy().into_owned(),
+            "prompt": "PROMPT_FIELD_MUST_BE_REJECTED"
+        }),
+    );
+    assert_eq!(
+        rejected_sensitive_input.pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let started = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "synthetic-session-01",
+            "turn_id": "synthetic-turn-01",
+            "cwd": repo.to_string_lossy().into_owned()
+        }),
+    ));
+    let run_id = started
+        .get("runId")
+        .and_then(Value::as_i64)
+        .expect("hook event maps to an observed run");
+    assert_eq!(started.get("recorded"), Some(&json!(true)));
+
+    fs::write(
+        repo.join("README.md"),
+        "second commit after Cathulu restart\n",
+    )
+    .expect("update tracked fixture file");
+    run_git(&repo, &["add", "README.md"]);
+    run_git(&repo, &["commit", "--quiet", "-m", "second"]);
+    let expected_head = current_head(&repo);
+
+    let tool_event = json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "synthetic-session-01",
+        "turn_id": "synthetic-turn-01",
+        "cwd": repo.to_string_lossy().into_owned(),
+        "tool_name": "Bash",
+        "tool_use_id": "synthetic-tool-01"
+    });
+    let recorded_tool = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        tool_event.clone(),
+    ));
+    assert_eq!(recorded_tool.get("runId"), Some(&json!(run_id)));
+    assert_eq!(recorded_tool.get("recorded"), Some(&json!(true)));
+    let duplicate_tool = tool_text(&call_tool(&data_dir, "record_codex_hook_event", tool_event));
+    assert_eq!(duplicate_tool.get("duplicate"), Some(&json!(true)));
+
+    let stopped = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "Stop",
+            "session_id": "synthetic-session-01",
+            "turn_id": "synthetic-turn-01",
+            "cwd": repo.to_string_lossy().into_owned()
+        }),
+    ));
+    assert_eq!(stopped.get("runId"), Some(&json!(run_id)));
+    assert_eq!(stopped.get("recorded"), Some(&json!(true)));
+
+    let refreshed_project = run_initialized_server(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://projects/{project_id}") }),
+            ),
+            request(
+                3,
+                "resources/read",
+                json!({ "uri": format!("cathulu://events/run/{run_id}") }),
+            ),
+            request(4, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    assert_eq!(
+        resource_text(response(&refreshed_project, 2)).get("head"),
+        Some(&json!(expected_head))
+    );
+    let events = resource_text(response(&refreshed_project, 3));
+    let events_json = events.to_string();
+    assert_eq!(events.as_array().map(Vec::len), Some(5));
+    assert!(!events_json.contains("synthetic-session-01"));
+    assert!(!events_json.contains("synthetic-turn-01"));
+    assert!(events_json.contains("sessionHash"));
+    assert!(events_json.contains("toolCategory"));
+    let dashboard = resource_text(response(&refreshed_project, 4));
+    assert_eq!(
+        dashboard
+            .pointer("/recentRuns/0/status")
+            .and_then(Value::as_str),
+        Some("inconclusive")
+    );
+    assert_eq!(
+        dashboard
+            .pointer("/recentRuns/0/summary")
+            .and_then(Value::as_str),
+        Some("Codex turn ended; Cathulu verification was not recorded.")
+    );
+
+    let duplicate_stop = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "Stop",
+            "session_id": "synthetic-session-01",
+            "turn_id": "synthetic-turn-01",
+            "cwd": repo.to_string_lossy().into_owned()
+        }),
+    ));
+    assert_eq!(duplicate_stop.get("duplicate"), Some(&json!(true)));
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn unsupported_or_unregistered_hook_events_are_ignored_without_partial_runs() {
+    let root = unique_temp_dir("ignored-hooks");
+    let repo = root.join("repo");
+    let unregistered_repo = root.join("unregistered");
+    let removed_repo = root.join("removed");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    make_git_repo(&unregistered_repo);
+    make_git_repo(&removed_repo);
+    let project_id = register_repo(&data_dir, &repo);
+    register_repo(&data_dir, &removed_repo);
+
+    let unsupported = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SessionEnd",
+            "session_id": "synthetic-session-02",
+            "turn_id": "synthetic-turn-02",
+            "cwd": repo.to_string_lossy().into_owned()
+        }),
+    ));
+    assert_eq!(unsupported.get("recorded"), Some(&json!(false)));
+    assert_eq!(unsupported.get("reason"), Some(&json!("unsupported_event")));
+
+    let malformed = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "synthetic-session-malformed",
+            "turn_id": "synthetic-turn-malformed",
+            "cwd": repo.to_string_lossy().into_owned()
+        }),
+    ));
+    assert_eq!(malformed.get("recorded"), Some(&json!(false)));
+    assert_eq!(
+        malformed.get("reason"),
+        Some(&json!("missing_tool_metadata"))
+    );
+
+    let unregistered = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "synthetic-session-03",
+            "turn_id": "synthetic-turn-03",
+            "cwd": unregistered_repo.to_string_lossy().into_owned()
+        }),
+    ));
+    assert_eq!(unregistered.get("recorded"), Some(&json!(false)));
+    assert_eq!(
+        unregistered.get("reason"),
+        Some(&json!("unregistered_project"))
+    );
+
+    fs::write(repo.join("README.md"), "updated after restart\n")
+        .expect("update tracked fixture file");
+    run_git(&repo, &["add", "README.md"]);
+    run_git(
+        &repo,
+        &["commit", "--quiet", "-m", "restart reconciliation"],
+    );
+    let expected_head = current_head(&repo);
+    fs::remove_dir_all(&removed_repo).expect("remove one registered repository");
+
+    let dashboard = run_initialized_server(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://projects/{project_id}") }),
+            ),
+            request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    assert_eq!(
+        resource_text(response(&dashboard, 2)).get("head"),
+        Some(&json!(expected_head))
+    );
+    assert_eq!(
+        resource_text(response(&dashboard, 3))
+            .get("recentRuns")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn synthetic_hook_payload_discards_prompt_and_tool_bodies_before_persistence() {
+    let root = unique_temp_dir("hook-privacy");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    let store = Store::open(&data_dir).expect("open isolated SQLite store");
+    let project = store
+        .register_project(&repo)
+        .expect("register synthetic Git repository");
+    let input: CodexHookEvent = serde_json::from_value(json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "private-session-id",
+        "turn_id": "private-turn-id",
+        "cwd": repo.to_string_lossy(),
+        "tool_name": "Bash",
+        "tool_use_id": "private-tool-use-id",
+        "prompt": "PROMPT_BODY_MUST_NOT_PERSIST",
+        "transcript_path": "TRANSCRIPT_PATH_MUST_NOT_PERSIST",
+        "tool_input": { "command": "TOOL_INPUT_MUST_NOT_PERSIST" },
+        "tool_response": "TOOL_OUTPUT_MUST_NOT_PERSIST"
+    }))
+    .expect("deserialize only the allowlisted hook fields");
+
+    let result = store
+        .record_codex_hook_event(input)
+        .expect("record sanitized hook metadata");
+    let run_id = result.run_id.expect("observed run ID");
+    assert_eq!(result.recorded, true);
+    let events = store
+        .list_events("run", &run_id.to_string())
+        .expect("read sanitized run events");
+    let serialized = serde_json::to_string(&events).expect("serialize event history");
+    for secret in [
+        "PROMPT_BODY_MUST_NOT_PERSIST",
+        "TRANSCRIPT_PATH_MUST_NOT_PERSIST",
+        "TOOL_INPUT_MUST_NOT_PERSIST",
+        "TOOL_OUTPUT_MUST_NOT_PERSIST",
+        "private-session-id",
+        "private-turn-id",
+        "private-tool-use-id",
+    ] {
+        assert!(
+            !serialized.contains(secret),
+            "event history contains {secret}"
+        );
+    }
+    assert!(!serialized.contains(&repo.to_string_lossy().to_string()));
+    assert_eq!(store.get_project(project.id).unwrap().unwrap(), project);
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn codex_event_ingestion_rolls_back_run_mapping_when_event_append_fails() {
+    let root = unique_temp_dir("hook-atomicity");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    register_repo(&data_dir, &repo);
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open database for synthetic partial failure");
+    database
+        .execute_batch(
+            "CREATE TRIGGER reject_codex_event BEFORE INSERT ON events
+             WHEN NEW.event_type LIKE 'codex_%'
+             BEGIN SELECT RAISE(ABORT, 'forced hook event failure'); END;",
+        )
+        .expect("install event append failure trigger");
+    drop(database);
+
+    let arguments = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "atomic-session",
+        "turn_id": "atomic-turn",
+        "cwd": repo.to_string_lossy().into_owned()
+    });
+    let failed = call_tool(&data_dir, "record_codex_hook_event", arguments.clone());
+    assert_eq!(failed.pointer("/result/isError"), Some(&json!(true)));
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("reopen database after failed event append");
+    let run_count: i64 = database
+        .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+        .expect("query rolled-back run state");
+    let mapping_count: i64 = database
+        .query_row("SELECT COUNT(*) FROM codex_turn_runs", [], |row| row.get(0))
+        .expect("query rolled-back turn mapping");
+    assert_eq!(run_count, 0);
+    assert_eq!(mapping_count, 0);
+    database
+        .execute_batch("DROP TRIGGER reject_codex_event")
+        .expect("remove synthetic failure trigger");
+    drop(database);
+
+    let recovered = tool_text(&call_tool(&data_dir, "record_codex_hook_event", arguments));
+    assert_eq!(recovered.get("recorded"), Some(&json!(true)));
     fs::remove_dir_all(root).expect("remove temporary test data");
 }

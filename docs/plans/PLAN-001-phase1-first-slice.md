@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED to `main` in `a3ca960`
+Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED (code `a3ca960`, documentation follow-up `2c05089`); M3 IMPLEMENTED AND VALIDATED LOCALLY, pending publication
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -16,7 +16,8 @@ The project definition identifies durable project state as the smallest end-to-e
 
 - At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source was checkpointed on `codex/phase1-foundation`; the validated progress and managed-memory plan are now published on the remote default branch `main` at `5f43dcb`.
 - Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
-- M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass. The validated checkpoint was pushed to `main` as `a3ca960` and the remote SHA was verified.
+- M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass. The implementation checkpoint was pushed to `main` as `a3ca960`; its documentation follow-up is `2c05089`.
+- M3 adds the SQLite v3 idempotent event key and hash-only Codex turn/run mapping, a sanitized MCP hook tool, and best-effort Git refresh on desktop/MCP startup. Synthetic integration tests cover privacy, unsupported and unregistered signals, rollback, restart deduplication, and fresh Git state. The user-controlled Codex hook trust/configuration path remains unmodified and unverified.
 - The local dashboard preview was visually inspected. Its read-only label, page layout, local-state error, and visible keyboard focus render correctly; React tests cover empty/error states, active and blocked objectives, verified/blocked/failed runs, failed/inconclusive checks, and memory-health counters.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
@@ -226,11 +227,11 @@ Goal: ingest available Codex/tool signals locally and make Phase 1 state useful 
 
 Subtasks:
 
-- [ ] Verify available Codex hooks and local OpenTelemetry fields on the target Windows app version.
-- [ ] Normalize only supported non-sensitive signals; keep raw prompts and transcripts disabled.
-- [ ] Populate the M2 context-transfer ledger from supported local telemetry or explicit semantic operations; do not add a parallel transfer model or store raw prompt bodies.
-- [ ] Show run history, blockers, and failed QA in the dashboard.
-- [ ] Reconcile Git/freshness state after app restart and make telemetry ingestion idempotent.
+- [x] Review current official Codex hook and OpenTelemetry event documentation; the installed Windows CLI reports `codex-cli 0.146.1`. Keep the actual hook trust/configuration owner-controlled; it was not edited or live-tested.
+- [x] Normalize only the allowlisted `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt` metadata. Prompts, transcripts, tool inputs, and tool outputs are omitted; OpenTelemetry export remains disabled.
+- [x] Keep the existing M2 context-transfer ledger and explicit `prepare_context_transfer` operation. Hooks do not infer transfer bodies, token counts, or downstream use.
+- [x] Keep the existing read-only dashboard's run history, blockers, and failed QA; add coverage for observed inconclusive runs.
+- [x] Reconcile registered Git snapshots at desktop/MCP process startup and make hook ingestion idempotent across process restart.
 
 Affected areas: telemetry adapter, event model, database migration, MCP evidence resources, Activity/Evidence views.
 
@@ -245,9 +246,9 @@ Acceptance criteria:
 
 Validation:
 
-- Local hook/OTel integration tests using synthetic non-sensitive input.
-- Idempotency, malformed event, partial failure, and restart recovery tests.
-- Manual desktop review of project, objective, blocker, run, and QA states.
+- Synthetic local MCP-hook integration tests for allowlisted schemas, raw-content omission, unsupported/unregistered events, event-journal failure rollback, idempotency, and restart recovery.
+- Rust workspace and React dashboard tests; Windows release build and isolated desktop startup/database smoke.
+- Manual owner-controlled Codex MCP hook trust/configuration smoke remains optional and unverified; no user Codex configuration is changed by Cathulu.
 
 Documentation updates: update telemetry/privacy/security boundaries, roadmap, plan, and readiness evidence.
 
@@ -315,7 +316,8 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] On 2026-10-21, M2 validation passed: `cargo fmt --all -- --check`, `cargo test --offline --workspace` (7 passed), `npm test` (3 passed), `npm run build`, `cargo tauri build --no-bundle -- --offline`, and isolated Windows startup/database smoke.
 - [x] Visually inspected the local dashboard preview and confirmed visible keyboard focus; React tests cover the remaining populated and empty/error states.
 - [x] Published M2 commit `a3ca960` to `origin/main` with a normal fast-forward push; verified remote `refs/heads/main` resolves to `a3ca960b9f03efbe25e6824d4d7dd4e0ed85b599`.
-- [ ] Owner-controlled Codex MCP connection smoke; M3-M4 remain future milestones.
+- [x] On 2026-10-21, M3 validation passed: `cargo fmt --all -- --check`; 11 Rust tests; 3 React tests; `npm run build`; `cargo tauri build --no-bundle -- --offline`; `git diff --check`; and an isolated five-second Windows desktop startup/database check.
+- [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
 
 ## Implementation discoveries / decisions
 
@@ -328,7 +330,9 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - 2026-10-20: The Tauri application built and started with isolated local data. The verified acceptance seams pass; visible UI inspection and connecting the owner's Codex app remain manual follow-ups.
 - 2026-10-20: Before starting M2, the owner specified a local managed-memory lifecycle. ADR-0003 records class/temperature separation, provenance/temporal history, bounded HOT activation, known-by/delta transfers, conservative forgetting, and the staged plan. M2 implements the substrate; automated gardening, compaction, collection, semantic indexing, and adaptive policy experiments are deferred.
 - 2026-10-21: M2 adds the v2 SQLite foundation without a duplicate scope authority. Only repository Git freshness is currently produced and automatically invalidated; Graphify, contract, and dependency freshness remain inactive until those snapshot sources exist. The dashboard command stays read-only, and context-transfer records keep metadata and hashes rather than bodies.
+- 2026-10-21: M3 uses the existing MCP connection with an allowlisted Codex `mcp_tool` hook for `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt`. It persists event names, coarse tool categories, and hashes—not prompt/tool bodies, transcript paths, raw IDs, or the supplied working directory. Observed turns are never considered verified success; stop/interruption is inconclusive unless Cathulu QA already established a terminal result.
+- 2026-10-21: OTel is not enabled. The official catalog includes tool-result output snippets, while the first M3 metrics need only lifecycle identity and tool category. Startup Git reconciliation is best-effort per project; a missing repository does not block other refreshes or app startup.
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check pass; the checkpoint is published on `main` at `a3ca960`. The live Codex MCP connection remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke pass locally; main publication is the remaining action. The live Codex MCP/hook trust smoke remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.

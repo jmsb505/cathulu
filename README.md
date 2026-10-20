@@ -2,7 +2,7 @@
 
 Cathulu is a local project evidence layer around Codex. Codex remains the place where work and agent execution happen; Cathulu stores durable project state and presents it in a read-only desktop dashboard.
 
-Cathulu is progressing through Windows-first milestones. M1 registers Git repositories through local MCP and shows their snapshots. M2 adds durable objectives, decisions, workflow runs, quality evidence, and a provenance-preserving memory foundation with bounded HOT context. Cathulu does not run workers or change Codex settings automatically.
+Cathulu is progressing through Windows-first milestones. M1 registers Git repositories through local MCP and shows their snapshots. M2 adds durable objectives, decisions, workflow runs, quality evidence, and a provenance-preserving memory foundation with bounded HOT context. M3 adds optional, sanitized local Codex hook telemetry and restart reconciliation; it does not store prompts, transcripts, tool inputs, or tool outputs. Cathulu does not run workers or change Codex settings automatically.
 
 ## Components
 
@@ -55,8 +55,8 @@ The local database defaults to `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you 
 
 ## Connect Codex
 
-Follow [docs/local-mcp.md](docs/local-mcp.md) to register the built MCP executable in Codex. The instructions are manual by design; Cathulu does not edit user-level Codex configuration.
+Follow [docs/local-mcp.md](docs/local-mcp.md) to register the built MCP executable in Codex. Optional hook configuration is documented there and remains user-controlled; Cathulu does not edit Codex settings.
 
 ## Current milestone
 
-M1 and the validated M2 workflow and memory foundations are published to `main` (`a3ca960`). M2 passes seven Rust tests, three React tests, formatting, frontend and Windows release builds, isolated startup/database smoke, and a dashboard preview/focus check. Run native Rust commands from an x64 Visual Studio developer shell with the MSVC linker and Windows SDK available. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md) for current milestone status, commands, evidence, and the owner-controlled Codex connection follow-up.
+M1, M2, and validated M3 telemetry foundations are published to `main`. M3 passes 11 Rust tests, three React tests, formatting, frontend and Windows release builds, restart/privacy/rollback checks, and an isolated startup/database smoke. The live owner-controlled Codex hook trust/configuration smoke remains unverified. Run native Rust commands from an x64 Visual Studio developer shell with the MSVC linker and Windows SDK available. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md) for current milestone status, commands, evidence, and the owner-controlled Codex connection follow-up.

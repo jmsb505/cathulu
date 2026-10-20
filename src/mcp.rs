@@ -1,4 +1,5 @@
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
+use crate::telemetry::CodexHookEvent;
 use crate::workflow::EventRecord;
 use crate::{default_data_dir, Store};
 use rmcp::handler::server::wrapper::Parameters;
@@ -86,6 +87,19 @@ struct StartRunArgs {
     task_id: Option<i64>,
     #[serde(default)]
     workflow_version_id: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CodexHookEventArgs {
+    hook_event_name: String,
+    session_id: String,
+    turn_id: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default)]
+    tool_use_id: Option<String>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecordQualityCheckArgs {
@@ -329,6 +343,26 @@ impl CathuluServer {
     fn finish_run(&self, Parameters(a): Parameters<FinishRunArgs>) -> CallToolResult {
         self.store
             .finish_run(a.run_id, &a.summary)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record allowlisted Codex hook metadata for a registered repository. Never pass prompt text, transcripts, tool inputs, or tool outputs."
+    )]
+    fn record_codex_hook_event(
+        &self,
+        Parameters(a): Parameters<CodexHookEventArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_codex_hook_event(CodexHookEvent {
+                hook_event_name: a.hook_event_name,
+                session_id: a.session_id,
+                turn_id: a.turn_id,
+                cwd: a.cwd,
+                tool_name: a.tool_name,
+                tool_use_id: a.tool_use_id,
+            })
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -686,6 +720,7 @@ impl ServerHandler for CathuluServer {
 
 pub async fn run_stdio() -> Result<(), String> {
     let store = Store::open(default_data_dir()?)?;
+    report_startup_reconciliation(&store);
     let service = CathuluServer { store }
         .serve(rmcp::transport::stdio())
         .await
@@ -695,6 +730,20 @@ pub async fn run_stdio() -> Result<(), String> {
         .await
         .map_err(|error| format!("MCP stdio service stopped unexpectedly: {error}"))?;
     Ok(())
+}
+
+fn report_startup_reconciliation(store: &Store) {
+    match store.reconcile_registered_projects() {
+        Ok(report) => {
+            for failure in report.failures {
+                eprintln!(
+                    "Cathulu startup Git reconciliation skipped project {}: {}",
+                    failure.project_id, failure.message
+                );
+            }
+        }
+        Err(error) => eprintln!("Cathulu startup Git reconciliation failed: {error}"),
+    }
 }
 
 fn parse_resource_id(id: &str, uri: &str) -> Result<i64, McpError> {
