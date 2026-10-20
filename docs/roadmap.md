@@ -2,7 +2,7 @@
 
 This roadmap preserves the phase order from the project brief and distinguishes planned work from delivered evidence.
 
-**Current status (2026-10-21):** M1 is published on `main`. M2 workflow and managed-memory foundations pass Rust, React, production-build, Windows release-build, isolated startup/database, and dashboard preview/focus checks on `codex/phase1-workflow-state`; publication is the next checkpoint. The live Codex MCP connection remains an owner-controlled follow-up. The accepted managed-memory architecture and staged scope are recorded in [ADR-0003](decisions/ADR-0003-managed-local-memory-lifecycle.md) and [PLAN-001](plans/PLAN-001-phase1-first-slice.md).
+**Current status (2026-10-21):** M1 and the validated M2 workflow/managed-memory foundation are published on `main` (`a3ca960`). M2 passes Rust, React, production-build, Windows release-build, isolated startup/database, and dashboard preview/focus checks. The live Codex MCP connection remains an owner-controlled follow-up. The accepted managed-memory architecture and staged scope are recorded in [ADR-0003](decisions/ADR-0003-managed-local-memory-lifecycle.md) and [PLAN-001](plans/PLAN-001-phase1-first-slice.md).
 
 ## Phase 1 — Instrumentation and state foundation
 

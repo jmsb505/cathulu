@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED AND VALIDATED on Windows on `codex/phase1-workflow-state`, pending publication
+Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED to `main` in `a3ca960`
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -16,7 +16,7 @@ The project definition identifies durable project state as the smallest end-to-e
 
 - At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source was checkpointed on `codex/phase1-foundation`; the validated progress and managed-memory plan are now published on the remote default branch `main` at `5f43dcb`.
 - Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
-- M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass.
+- M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass. The validated checkpoint was pushed to `main` as `a3ca960` and the remote SHA was verified.
 - The local dashboard preview was visually inspected. Its read-only label, page layout, local-state error, and visible keyboard focus render correctly; React tests cover empty/error states, active and blocked objectives, verified/blocked/failed runs, failed/inconclusive checks, and memory-health counters.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
@@ -75,7 +75,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - Adopt the brief's preferred Tauri 2 / React / TypeScript / Rust / SQLite stack because no existing implementation exists.
 - SQLite is the system of record; MCP never exposes generic SQL.
 - Registered repository contents and telemetry are untrusted; no secrets, raw prompts, or full transcripts are retained by default.
-- The validated M1 and accepted memory-plan refinement were first published to `origin/main` in `5f43dcb`. The local working branch is `codex/phase1-workflow-state`; M2 is being implemented there.
+- The validated M1 and accepted memory-plan refinement were first published to `origin/main` in `5f43dcb`. The M2 implementation branch was `codex/phase1-workflow-state`; its validated checkpoint is published to `main` in `a3ca960`.
 
 ## Supporting skills / tools
 
@@ -314,6 +314,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Published `5f43dcb` to the previously unborn `main` with a normal push; verified the remote SHA and default branch. No GitHub check runs or Actions runs were configured for the commit.
 - [x] On 2026-10-21, M2 validation passed: `cargo fmt --all -- --check`, `cargo test --offline --workspace` (7 passed), `npm test` (3 passed), `npm run build`, `cargo tauri build --no-bundle -- --offline`, and isolated Windows startup/database smoke.
 - [x] Visually inspected the local dashboard preview and confirmed visible keyboard focus; React tests cover the remaining populated and empty/error states.
+- [x] Published M2 commit `a3ca960` to `origin/main` with a normal fast-forward push; verified remote `refs/heads/main` resolves to `a3ca960b9f03efbe25e6824d4d7dd4e0ed85b599`.
 - [ ] Owner-controlled Codex MCP connection smoke; M3-M4 remain future milestones.
 
 ## Implementation discoveries / decisions
@@ -330,4 +331,4 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check now pass. The live Codex MCP connection remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`; GitHub reported no hosted check runs. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check pass; the checkpoint is published on `main` at `a3ca960`. The live Codex MCP connection remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.
