@@ -3,7 +3,7 @@
   "phase": "CHECKPOINTED",
   "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
   "last_updated": "2026-10-21",
-  "repository_revision": "1d445f691bf23b957661d298aa60c0decbf7e20f",
+  "repository_revision": "185741d9cb2d3a223cf0ba5603e1961042a1d608",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -47,6 +47,13 @@
       "locator": "Visual Studio Build Tools 2022, MSVC x64/x86, Windows SDK, cargo test/build, and isolated app startup smoke",
       "date": "2026-10-20",
       "scope": "Windows prerequisites installed and M1 validation passed on codex/phase1-foundation"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "M4 local validation and GitHub publication for jmsb505/cathulu",
+      "date": "2026-10-21",
+      "revision": "185741d9cb2d3a223cf0ba5603e1961042a1d608",
+      "scope": "17 Rust tests, 3 React tests, formatting, frontend and Windows release builds, maintenance CLI and isolated desktop smoke passed; GitHub main advanced by fast-forward with no status checks or workflow runs"
     }
   ],
   "claims": [
@@ -242,5 +249,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M1-M3 are implemented, validated, and published to main; M3 is at 1d445f691bf23b957661d298aa60c0decbf7e20f. Continue with M4 memory lifecycle and context-efficiency experiments from PLAN-001. The live Codex hook smoke remains optional and owner-controlled; verify selector integration before the delegation milestone."
+  "next_action": "M1-M4 are implemented, validated, and published to main; M4 code is at 185741d9cb2d3a223cf0ba5603e1961042a1d608. Complete the combined M1-M4 integration validation before Phase 3 worker delegation. The live Codex hook smoke remains owner-controlled; verify selector integration before the delegation milestone."
 }

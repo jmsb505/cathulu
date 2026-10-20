@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1-M3 IMPLEMENTED, VALIDATED, AND PUBLISHED; M4 IMPLEMENTED AND VALIDATED LOCALLY on `codex/phase2-memory-lifecycle`; publication is pending.
+Status: M1-M4 IMPLEMENTED, VALIDATED, AND PUBLISHED; M4 checkpoint `185741d` is on `main`.
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -256,7 +256,7 @@ Applicable specialized skills: `milestone-delivery`, `openai-docs`, `ponytail-ba
 
 Expected Git checkpoint: validated milestone commit; release-readiness remains separate.
 
-### M4 — Memory lifecycle and context-efficiency experiments (implemented; locally validated)
+### M4 — Memory lifecycle and context-efficiency experiments (implemented, validated, and published)
 
 Goal: make Cathulu better informed over time while keeping active context and redundant evidence bounded. This milestone builds on measured M1-M3 state; it does not block the Phase 1 memory substrate.
 
@@ -325,7 +325,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] On 2026-10-21, M4 validation passed: `cargo fmt --all -- --check`; all 17 Rust workspace tests (1 core, 11 MCP/domain, 4 memory lifecycle, 1 Tauri command); all 3 React tests; `npm run build`; `cargo build --offline --release --bin cathulu-maintain`; `cargo tauri build --no-bundle -- --offline`; and `git diff --check`.
 - [x] M4 manual local checks passed: the maintenance CLI Gardener and evidence-GC preview ran against a disposable SQLite directory; the Windows desktop remained running for five seconds and created a SQLite database in a unique isolated data directory.
 - [x] The M3 base commit has no GitHub status checks or associated workflow runs. The repository owner account has push/admin permission; local M4 checks are the available validation gate.
-- [ ] Publish the validated M4 checkpoint to `origin/main` with a normal fast-forward push and verify the resulting remote SHA.
+- [x] Published M4 checkpoint `185741d9cb2d3a223cf0ba5603e1961042a1d608` to `origin/main` with a normal fast-forward push; verified the resulting remote SHA.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
 - [ ] Combined M1-M4 end-to-end integration validation remains outstanding; it is separate from M4's acceptance checks.
 
@@ -347,4 +347,4 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke have passed; its publication to `main` is pending. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The live Codex MCP/hook trust smoke and combined M1-M4 integration validation remain outstanding.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke passed before checkpoint `185741d` was fast-forwarded to `main`. GitHub reported no status checks or workflow runs for M4; local validation was the available gate. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The live Codex MCP/hook trust smoke and combined M1-M4 integration validation remain outstanding.
