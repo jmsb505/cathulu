@@ -3,7 +3,7 @@
   "phase": "CHECKPOINTED",
   "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
   "last_updated": "2026-10-21",
-  "repository_revision": null,
+  "repository_revision": "1d445f691bf23b957661d298aa60c0decbf7e20f",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -154,7 +154,7 @@
       "related_question": "Q-003",
       "blocking": false,
       "owner": "project owner",
-      "next_action": "Verify local MCP launch/restart and a minimal telemetry path in the implementation milestone."
+      "next_action": "M3 synthetic telemetry, local startup, and restart paths are validated and published. Optional owner-controlled live hook trust/configuration smoke remains unverified."
     },
     {
       "id": "C-008",
@@ -216,7 +216,7 @@
       "status": "OPEN_NONBLOCKING",
       "blocking": false,
       "owner": "project owner",
-      "next_action": "Inspect and exercise the target runtime during Phase 1; semantic MCP events remain available independently."
+      "next_action": "M3 synthetic telemetry is validated; perform an owner-controlled live hook trust/configuration smoke only when desired."
     },
     {
       "id": "Q-004",
@@ -242,5 +242,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M1 automated validation and isolated Windows startup smoke passed. M2 has a reviewed memory foundation and acceptance plan in ADR-0003 and PLAN-001; implement that before M3 telemetry. Verify selector integration before the delegation milestone."
+  "next_action": "M1-M3 are implemented, validated, and published to main; M3 is at 1d445f691bf23b957661d298aa60c0decbf7e20f. Continue with M4 memory lifecycle and context-efficiency experiments from PLAN-001. The live Codex hook smoke remains optional and owner-controlled; verify selector integration before the delegation milestone."
 }

@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED (code `a3ca960`, documentation follow-up `2c05089`); M3 IMPLEMENTED AND VALIDATED LOCALLY, pending publication
+Status: M1 IMPLEMENTED AND VALIDATED on Windows; M2 IMPLEMENTED, VALIDATED, AND PUBLISHED (code `a3ca960`, documentation follow-up `2c05089`); M3 IMPLEMENTED, VALIDATED, AND PUBLISHED (`1d445f6`)
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -17,7 +17,7 @@ The project definition identifies durable project state as the smallest end-to-e
 - At kickoff, the local checkout and personal GitHub repository `jmsb505/cathulu` were empty. M1 source was checkpointed on `codex/phase1-foundation`; the validated progress and managed-memory plan are now published on the remote default branch `main` at `5f43dcb`.
 - Before M2 implementation, the owner refined Cathulu's memory lifecycle requirements. Architecture and milestone scope now distinguish memory class from temperature, preserve provenance and temporal history, bound HOT context, track known-by state and transfers, and defer automated gardening/indexing/collection.
 - M2 implementation includes an additive SQLite v2 migration, workflow and memory domain operations, semantic MCP tools/resources, a shared Tauri dashboard snapshot, and expanded tests. Rust formatting, all seven workspace tests, all three React tests, the frontend build, the Windows release build, and an isolated five-second desktop startup check pass. The implementation checkpoint was pushed to `main` as `a3ca960`; its documentation follow-up is `2c05089`.
-- M3 adds the SQLite v3 idempotent event key and hash-only Codex turn/run mapping, a sanitized MCP hook tool, and best-effort Git refresh on desktop/MCP startup. Synthetic integration tests cover privacy, unsupported and unregistered signals, rollback, restart deduplication, and fresh Git state. The user-controlled Codex hook trust/configuration path remains unmodified and unverified.
+- M3 adds the SQLite v3 idempotent event key and hash-only Codex turn/run mapping, a sanitized MCP hook tool, and best-effort Git refresh on desktop/MCP startup. Synthetic integration tests cover privacy, unsupported and unregistered signals, rollback, restart deduplication, and fresh Git state. The validated checkpoint `1d445f6` is published to `main`. The user-controlled Codex hook trust/configuration path remains unmodified and unverified.
 - The local dashboard preview was visually inspected. Its read-only label, page layout, local-state error, and visible keyboard focus render correctly; React tests cover empty/error states, active and blocked objectives, verified/blocked/failed runs, failed/inconclusive checks, and memory-health counters.
 - The local toolchain reports Rust/Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.
 - Current official documentation supports Tauri 2 projects with React, React TypeScript components, the official `rmcp` Rust MCP SDK with stdio transport, and rusqlite transactions.
@@ -317,6 +317,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Visually inspected the local dashboard preview and confirmed visible keyboard focus; React tests cover the remaining populated and empty/error states.
 - [x] Published M2 commit `a3ca960` to `origin/main` with a normal fast-forward push; verified remote `refs/heads/main` resolves to `a3ca960b9f03efbe25e6824d4d7dd4e0ed85b599`.
 - [x] On 2026-10-21, M3 validation passed: `cargo fmt --all -- --check`; 11 Rust tests; 3 React tests; `npm run build`; `cargo tauri build --no-bundle -- --offline`; `git diff --check`; and an isolated five-second Windows desktop startup/database check.
+- [x] Published M3 commit `1d445f691bf23b957661d298aa60c0decbf7e20f` to `origin/main` with a normal fast-forward push and verified the remote SHA.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
 
 ## Implementation discoveries / decisions
@@ -335,4 +336,4 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke pass locally; main publication is the remaining action. The live Codex MCP/hook trust smoke remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. The live Codex MCP/hook trust smoke remains owner-controlled and unverified. Automatic gardening, consolidation, compaction, collection, semantic indexing, and adaptive policy experiments remain deferred to M4.
