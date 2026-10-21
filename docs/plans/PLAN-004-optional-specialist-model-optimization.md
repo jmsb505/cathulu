@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M18a and M18b MERGED; public MCP missing-key fallback coverage locally validated; live provider trials pending owner-set keys and MCP reload; comparative scoring not eligible; M19 not started. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
+Status: M15-M18a and M18b MERGED; public MCP missing-key fallback coverage locally validated; one owner-approved Jev workflow-routing shadow integration run recorded after MCP reload; comparative scoring remains ineligible; M19 not started. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -24,7 +24,7 @@ Shadow predictions can establish schema safety, privacy behavior, fallback, late
 - M9's Codex model/effort preferences configure Codex and remain separate from specialist-provider settings.
 - M10 and M12-M14 retain their own evidence gates. The deferred cross-repository handoff check is not a prerequisite for this phase.
 - Jev/TypeSafe and ScaleDown remain optional evaluation providers, not dependencies. Current primary TypeSafe documentation supports minimized bounded decisions; ScaleDown official Extract API documents selected-text extraction and response offsets. The reviewed ScaleDown API pages do not state a request-retention period. Local alternatives and real provider quality remain to be evaluated.
-- The current dashboard has no recorded runs or objectives and zero memory/transfer/storage measurements. There is no baseline cohort from which to set sample or quality thresholds, so M18 cannot score product impact yet.
+- The initial readiness audit below found no runs or objectives. The current dashboard now records one verified Jev workflow-routing shadow integration run, with no blockers or failed checks; memory and transfer counters remain zero. There is still no comparable baseline cohort from which to set sample or quality thresholds, so M18 cannot score product impact yet.
 
 ## Scope
 
@@ -380,9 +380,10 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] M16 local shadow-trial mechanics, strict decision schemas, SQLite routing-state minimization, and evidence-linked human review; no provider or live call.
 - [x] M17 local ContextModel shadow extraction boundary and selected-span provenance; no provider or live call.
 - [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
-- [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated, with live calls and provider quality still unmeasured.
+- [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated. No live call was part of that implementation closeout; see the first live Jev trial below.
 - [x] M18a public MCP follow-up verifies missing-key skips, immutable run/QA state, and raw-artifact preservation without provider calls.
 - [x] M18b ScaleDown response-schema correction; merged via [PR #12](https://github.com/jmsb505/cathulu/pull/12) at `6b609450d2fe71925cc5b5d7c571398d2622cd0f`.
+- [x] First owner-approved Jev workflow-routing shadow integration run after MCP reload; invocation telemetry and verified unchanged run/QA state recorded locally. This is not a model-quality or product-value result.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -435,7 +436,7 @@ M17 passed focused local Windows validation on 2026-10-21. Commands and results:
 - `cargo clippy --offline --workspace --all-targets -- -D warnings` — not clean because of 10 existing lints in `codex_config_files.rs`, `gardener.rs`, `graphify.rs`, `mcp.rs`, `memory.rs`, `workflow.rs`, and `lib.rs`. The strict run reported no remaining M17 lint after cleanup; unrelated lint debt was left unchanged.
 - No migration, dependency, provider adapter, real model call, active treatment, UI, or product-value claim was added. Model effectiveness, information-recovery rate, Codex-turn savings, and latency impact remain unknown.
 
-M18 readiness audit (2026-10-21): the read-only `cathulu://dashboard` snapshot reports `recentRuns=[]`, `objectives=[]`, `blockers=[]`, and `failedChecks=[]`; memory, transfer, and storage counters are all zero. No comparable baseline cohort exists, so sample size, expected variation, and a quality guard cannot be responsibly selected yet. The TypeSafe API and data-handling sources were reviewed; no provider adapter, credential loader, live model call, remote transmission, active treatment, or product-value measurement is implemented or claimed. M18 remains ineligible for comparative scoring until representative real Cathulu runs exist; any active pilot additionally requires explicit owner approval.
+M18 pretrial readiness audit (2026-10-21): at that snapshot, the read-only `cathulu://dashboard` reported `recentRuns=[]`, `objectives=[]`, `blockers=[]`, and `failedChecks=[]`; memory, transfer, and storage counters were all zero. No comparable baseline cohort existed, so sample size, expected variation, and a quality guard could not be responsibly selected. The TypeSafe API and data-handling sources were reviewed; at that point no provider adapter, credential loader, live model call, remote transmission, active treatment, or product-value measurement had been implemented or claimed. M18 remains ineligible for comparative scoring until representative real Cathulu runs exist; any active pilot additionally requires explicit owner approval.
 
 M18a provider-connectivity readiness passed local Windows validation on 2026-10-21. Commands and results:
 
@@ -464,3 +465,6 @@ M18b ScaleDown response-schema correction was merged on 2026-10-21 via [PR #12](
 - `git diff --check` — passed.
 - The new focused regression checks that the requested JSON schema exactly defines the parser's required `entities` shape and rejects a response missing `entities`. No provider key was read and no live request or external transmission occurred.
 - GitHub reported no workflow runs or check contexts for the PR head; the `main` branch API reports protection disabled. No configured CI gate was available. No provider key was read and no live request or external transmission occurred. Provider contract compatibility and extraction quality remain unverified.
+
+First owner-approved live Jev shadow integration run (2026-10-21): local Cathulu run 1 used immutable workflow `specialist_shadow_validation` v1 and enabled only `workflow_routing` in `shadow` mode. The refreshed MCP server read Cathulu at clean `main` HEAD `4d3e7b81541697052a484f46ab1fbc5c5bc3adb6`. Jev reported model version `jev-1.13.0`, prediction `insufficient_context`, confidence 0.35, and 326 ms latency; telemetry recorded 1,746 input bytes, 758 input tokens, and 125 output tokens. The invocation had `influencedExecution=false` and did not alter run status or QA checks; the integration run finished `verified_success`. Raw request/response payloads were not persisted. This is one integration observation, not evidence of routing accuracy, efficiency, or product value. ScaleDown was not invoked, active treatment remains disabled, and M18 comparative scoring remains pending a representative cohort.
+

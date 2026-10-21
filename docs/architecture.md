@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers; live provider trials still require owner-supplied keys, an MCP reload, and explicit per-run remote opt-in. M18 comparative scoring remains ineligible until representative Cathulu runs exist; M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
+Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
 
 ## System boundary
 
@@ -49,7 +49,7 @@ SQLite is the source of truth. Use relational columns for projects, dependencies
 
 The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs additive database migrations and rejects databases newer than the app. MCP and desktop startup both attempt to reconcile every registered repository; the explicit `reconcile_project` tool refreshes one project. Git HEAD changes deterministically invalidate only memory records whose freshness basis names that project. M11 records the current validated Graphify snapshot identity per project and invalidates only memories whose freshness basis explicitly names a replaced or unavailable graph snapshot. The memory layer stores distilled knowledge and source references; it does not duplicate current project, decision, workflow, run, or artifact state.
 
-### Optional specialist-model optimization (M15-M17 foundations and M18a adapters implemented; live evaluation pending)
+### Optional specialist-model optimization (M15-M17 foundations and M18a adapters implemented; first live shadow integration run recorded)
 
 Use the least powerful mechanism that can safely answer a step:
 
@@ -196,4 +196,5 @@ The project brief's required tests are part of the project requirements. The exa
 | Git reconciliation may encounter unavailable, unsafe, or invalid repository paths. | Git is selected as source of truth; no implementation exists. | First vertical slice | Validate canonical paths and repository identity; return explicit per-project failures without corrupting state. |
 | Codex may not support a bundled model for the owner's current account/workspace, and Cathulu cannot observe when a session loads configuration. | Official docs say availability depends on account/workspace and provide no supported Cathulu control API. | Phase 3 M9 | Show bundled-catalog provenance, require explicit preview/apply, and keep account availability and runtime effectiveness unverified. |
 | Evaluation thresholds lack a baseline. | The brief defines metrics and an experiment question but no measured baseline. | Context experiment | Collect comparable plain-Codex and Cathulu-assisted runs before setting numeric thresholds. |
+
 
