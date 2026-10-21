@@ -17,8 +17,8 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 - M1-M8 are validated and published to `main`; M8 implementation is `aecac57777fdf31c021553bce8a30164a9444e07` and its documentation closeout is on `main`.
 - M9 is specified in [PLAN-002](PLAN-002-phase3-codex-delegation.md) and awaits the owner's selector target-layer choice.
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
-- The default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` database was absent on 2026-10-21. No repository `graphify-out/graph.json` snapshot exists, and the Graphify CLI is not installed.
-- No real Cathulu run corpus is available to support M10, M12, M13, or M14 entry decisions.
+- The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No repository `graphify-out/graph.json` snapshot exists, and the Graphify CLI is not installed.
+- No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
 
 ## Desired state
 
@@ -290,13 +290,13 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 ## Progress
 
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
-- [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no default Cathulu database and no Graphify snapshot were present on 2026-10-21; Graphify CLI is not installed.
+- [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, no Graphify snapshot, and no Graphify CLI were found on 2026-10-21.
 - [ ] Validate M9 and record the owner-approved selector target before beginning Phase 4.
 - [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
 
 ## Implementation discoveries / decisions
 
-- 2026-10-21: M10's gate is unmet: no local Cathulu DB is present in the default data location, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction.
+- 2026-10-21: M10's gate is unmet in the current local Codex profile: no Cathulu MCP entry or database was found, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction.
 - 2026-10-21: M11's gate is unmet: there is no `graphify-out/graph.json` in this checkout and no installed Graphify CLI. No extraction was run because that tool may involve model-backed processing and no local Graphify/privacy contract is approved.
 - 2026-10-21: M12-M14 cannot be evaluated from this checkout without real completed and comparable run evidence. Synthetic fixtures will validate mechanics only and will not satisfy these gates.
 - 2026-10-21: Context7 resolution is currently unavailable because its monthly quota is exhausted; current official OpenAI docs were fetched for M9. Resolve the app-specific account catalog through a supported local Codex source and do not infer account entitlement from public docs.
