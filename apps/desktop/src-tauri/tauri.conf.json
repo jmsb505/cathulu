@@ -12,11 +12,12 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Cathulu",
-        "width": 1180,
-        "height": 840,
-        "minWidth": 680,
-        "minHeight": 600,
+        "width": 500,
+        "height": 580,
+        "minWidth": 420,
+        "minHeight": 460,
         "center": true,
         "resizable": true
       }

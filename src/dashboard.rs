@@ -18,6 +18,7 @@ pub struct ObjectiveSummary {
 pub struct BlockerSummary {
     pub id: i64,
     pub objective_id: i64,
+    pub project_id: i64,
     pub project_name: String,
     pub title: String,
     pub updated_at: i64,
@@ -27,6 +28,7 @@ pub struct BlockerSummary {
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     pub id: i64,
+    pub project_id: i64,
     pub project_name: String,
     pub objective_title: Option<String>,
     pub task_title: Option<String>,
@@ -36,6 +38,21 @@ pub struct RunSummary {
     pub summary: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivitySummary {
+    /// First stored hook event ID; stable for this observed agent within the run.
+    pub id: i64,
+    pub run_id: i64,
+    pub agent_type: String,
+    pub model: Option<String>,
+    pub started_at: Option<i64>,
+    pub stopped_at: Option<i64>,
+    pub last_event_kind: String,
+    pub last_event_at: i64,
+    pub event_count: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -88,6 +105,7 @@ pub struct DashboardSnapshot {
     pub objectives: Vec<ObjectiveSummary>,
     pub blockers: Vec<BlockerSummary>,
     pub recent_runs: Vec<RunSummary>,
+    pub agent_activity: Vec<AgentActivitySummary>,
     pub failed_checks: Vec<FailedCheckSummary>,
     pub delegations: Vec<DashboardDelegationSummary>,
     pub memory_health: MemoryHealthSummary,
@@ -124,7 +142,7 @@ impl Store {
         let blockers = connection
             .raw()
             .prepare(
-                "SELECT t.id, t.objective_id, p.name, t.title, t.updated_at
+                "SELECT t.id, t.objective_id, p.id, p.name, t.title, t.updated_at
                  FROM tasks t JOIN objectives o ON o.id = t.objective_id
                  JOIN projects p ON p.id = o.project_id
                  WHERE t.status = 'blocked'
@@ -135,9 +153,10 @@ impl Store {
                 Ok(BlockerSummary {
                     id: row.get(0)?,
                     objective_id: row.get(1)?,
-                    project_name: row.get(2)?,
-                    title: row.get(3)?,
-                    updated_at: row.get(4)?,
+                    project_id: row.get(2)?,
+                    project_name: row.get(3)?,
+                    title: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             })
             .map_err(sqlite_error)?
@@ -146,7 +165,7 @@ impl Store {
         let recent_runs = connection
             .raw()
             .prepare(
-                "SELECT r.id, p.name, o.title, t.title, w.workflow_key, v.version,
+                "SELECT r.id, r.project_id, p.name, o.title, t.title, w.workflow_key, v.version,
                         r.status, r.summary, r.started_at, r.finished_at
                  FROM runs r JOIN projects p ON p.id = r.project_id
                  LEFT JOIN objectives o ON o.id = r.objective_id
@@ -159,15 +178,61 @@ impl Store {
             .query_map([], |row| {
                 Ok(RunSummary {
                     id: row.get(0)?,
-                    project_name: row.get(1)?,
-                    objective_title: row.get(2)?,
-                    task_title: row.get(3)?,
-                    workflow_key: row.get(4)?,
-                    workflow_version: row.get(5)?,
-                    status: row.get(6)?,
-                    summary: row.get(7)?,
-                    started_at: row.get(8)?,
-                    finished_at: row.get(9)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    objective_title: row.get(3)?,
+                    task_title: row.get(4)?,
+                    workflow_key: row.get(5)?,
+                    workflow_version: row.get(6)?,
+                    status: row.get(7)?,
+                    summary: row.get(8)?,
+                    started_at: row.get(9)?,
+                    finished_at: row.get(10)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let agent_activity = connection
+            .raw()
+            .prepare(
+                "SELECT MIN(h.event_id), h.run_id, MAX(h.agent_type), MAX(h.model_slug),
+                        MIN(CASE WHEN h.event_kind = 'started' THEN h.created_at END),
+                        MAX(CASE WHEN h.event_kind = 'stopped' THEN h.created_at END),
+                        (SELECT latest.event_kind FROM codex_subagent_hook_events latest
+                         WHERE latest.run_id = h.run_id AND latest.session_hash = h.session_hash
+                           AND latest.turn_hash = h.turn_hash AND latest.agent_id_hash = h.agent_id_hash
+                         ORDER BY latest.created_at DESC, latest.event_id DESC LIMIT 1),
+                        MAX(h.created_at), COUNT(*)
+                 FROM codex_subagent_hook_events h
+                 WHERE h.run_id IN (
+                     SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10
+                 )
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM delegation_worker_bindings b
+                     JOIN delegations d ON d.id = b.delegation_id
+                     WHERE d.run_id = h.run_id
+                       AND b.session_hash = h.session_hash
+                       AND b.turn_hash = h.turn_hash
+                       AND b.agent_id_hash = h.agent_id_hash
+                   )
+                 GROUP BY h.run_id, h.session_hash, h.turn_hash, h.agent_id_hash
+                 ORDER BY MAX(h.created_at) DESC, MIN(h.event_id) DESC
+                 LIMIT 40",
+            )
+            .map_err(sqlite_error)?
+            .query_map([], |row| {
+                Ok(AgentActivitySummary {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    agent_type: row.get(2)?,
+                    model: row.get(3)?,
+                    started_at: row.get(4)?,
+                    stopped_at: row.get(5)?,
+                    last_event_kind: row.get(6)?,
+                    last_event_at: row.get(7)?,
+                    event_count: row.get(8)?,
                 })
             })
             .map_err(sqlite_error)?
@@ -349,6 +414,7 @@ impl Store {
             objectives,
             blockers,
             recent_runs,
+            agent_activity,
             failed_checks,
             delegations,
             memory_health,
