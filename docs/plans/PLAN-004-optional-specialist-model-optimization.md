@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M18a MERGED; PUBLIC MCP MISSING-KEY FALLBACK COVERAGE LOCALLY VALIDATED; LIVE PROVIDER TRIALS PENDING OWNER-SET KEYS AND PER-RUN CONSENT; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
+Status: M15-M18a MERGED; ScaleDown response-schema correction validated locally, PR pending; public MCP missing-key fallback coverage locally validated; live provider trials pending owner-set keys and MCP reload; comparative scoring not eligible; M19 not started. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -279,6 +279,8 @@ Validation includes seven integration tests and a locally generated failing Rust
 **Public MCP contract follow-up (2026-10-21):** a real MCP subprocess test supplies an immutable run treatment for Jev workflow routing and ScaleDown extraction, removes both provider keys from the child process, and points `CATHULU_ENV_FILE` at a nonexistent file. Both public shadow tools return `skipped` and append attributed invocation events with `fallbackUsed=true` and `influencedExecution=false`. The run and pending QA check are byte-for-byte equivalent before and after the calls; the raw local test artifact remains unchanged. This closes the public tool/fallback test gap without making a live provider call. It validates missing-key behavior only, not provider response quality or product value.
 
 **Validation evidence:** `cargo test --offline --test mcp_vertical_slice public_mcp_specialist_shadow_trials_skip_without_keys_and_preserve_run_state -- --exact --nocapture` — 1 passed, 0 failed. Full-workspace results are recorded in the milestone closeout below.
+
+**ScaleDown response-schema correction (2026-10-21):** review of the merged adapter found its request schema described four top-level strings while its parser required an `entities` array of typed exact spans. The parser also defaulted a missing array to empty, making a malformed response indistinguishable from a valid no-match result. The request now asks for the exact array/field shape consumed by the parser, constrains entity kinds and offsets, and disallows unknown fields; a missing `entities` field now fails closed. A regression test checks the request schema against the deserialization contract. This corrects local protocol consistency; it does not establish live-provider compatibility or extraction quality.
 ### M18 — Controlled ablation and evidence review
 
 **Goal:** determine actual efficiency and quality impact under comparable conditions.
@@ -380,6 +382,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
 - [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated, with live calls and provider quality still unmeasured.
 - [x] M18a public MCP follow-up verifies missing-key skips, immutable run/QA state, and raw-artifact preservation without provider calls.
+- [ ] M18b ScaleDown response-schema correction; local validation passed, PR and CI pending.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -452,3 +455,12 @@ M18a public MCP fallback follow-up passed local Windows validation on 2026-10-21
 - `git diff --check` — passed.
 - The subprocess test explicitly removes both provider keys and sets `CATHULU_ENV_FILE` to a nonexistent path. No API key was read, and the test could not make a live provider call. Mocks and missing-key behavior validate contracts and fallback only; no quality or product-value result is claimed.
 - The currently connected Cathulu MCP tool schema in this Codex session still exposes the older `start_run` shape and does not list the M18a shadow tools. Before owner-initiated manual trials, rebuild the configured MCP executable using [the local MCP setup guide](../local-mcp.md) and reload/restart the MCP server. No user Codex MCP configuration was changed during this milestone.
+
+M18b ScaleDown response-schema correction passed local Windows validation on 2026-10-21:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --workspace` — passed (66 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed).
+- `cargo check --locked --offline --workspace --all-targets` — passed.
+- `git diff --check` — passed.
+- The new focused regression checks that the requested JSON schema exactly defines the parser's required `entities` shape and rejects a response missing `entities`. No provider key was read and no live request or external transmission occurred.
+- Local validation confirms request/parser consistency only. Provider contract compatibility and extraction quality remain unverified; PR and required CI checks are pending.
