@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M8 are validated and published on Windows; M8 checkpoint `aecac57777fdf31c021553bce8a30164a9444e07` is on `main`.
+Status: product boundaries are NORMATIVE. M1-M9 and M11 are validated and published on Windows. M10 and M12-M14 remain evidence-gated; M15-M19 are proposed in [PLAN-004](plans/PLAN-004-optional-specialist-model-optimization.md). No specialist provider or model call is implemented.
 
 ## System boundary
 
@@ -21,6 +21,8 @@ Tauri desktop app / React UI
 ```
 
 Codex owns model/tool execution, shell, Git edits, worktrees, approvals, and native subagents. Cathulu owns portfolio persistence and evidence. The M1 dashboard reads a materialized state boundary and cannot mutate project state. A future Cathulu selector surface is separate from this dashboard and is defined in ADR-0002. The local MCP server exposes domain resources and semantic operations; it never exposes SQL or table CRUD.
+
+The optional specialist-model layer in [ADR-0007](decisions/ADR-0007-optional-specialist-model-optimization.md) is a proposed optimization boundary inside the local Cathulu control plane. Deterministic Cathulu code handles exact facts and rules. A DecisionModel may make bounded, typed choices; a ContextModel may extract or reduce selected existing information. Both default to disabled, and the same baseline workflow remains available without either. Codex remains the primary reasoning, coding, planning, debugging, and user-interaction system. These specialist interfaces do not run agents, replace Codex model/effort selectors from M9, or change deterministic QA authority.
 
 ## Phase 1 starting stack
 
@@ -46,6 +48,23 @@ M1-M5 implementation and Windows release-build validation is recorded in [PLAN-0
 SQLite is the source of truth. Use relational columns for projects, dependencies, objectives, tasks, decisions, workflow identities/versions, runs, quality checks, delegation identity/lifecycle, worker reports and review history, memory lifecycle metadata, and state needed for filtering. Use bounded JSON for typed delegation packets, worker reports, and heterogeneous event payloads. Each important transition appends its domain event and updates the corresponding current-state projection in one transaction. Decisions, workflow versions, delegation identity/packet content, report bodies, and delegation reference links are immutable; report reviews are append-only. Only a delegation's validated lifecycle status may change. Artifacts are stored as local references and hashes where possible, not copied into packets.
 
 The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs additive database migrations and rejects databases newer than the app. MCP and desktop startup both attempt to reconcile every registered repository; the explicit `reconcile_project` tool refreshes one project. Git HEAD changes deterministically invalidate only memory records whose freshness basis names that project. M11 records the current validated Graphify snapshot identity per project and invalidates only memories whose freshness basis explicitly names a replaced or unavailable graph snapshot. The memory layer stores distilled knowledge and source references; it does not duplicate current project, decision, workflow, run, or artifact state.
+
+### Optional specialist-model optimization (proposed; not implemented)
+
+Use the least powerful mechanism that can safely answer a step:
+
+1. Deterministic Cathulu code for exact facts, checks, rules, freshness, and state.
+2. A DecisionModel for a bounded judgment over a versioned set of outputs.
+3. A ContextModel for classifying, extracting, compressing, or summarizing selected existing information.
+4. Codex for open reasoning, implementation, planning, debugging, synthesis, and ambiguous investigation.
+
+The provider-neutral contracts are intentionally small. DecisionModel inputs are compact structured decision state built from authoritative Cathulu records, not whole repositories or transcripts. Decision responses are schema-validated, include explicit escape outcomes such as unknown, insufficient_context, needs_codex, needs_more_evidence, and not_applicable where appropriate, and never carry executable actions. Confidence or probabilities describe the model response; they do not establish truth. ContextModel outputs are candidate projections with artifact ID/hash and source-span references, and retain the original raw artifact for audit and recovery. A model-generated summary never replaces SQLite state, Git, Graphify, tests, or raw evidence.
+
+Each capability has an independent enabled flag and shadow/active mode; the effective state is disabled when the flag is false. All flags default to false, with optional per-workflow overrides recorded in the immutable workflow/run treatment. Shadow predictions are recorded but cannot affect routing, memory, context delivery, QA, or deletion. Active treatment is unavailable until the shadow stage passes its declared schema, privacy, fallback, and quality checks, a controlled comparison is pre-registered, and the owner explicitly approves the reversible pilot. A provider error, timeout, invalid response, or unavailable model skips the optimization and continues the current deterministic/Codex workflow.
+
+Remote providers are an explicit egress exception to the local-first architecture. They require owner configuration and visible run attribution. Send only the minimum sanitized decision fields or selected source spans needed for a capability; do not send full source trees, secrets, raw Cathulu memory, complete transcripts, or entire artifact stores by default. If the selected content cannot be safely reduced or sanitized, skip the remote call. Compare a suitable deterministic or local alternative where practical. Jev, ScaleDown, and GLiNER-family options are candidates only; no current API, privacy term, availability, or capability is assumed until reviewed against current primary documentation.
+
+Specialists may help rank memory candidates only after deterministic SQL/FTS, Graphify, or exact retrieval, deduplication, known-by filtering, freshness validation, and supersession checks have narrowed the set. They must not scan the whole archive. Results resolve to authoritative SQLite records and still pass scope and HOT-budget rules. Specialists cannot own memory, silently promote policy, delete evidence, declare security or correctness, or mark a run successful. Deterministic quality gates remain final. Provider integrations should use a small static capability registry and typed adapters, not a general plugin runtime. The M9 Codex model/effort settings continue to control Codex configuration only; specialist provider configuration is separate and does not change the active Codex model or effort.
 
 ### Codex-native delegation records
 
@@ -116,6 +135,8 @@ The `record_codex_hook_event` operation validates event names, hashes session/tu
 
 Desktop and MCP process startup both attempt Git reconciliation for every registered project. A failure for one path is reported to stderr and does not block other project refreshes or startup. The app does not depend on an OpenAI API key or cloud service for Cathulu persistence. Codex's own model/provider behavior remains outside Cathulu's service boundary.
 
+Optional specialist calls, if implemented, are separate from persistence and Codex's own model/provider behavior. The baseline runs with every specialist disabled. Provider use is independently configurable per capability and workflow, and a run records the exact treatment configuration locally. Remote egress requires explicit configuration and sends only a minimized, sanitized subset. The M9 model/effort selectors are not specialist-provider selectors.
+
 ## Security and privacy baseline
 
 ### Protected assets and trust boundaries
@@ -127,7 +148,7 @@ Desktop and MCP process startup both attempt Git reconciliation for every regist
 
 Repository files and telemetry inputs are untrusted. MCP input is validated and mapped to domain operations. Registered paths are canonicalized and restricted to the explicit registry. No generic SQL operation is exposed. No unnecessary TCP listener is opened. Never treat hooks as an authorization boundary or as proof that a tool succeeded; preserve Codex's sandbox and approval mechanisms for consequential operations.
 
-Do not persist secrets, raw prompts, or full agent transcripts by default. Store structured task fields, provenance links, event type, hashed identifiers, bounded metadata, content hashes, and artifact references. Treat any future prompt or transcript retention as a separate privacy decision. Keep all memory, artifacts, telemetry, indexes, and policy experiments local. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
+Do not persist secrets, raw prompts, or full agent transcripts by default. Store structured task fields, provenance links, event type, hashed identifiers, bounded metadata, content hashes, and artifact references. Treat any future prompt or transcript retention as a separate privacy decision. Keep Cathulu's SQLite authority, memory, evidence references, telemetry, indexes, and policy experiments local. If an owner explicitly enables a remote specialist, make the egress visible and send only the smallest sanitized input needed; never send full repositories, secrets, full transcripts, raw Cathulu memory, or entire artifact stores by default. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
 
 ## Dashboard interaction contract
 
@@ -136,6 +157,8 @@ The dashboard uses the Operate mode: scan current portfolio state, identify bloc
 Cathulu hosts model and reasoning-effort selectors for the Main Overseer, default subagents, and named custom-agent roles in a settings surface separate from the read-only dashboard. The user chooses a target for each preview: a registered project's `.codex/config.toml`, the user `config.toml`, a named user profile, or export-only. Project-scoped config is only used by Codex when that repository is trusted. No caller-supplied filesystem paths are accepted. See [ADR-0002](decisions/ADR-0002-cathulu-hosted-agent-selectors.md) and [PLAN-002](plans/PLAN-002-phase3-codex-delegation.md).
 
 M9 adds SQLite schema v8 preference and applied-target metadata. The Tauri boundary reads `codex debug models --bundled` and returns only the whitelisted model slug/display name and per-model effort fields; catalog instructions and other unneeded fields are discarded. The local bundled catalog does not prove account/workspace availability. The user must review an exact field-level diff and explicitly apply it. Cathulu uses `toml_edit` to preserve comments and unrelated keys, rechecks file hashes and path boundaries, creates a backup per changed file, and records that the configuration was written. Named-agent preferences update only matching, existing custom-agent TOML files; missing or invalid roles are shown as skipped. Export-only returns selected TOML snippets without reading config contents. These writes are available only through the separate desktop settings surface; MCP cannot write Codex configuration. Cathulu cannot verify that a session loaded a value, so runtime effectiveness remains `unverified`. Tests use disposable files and did not change the owner's Codex config.
+
+Any future optimization-impact view remains read-only and compact, and is added only if real evaluation data makes it useful. It may compare treatment mode, observable context or turn reduction, latency, verified outcomes, QA, regressions, and rework; it must show unknown when a measure is unavailable. It does not become a model-management console or merge with M9 Codex selectors.
 
 ## Development Skills & Tooling Profile
 
@@ -168,3 +191,4 @@ The project brief's required tests are part of the project requirements. The exa
 | Git reconciliation may encounter unavailable, unsafe, or invalid repository paths. | Git is selected as source of truth; no implementation exists. | First vertical slice | Validate canonical paths and repository identity; return explicit per-project failures without corrupting state. |
 | Codex may not support a bundled model for the owner's current account/workspace, and Cathulu cannot observe when a session loads configuration. | Official docs say availability depends on account/workspace and provide no supported Cathulu control API. | Phase 3 M9 | Show bundled-catalog provenance, require explicit preview/apply, and keep account availability and runtime effectiveness unverified. |
 | Evaluation thresholds lack a baseline. | The brief defines metrics and an experiment question but no measured baseline. | Context experiment | Collect comparable plain-Codex and Cathulu-assisted runs before setting numeric thresholds. |
+

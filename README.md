@@ -59,4 +59,5 @@ Follow [docs/local-mcp.md](docs/local-mcp.md) to register the built MCP executab
 
 ## Current milestone
 
-M1-M9 are published to `main`; M9's separate model/effort settings and safe configuration preview/apply workflow passed local validation at `f2381ae`. The live owner Codex config and runtime-effective model remain untouched/unverified. Run native Rust commands from an x64 Visual Studio developer shell with the MSVC linker and Windows SDK available. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md) and [the Phase 3 delegation plan](docs/plans/PLAN-002-phase3-codex-delegation.md) for status and evidence.
+M1-M9 and M11 are published to `main`. M9's separate Codex model/effort settings passed local validation at `f2381ae`, and M11's optional local Graphify retrieval passed its evidence gate at `e18dc46`. The live owner Codex config and runtime-effective model remain untouched/unverified. PLAN-004 proposes an optional specialist-model optimization layer; no specialist providers or model calls are implemented, and the baseline remains provider-free. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md), [the Phase 3 delegation plan](docs/plans/PLAN-002-phase3-codex-delegation.md), and [the specialist-model plan](docs/plans/PLAN-004-optional-specialist-model-optimization.md) for status and evidence.
+
