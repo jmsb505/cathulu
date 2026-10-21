@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers; live provider trials still require owner-supplied keys, an MCP reload, and explicit per-run remote opt-in. M18 comparative scoring remains ineligible until representative Cathulu runs exist; M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
+Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
 
 ## System boundary
 
@@ -49,7 +49,7 @@ SQLite is the source of truth. Use relational columns for projects, dependencies
 
 The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs additive database migrations and rejects databases newer than the app. MCP and desktop startup both attempt to reconcile every registered repository; the explicit `reconcile_project` tool refreshes one project. Git HEAD changes deterministically invalidate only memory records whose freshness basis names that project. M11 records the current validated Graphify snapshot identity per project and invalidates only memories whose freshness basis explicitly names a replaced or unavailable graph snapshot. The memory layer stores distilled knowledge and source references; it does not duplicate current project, decision, workflow, run, or artifact state.
 
-### Optional specialist-model optimization (M15-M17 foundations and M18a adapters implemented; live evaluation pending)
+### Optional specialist-model optimization (M15-M17 foundations and M18a adapters implemented; first live shadow integration run recorded)
 
 Use the least powerful mechanism that can safely answer a step:
 
