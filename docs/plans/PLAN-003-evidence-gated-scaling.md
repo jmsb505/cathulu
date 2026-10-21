@@ -1,6 +1,6 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: M9 is validated and published to `main`; M11 is implemented, validated, and published to `main` as `e18dc46` (PR #1). M10 and M12-M14 remain conditional on their evidence gates below.
+Status: M9 is validated and published to `main`; M11 is implemented, validated, and published to `main` as `e18dc46` (PR #1). M10 is not currently eligible because no qualifying recurring cross-project workflow has been observed. M12-M14 remain conditional on their evidence gates below.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -10,14 +10,15 @@ Complete the roadmap's remaining Phase 4-8 capabilities only when Cathulu's loca
 
 ## Motivation
 
-The roadmap deliberately conditions M10 on repeated cross-project context reconstruction, M11 on a useful Graphify snapshot source, and M12-M14 on enough comparable run evidence. The repo has no default Cathulu database or Graphify snapshot today, so those product-value conditions have not been met. This plan defines how to evaluate them and what to build after they are met; synthetic fixtures validate mechanics but do not satisfy product-evidence gates.
+The roadmap deliberately conditions M10 on repeated cross-project context reconstruction, M11 on a useful Graphify snapshot source, and M12-M14 on enough comparable run evidence. M11's product-value gate has passed. The local Cathulu MCP server is now configured and the Cathulu repository is registered, but no qualifying recurring cross-project workflow is currently available to measure. This plan defines how to evaluate the remaining gates and what to build only after they are met; synthetic fixtures validate mechanics but do not satisfy product-evidence gates.
 
 ## Current state
 
 - M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`. M11 is validated and published as `e18dc46` (PR #1).
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
 - The 2026-10-21 entry-gate audit was rechecked after M11 publication: `CATHULU_DATA_DIR` is unset, the default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` database is absent, `codex mcp list` has no Cathulu server, and there is no project-root Graphify snapshot. Graphify 0.9.82 remains available through the existing user Python site package; the pilot snapshot is ignored and temporary.
-- No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
+- The local MCP registration and Cathulu project resource were verified during this continuation. No qualifying recurring cross-project workflow is currently available to evaluate.
+- M10 is not eligible under the currently observed work pattern. Do not infer dependencies, combine unrelated repository tasks, or manufacture cross-project evidence. Reconsider M10 if a naturally recurring task crosses repositories.
 
 ## Desired state
 
@@ -91,6 +92,7 @@ Goal: reduce measured cross-project context reconstruction with resumable, bound
 Entry gate:
 
 - Collect a real, local baseline showing repeated cross-project context reconstruction for the same recurring work pattern.
+- Current applicability: available evidence contains no qualifying recurring cross-project task. Do not start M10 evidence collection until one exists.
 - Measure context bytes/tokens when observable, reintroduction, delay/rework, task outcomes, and the expected maintenance/coordination cost.
 - Agree on the comparison method and decision threshold before implementation. Do not use synthetic fixtures or an arbitrary run count as the product-value proof.
 
@@ -307,7 +309,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 ## Progress
 
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
-- [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, and no project-root Graphify snapshot were found on 2026-10-21.
+- [x] Initial pre-onboarding audit on 2026-10-21: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, and no project-root Graphify snapshot were found.
 - [x] Validate M9 with explicit per-preview target selection and no implicit target.
 - [x] Publish the validated M9 checkpoint `f2381ae` and record its revision.
 - [x] Re-evaluate the M10-M14 entry gates after M9; the live local run-data gate remains unmet.
@@ -318,16 +320,19 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 - [x] Update architecture, roadmap, setup, and the Graphify source-contract ADR after the implementation passes validation.
 - [x] Validate the additive SQLite v9 snapshot migration against version-four and version-five data fixtures.
 - [x] Publish M11 after local Windows validation and recheck the M10-M14 entry gates.
-- [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
+- [x] Configure the local Cathulu MCP with prompt-gated tool approval and register the Cathulu checkout; verify the projects resource reports it.
+- [x] Review available work-pattern evidence; no recurring cross-project task qualifies for the M10 gate.
+- [ ] Collect comparable real local Cathulu runs for M12-M14. Reconsider M10 only if a naturally recurring cross-project task appears.
 
 ## Implementation discoveries / decisions
 
-- 2026-10-21: M10's gate is unmet in the current local Codex profile: no durable Cathulu MCP entry or database was found, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction. M9's disposable integration database was removed by the smoke script and is not product-use evidence.
+- 2026-10-21: Initial pre-onboarding review found no durable Cathulu MCP entry or database, so existing M4 measurements could not demonstrate repeated cross-project reconstruction. M9's disposable integration database was removed by the smoke script and is not product-use evidence.
 - 2026-10-21: M11's evidence gate passed in a local-only pilot. Existing Graphify 0.9.82 was imported from the user Python site package; code-only extraction skipped all docs/media, used `GRAPHIFY_BACKEND=none`, and disabled query logging. The generated snapshot reported schema 1 and `built_at_commit=92ee9d571c3aa87278b6fd50a17d852e68216930`; the current source HEAD matched. No Graphify dependency or project-root artifact was added.
 - 2026-10-21: The local `graphifyy` 0.9.82 distribution contains Apache-2.0 and MIT license texts. Cathulu consumes the export format only; no Graphify code or package is being copied or bundled. Upstream source and current licensing are linked from ADR-0006.
 - 2026-10-21: The M11 benchmark was pre-registered before scored queries. Each Graphify packet contains the exact directed path plus compact edge metadata. Scored results: worktree reconciliation → report verification, 201/411 bytes (48.9%, EXTRACTED, `src/worktree.rs:L107`); `finish_run` → mandatory-check validation, 189/1040 bytes (18.2%, EXTRACTED, `src/workflow.rs:L691`); Tauri Codex preview → TOML preview builder, 222/2181 bytes (10.2%, INFERRED, `apps/desktop/src-tauri/src/lib.rs:L114`). The three edge locations were checked against current source. Earlier exploratory Graphify calls and Graphify's generic benchmark were excluded. The first task narrowly meets the 50% cutoff; benchmark byte accounting should be retained as defined, not rounded to a stricter threshold.
 - 2026-10-21: Graphify is optional retrieval infrastructure, not an automatic dependency or memory authority. The adapter rejects unsupported schema/version and commit mismatches, omits results whose referenced source files changed or disappeared, and retains SQL/FTS fallback for exact state and memory.
-- 2026-10-21: M10 remains ineligible because there is no real Cathulu use history. M11 proceeds independently because its pilot and adapter rely on the existing registered-project identity and M4 SQLite/FTS substrate; it does not add M10 Sub-Overseer or durable-scope behavior.
+- 2026-10-21: At the post-M11 pre-onboarding audit, M10 had no local Cathulu run history. M11 proceeded independently because its pilot and adapter rely on the existing registered-project identity and M4 SQLite/FTS substrate; it does not add M10 Sub-Overseer or durable-scope behavior.
+- 2026-10-21: No qualifying recurring cross-project task has been observed. M10 is ineligible under current evidence; do not infer a relationship or run a synthetic cross-project pilot.
 - 2026-10-21: M12-M14 cannot be evaluated from this checkout without real completed and comparable run evidence. Synthetic fixtures will validate mechanics only and will not satisfy these gates.
 - 2026-10-21: Context7 resolution is currently unavailable because its monthly quota is exhausted; current official OpenAI docs were fetched for M9. Resolve the app-specific account catalog through a supported local Codex source and do not infer account entitlement from public docs.
 
@@ -335,6 +340,6 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 
 M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed with 37 tests and one dedicated desktop/MCP smoke test ignored for its PowerShell harness; all three focused Graphify MCP tests passed; the offline Windows release MCP build passed; and `git diff --check` passed. The migration tests exercise version-four and version-five data through v9. SQLite remains authoritative and no Graphify dependency or bundled code was added.
 
-M11 was merged to `main` at `e18dc46` through PR #1. The rechecked local profile still has no Cathulu MCP registration and no local Cathulu database, so the M10-M14 real-run evidence task remains open.
+M11 was merged to `main` at `e18dc46` through PR #1. The initial pre-onboarding check found no Cathulu MCP registration or database. Since then, the local MCP has been configured and Cathulu registered; no real run history exists yet.
 
-M10 and M12-M14 are not claimed complete. The entry-gate audit above remains the evidence: M10 needs repeated real cross-project context reconstruction in local Cathulu use; M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.
+M10 and M12-M14 are not claimed complete. M10 is not eligible under current evidence because no qualifying recurring cross-project workflow has been observed; its gate requires naturally recurring cross-project context reconstruction and must not be manufactured. M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.
