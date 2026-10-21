@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M17 MERGED; M18a PROVIDER CONNECTIVITY LOCALLY VALIDATED; LIVE PROVIDER TRIALS PENDING OWNER-SET KEYS; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. Active treatments still require explicit owner approval.
+Status: M15-M18a MERGED; PUBLIC MCP MISSING-KEY FALLBACK COVERAGE LOCALLY VALIDATED; LIVE PROVIDER TRIALS PENDING OWNER-SET KEYS AND PER-RUN CONSENT; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -242,7 +242,7 @@ Jev was not integrated or called. Context7 `resolve-library-id` returned “Mont
 
 The run-attributed shadow path records invocation metadata and a separate append-only extraction event in the existing event ledger. The event includes source IDs/hashes, selected-input hash and size, raw-source size, deterministic-baseline hash/count, exact candidate span overlap counts, model result hash, and the validated bounded result. Remote providers are recorded as skipped before invocation; empty selected inputs, invalid responses, timeouts, and provider errors also do not affect the run. There is no schema migration, active mode, provider adapter, frontend change, QA change, or context replacement.
 
-Validation includes seven integration tests and a locally generated failing Rust test-harness output captured as a real tool artifact. The model used in tests is a deterministic test double; exact span checks and baseline overlap validate mechanics, not model quality, information-recovery rate, Codex savings, or workflow value. ScaleDown and local model candidates remain unreviewed/unintegrated; M18 must not claim benefit from this sample.
+Validation includes seven integration tests and a locally generated failing Rust test-harness output captured as a real tool artifact. The model used in those tests is a deterministic test double; exact span checks and baseline overlap validate mechanics, not model quality, information-recovery rate, Codex savings, or workflow value. At the M17 checkpoint, ScaleDown and local model candidates remained unreviewed/unintegrated; M18a later reviewed and integrated the optional ScaleDown provider adapter. M18 must not claim benefit from this sample.
 
 **Validation evidence:** `cargo test --offline --test context_extraction_m17` — 7 passed, 0 failed. Full-workspace validation is recorded under Completion evidence after the final gate.
 
@@ -275,6 +275,10 @@ Validation includes seven integration tests and a locally generated failing Rust
 - Check formatting, dependency lock consistency, and Git whitespace. Do not claim live provider quality, retention terms, or workflow value from local mocks.
 
 **Expected checkpoint:** local connector readiness. Live shadow trials begin only after the owner adds the chosen keys locally and explicitly starts a consented remote shadow run. M18 comparative scoring and any active treatment remain separately gated.
+
+**Public MCP contract follow-up (2026-10-21):** a real MCP subprocess test supplies an immutable run treatment for Jev workflow routing and ScaleDown extraction, removes both provider keys from the child process, and points `CATHULU_ENV_FILE` at a nonexistent file. Both public shadow tools return `skipped` and append attributed invocation events with `fallbackUsed=true` and `influencedExecution=false`. The run and pending QA check are byte-for-byte equivalent before and after the calls; the raw local test artifact remains unchanged. This closes the public tool/fallback test gap without making a live provider call. It validates missing-key behavior only, not provider response quality or product value.
+
+**Validation evidence:** `cargo test --offline --test mcp_vertical_slice public_mcp_specialist_shadow_trials_skip_without_keys_and_preserve_run_state -- --exact --nocapture` — 1 passed, 0 failed. Full-workspace results are recorded in the milestone closeout below.
 ### M18 — Controlled ablation and evidence review
 
 **Goal:** determine actual efficiency and quality impact under comparable conditions.
@@ -375,6 +379,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] M17 local ContextModel shadow extraction boundary and selected-span provenance; no provider or live call.
 - [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
 - [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated, with live calls and provider quality still unmeasured.
+- [x] M18a public MCP follow-up verifies missing-key skips, immutable run/QA state, and raw-artifact preservation without provider calls.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -437,3 +442,13 @@ M18a provider-connectivity readiness passed local Windows validation on 2026-10-
 - `cargo check --locked --offline --workspace --all-targets` — passed during M18a implementation.
 - Provider tests use loopback HTTP fixtures and fake keys only. They cover Jev bearer auth and bounded routing state, ScaleDown x-api-key auth and excerpt minimization, secret masking and exact source-span mapping, and credential parsing without shell evaluation. M17 tests also cover same-run artifact enforcement and non-blocking fallback.
 - No real API key was read, no live provider call or external data transmission was made, and no active optimization mode was enabled. Provider quality, retention behavior beyond the reviewed documentation, and workflow impact remain unmeasured. ScaleDown retention is unspecified in the reviewed API pages; credential masking is best-effort.
+
+M18a public MCP fallback follow-up passed local Windows validation on 2026-10-21:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --test mcp_vertical_slice public_mcp_specialist_shadow_trials_skip_without_keys_and_preserve_run_state -- --exact --nocapture` — passed (1 test).
+- `cargo test --offline --workspace` — passed (65 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed).
+- `cargo check --locked --offline --workspace --all-targets` — passed.
+- `git diff --check` — passed.
+- The subprocess test explicitly removes both provider keys and sets `CATHULU_ENV_FILE` to a nonexistent path. No API key was read, and the test could not make a live provider call. Mocks and missing-key behavior validate contracts and fallback only; no quality or product-value result is claimed.
+- The currently connected Cathulu MCP tool schema in this Codex session still exposes the older `start_run` shape and does not list the M18a shadow tools. Before owner-initiated manual trials, rebuild the configured MCP executable using [the local MCP setup guide](../local-mcp.md) and reload/restart the MCP server. No user Codex MCP configuration was changed during this milestone.

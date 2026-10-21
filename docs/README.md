@@ -8,7 +8,7 @@ This map defines where project intent, architecture, and implementation evidence
 | System boundaries, drivers, managed memory lifecycle, local data/security, and skill/tool profile | [Architecture](architecture.md) | WORKING for implementation details; NORMATIVE for stated product boundaries |
 | Phase order and deferred capabilities | [Roadmap](roadmap.md) | NORMATIVE |
 | Durable decisions and supersession | [Decision records](decisions/) | NORMATIVE when ACCEPTED |
-| Optional specialist-model optimization | [ADR-0007](decisions/ADR-0007-optional-specialist-model-optimization.md), [PLAN-004](plans/PLAN-004-optional-specialist-model-optimization.md) | M15-M17 merged; Jev/ScaleDown shadow adapters locally validated; live trials and comparative scoring pending |
+| Optional specialist-model optimization | [ADR-0007](decisions/ADR-0007-optional-specialist-model-optimization.md), [PLAN-004](plans/PLAN-004-optional-specialist-model-optimization.md) | M15-M18a merged; public MCP missing-key fallback covered; live trials and comparative scoring pending |
 | Definition readiness and dependent scope | [Definition gate](readiness/definition-gate.md) | EVIDENCE |
 | Resumable interview, claims, and unresolved questions | [Kickoff state](kickoff-state.json) | WORKING checkpoint |
 
