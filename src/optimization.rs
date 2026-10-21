@@ -8,6 +8,8 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Instant;
 
 pub const OPTIMIZATION_SCHEMA_VERSION: u16 = 1;
@@ -446,7 +448,7 @@ impl Store {
     /// Runs one local-only shadow prediction and records metadata through the
     /// existing append-only run event ledger. The prediction is never returned
     /// as a routing action and cannot change run/delegation/QA state.
-    pub fn run_decision_shadow_trial(
+    pub async fn run_decision_shadow_trial(
         &self,
         run_id: i64,
         invocation_id: &str,
@@ -492,10 +494,10 @@ impl Store {
         let input_bytes = serde_json::to_vec(request)
             .map_err(|error| format!("cannot size decision request: {error}"))?
             .len() as u64;
-        if settings.provider_locality != Some(ProviderLocality::Local) {
-            let locality = settings.provider_locality.ok_or_else(|| {
-                "shadow capability has no configured provider locality".to_string()
-            })?;
+        let locality = settings
+            .provider_locality
+            .ok_or_else(|| "shadow capability has no configured provider locality".to_string())?;
+        if locality == ProviderLocality::Remote && !settings.remote_data_allowed {
             let invocation = OptimizationInvocation {
                 invocation_id: invocation_id.to_string(),
                 capability: request.capability,
@@ -525,27 +527,32 @@ impl Store {
             }));
         }
         let started = Instant::now();
-        let response = model.decide(request);
+        let response = model.decide(request).await;
         let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
+        let mut recorded_input_bytes = input_bytes;
+        let mut input_tokens = None;
+        let mut output_tokens = None;
+        let mut model_version = None;
         let (status, prediction, model_confidence, probabilities, output_bytes) = match response {
-            Ok(Some(result)) => {
-                let response_bytes = serde_json::to_vec(&result)
-                    .map(|bytes| bytes.len() as u64)
-                    .unwrap_or(0);
-                match result.validate_for(request) {
-                    Ok(normalized) => {
-                        let output_bytes = serde_json::to_vec(&normalized)
-                            .map(|bytes| bytes.len() as u64)
-                            .unwrap_or(response_bytes);
-                        (
-                            InvocationStatus::Completed,
-                            Some(normalized.outcome),
-                            normalized.model_confidence,
-                            normalized.probabilities,
-                            output_bytes,
-                        )
-                    }
+            Ok(Some(model_response)) => {
+                recorded_input_bytes = model_response.input_bytes.unwrap_or(input_bytes);
+                input_tokens = model_response.input_tokens;
+                output_tokens = model_response.output_tokens;
+                model_version = model_response.provider_model;
+                let response_bytes = model_response.output_bytes.unwrap_or_else(|| {
+                    serde_json::to_vec(&model_response.value)
+                        .map(|bytes| bytes.len() as u64)
+                        .unwrap_or(0)
+                });
+                match model_response.value.validate_for(request) {
+                    Ok(normalized) => (
+                        InvocationStatus::Completed,
+                        Some(normalized.outcome),
+                        normalized.model_confidence,
+                        normalized.probabilities,
+                        response_bytes,
+                    ),
                     Err(_) => (
                         InvocationStatus::InvalidResponse,
                         None,
@@ -579,15 +586,15 @@ impl Store {
             capability: request.capability,
             provider,
             model: settings.model,
-            model_version: None,
-            provider_locality: ProviderLocality::Local,
-            remote_data_allowed: false,
+            model_version,
+            provider_locality: locality,
+            remote_data_allowed: settings.remote_data_allowed,
             schema_version: request.schema_version,
             mode: EffectiveOptimizationMode::Shadow,
-            input_bytes,
+            input_bytes: recorded_input_bytes,
             output_bytes,
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens,
+            output_tokens,
             latency_ms,
             status,
             prediction,
@@ -808,24 +815,60 @@ pub enum ModelCallFailure {
     InvalidResponse,
 }
 
+/// Normalized model output plus provider-observed usage metadata. Provider
+/// response bodies and credentials are never persisted through this wrapper.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelResponse<T> {
+    pub value: T,
+    pub provider_model: Option<String>,
+    pub input_bytes: Option<u64>,
+    pub output_bytes: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+impl<T> ModelResponse<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            provider_model: None,
+            input_bytes: None,
+            output_bytes: None,
+            input_tokens: None,
+            output_tokens: None,
+        }
+    }
+}
+
+pub type DecisionModelFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<Option<ModelResponse<DecisionResult>>, ModelCallFailure>>
+            + Send
+            + 'a,
+    >,
+>;
+pub type ContextModelFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<Option<ModelResponse<ContextResult>>, ModelCallFailure>>
+            + Send
+            + 'a,
+    >,
+>;
+
 pub trait DecisionModel: Send + Sync {
-    fn decide(&self, request: &DecisionRequest)
-        -> Result<Option<DecisionResult>, ModelCallFailure>;
+    fn decide<'a>(&'a self, request: &'a DecisionRequest) -> DecisionModelFuture<'a>;
 }
 
 pub trait ContextModel: Send + Sync {
-    fn process(&self, request: &ContextRequest) -> Result<Option<ContextResult>, ModelCallFailure>;
+    fn process<'a>(&'a self, request: &'a ContextRequest) -> ContextModelFuture<'a>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DisabledDecisionModel;
 
 impl DecisionModel for DisabledDecisionModel {
-    fn decide(
-        &self,
-        _request: &DecisionRequest,
-    ) -> Result<Option<DecisionResult>, ModelCallFailure> {
-        Ok(None)
+    fn decide<'a>(&'a self, _request: &'a DecisionRequest) -> DecisionModelFuture<'a> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -833,11 +876,8 @@ impl DecisionModel for DisabledDecisionModel {
 pub struct DisabledContextModel;
 
 impl ContextModel for DisabledContextModel {
-    fn process(
-        &self,
-        _request: &ContextRequest,
-    ) -> Result<Option<ContextResult>, ModelCallFailure> {
-        Ok(None)
+    fn process<'a>(&'a self, _request: &'a ContextRequest) -> ContextModelFuture<'a> {
+        Box::pin(async { Ok(None) })
     }
 }
 

@@ -121,8 +121,8 @@ fn invocation() -> OptimizationInvocation {
     }
 }
 
-#[test]
-fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
+#[tokio::test]
+async fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
     let fixture = Fixture::new("disabled-defaults");
     let config = OptimizationConfig::default();
     for capability in OptimizationCapability::ALL {
@@ -139,7 +139,7 @@ fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
         allowed_outcomes: vec!["bug_fix".to_string(), "needs_codex".to_string()],
     };
     assert!(decision.validate().is_ok());
-    assert_eq!(DisabledDecisionModel.decide(&decision).unwrap(), None);
+    assert_eq!(DisabledDecisionModel.decide(&decision).await.unwrap(), None);
     let context = ContextRequest {
         capability: ContextCapability::Extract,
         schema_version: 1,
@@ -154,7 +154,7 @@ fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
         max_output_bytes: 1024,
     };
     assert!(context.validate().is_ok());
-    assert_eq!(DisabledContextModel.process(&context).unwrap(), None);
+    assert_eq!(DisabledContextModel.process(&context).await.unwrap(), None);
 
     let run_id = fixture.run(None);
     let explicit_disabled_run = fixture

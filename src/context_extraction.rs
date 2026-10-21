@@ -97,7 +97,7 @@ impl Store {
 
     /// Runs a local-only ContextModel shadow trial. It returns an audit receipt,
     /// never the candidate output, and writes no workflow, QA, or memory state.
-    pub fn run_context_extraction_shadow_trial(
+    pub async fn run_context_extraction_shadow_trial(
         &self,
         run_id: i64,
         invocation_id: &str,
@@ -132,6 +132,14 @@ impl Store {
         if run.finished_at.is_some() || run.status != "running" {
             return Err("context shadow trials require a currently running task".to_string());
         }
+        for source in &request.sources {
+            let artifact = self
+                .get_artifact(source.artifact_id)?
+                .ok_or_else(|| format!("context artifact {} was not found", source.artifact_id))?;
+            if artifact.run_id != Some(run_id) {
+                return Err("context shadow artifacts must belong to the same run".to_string());
+            }
+        }
 
         let loaded_sources = self.verify_context_extraction_request(request)?;
         let baseline_candidates = deterministic_candidates(&loaded_sources);
@@ -153,25 +161,36 @@ impl Store {
         })?;
         let mut output_result = None;
         let mut output_bytes = 0u64;
+        let mut recorded_input_bytes = input_bytes;
+        let mut input_tokens = None;
+        let mut output_tokens = None;
+        let mut model_version = None;
         let mut model_confidence = None;
         let mut status = InvocationStatus::Completed;
         let mut latency_ms = 0u64;
 
-        if locality == ProviderLocality::Remote {
-            // M17 has no reviewed remote extraction adapter or credential path.
-            // A local artifact reference is not sufficient permission to send it.
+        if locality == ProviderLocality::Remote && !settings.remote_data_allowed {
+            // Defense in depth: remote extraction needs an explicit opt-in in
+            // the immutable run treatment as well as a provider credential.
             status = InvocationStatus::Skipped;
         } else if selected_input_bytes == 0 {
             status = InvocationStatus::Skipped;
         } else {
             let started = Instant::now();
-            let response = model.process(request);
+            let response = model.process(request).await;
             latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             match response {
-                Ok(Some(result)) => {
-                    let response_bytes = serde_json::to_vec(&result)
-                        .map(|bytes| bytes.len() as u64)
-                        .unwrap_or(0);
+                Ok(Some(model_response)) => {
+                    recorded_input_bytes = model_response.input_bytes.unwrap_or(input_bytes);
+                    input_tokens = model_response.input_tokens;
+                    output_tokens = model_response.output_tokens;
+                    model_version = model_response.provider_model;
+                    let result = model_response.value;
+                    let response_bytes = model_response.output_bytes.unwrap_or_else(|| {
+                        serde_json::to_vec(&result)
+                            .map(|bytes| bytes.len() as u64)
+                            .unwrap_or(0)
+                    });
                     let still_current = self.verify_context_extraction_request(request).is_ok();
                     if !still_current {
                         status = InvocationStatus::InvalidResponse;
@@ -206,15 +225,15 @@ impl Store {
             capability: OptimizationCapability::ContextExtract,
             provider,
             model: settings.model,
-            model_version: None,
+            model_version,
             provider_locality: locality,
             remote_data_allowed: settings.remote_data_allowed,
             schema_version: request.schema_version,
             mode: EffectiveOptimizationMode::Shadow,
-            input_bytes,
+            input_bytes: recorded_input_bytes,
             output_bytes,
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens,
+            output_tokens,
             latency_ms,
             status,
             prediction: output_result
