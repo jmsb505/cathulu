@@ -418,3 +418,70 @@ BEGIN SELECT RAISE(ABORT, 'evidence holds may be released only once'); END;
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (4, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_5: &str = r#"
+CREATE TABLE delegations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  role TEXT NOT NULL CHECK(role IN ('worker', 'sub_overseer')),
+  status TEXT NOT NULL DEFAULT 'prepared' CHECK(status IN ('prepared', 'dispatched', 'cancelled')),
+  packet_schema_version INTEGER NOT NULL CHECK(packet_schema_version = 1),
+  packet_json TEXT NOT NULL CHECK(length(packet_json) <= 16384),
+  packet_hash TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  requested_model TEXT,
+  requested_effort TEXT,
+  external_correlation_hash TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX delegations_parent_run_idx ON delegations(run_id, created_at DESC);
+CREATE INDEX delegations_task_idx ON delegations(task_id, created_at DESC);
+
+CREATE TABLE delegation_memory_refs (
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(delegation_id, memory_id)
+);
+CREATE INDEX delegation_memory_refs_memory_idx ON delegation_memory_refs(memory_id);
+
+CREATE TABLE delegation_artifact_refs (
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  artifact_id INTEGER NOT NULL REFERENCES evidence_artifacts(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(delegation_id, artifact_id)
+);
+CREATE INDEX delegation_artifact_refs_artifact_idx ON delegation_artifact_refs(artifact_id);
+
+CREATE TRIGGER delegations_update_guard BEFORE UPDATE ON delegations
+WHEN NEW.id IS NOT OLD.id OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.task_id IS NOT OLD.task_id OR NEW.run_id IS NOT OLD.run_id
+  OR NEW.role IS NOT OLD.role OR NEW.packet_schema_version IS NOT OLD.packet_schema_version
+  OR NEW.packet_json IS NOT OLD.packet_json OR NEW.packet_hash IS NOT OLD.packet_hash
+  OR NEW.request_hash IS NOT OLD.request_hash
+  OR NEW.idempotency_key_hash IS NOT OLD.idempotency_key_hash
+  OR NEW.requested_model IS NOT OLD.requested_model
+  OR NEW.requested_effort IS NOT OLD.requested_effort
+  OR NEW.external_correlation_hash IS NOT OLD.external_correlation_hash
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+  OR NOT ((OLD.status = 'prepared' AND NEW.status IN ('dispatched', 'cancelled'))
+          OR (OLD.status = 'dispatched' AND NEW.status = 'cancelled'))
+BEGIN SELECT RAISE(ABORT, 'delegation identity is immutable and lifecycle transitions are restricted'); END;
+CREATE TRIGGER delegations_no_delete BEFORE DELETE ON delegations
+BEGIN SELECT RAISE(ABORT, 'delegation records are retained for audit'); END;
+CREATE TRIGGER delegation_memory_refs_no_update BEFORE UPDATE ON delegation_memory_refs
+BEGIN SELECT RAISE(ABORT, 'delegation memory references are immutable'); END;
+CREATE TRIGGER delegation_memory_refs_no_delete BEFORE DELETE ON delegation_memory_refs
+BEGIN SELECT RAISE(ABORT, 'delegation memory references are retained for audit'); END;
+CREATE TRIGGER delegation_artifact_refs_no_update BEFORE UPDATE ON delegation_artifact_refs
+BEGIN SELECT RAISE(ABORT, 'delegation artifact references are immutable'); END;
+CREATE TRIGGER delegation_artifact_refs_no_delete BEFORE DELETE ON delegation_artifact_refs
+BEGIN SELECT RAISE(ABORT, 'delegation artifact references are retained for audit'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (5, CAST(strftime('%s','now') AS INTEGER));
+"#;

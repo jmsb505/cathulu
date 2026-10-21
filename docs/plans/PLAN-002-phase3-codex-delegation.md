@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: READY; M5 integration is published to `main` at `e29c90f`; M6 has not started.
+Status: READY TO PUBLISH; M5 integration and its documentation are published to `main` at `744a428`; M6 implementation and full Windows validation pass locally on `codex/phase3-delegation-contract`.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -14,7 +14,7 @@ The first two phases now provide local project/workflow state, quality gates, me
 
 ## Current state
 
-- M1-M5 are published to `main`; M5 adds a repeatable disposable Windows integration smoke and is published on `codex/phase2-integration-validation` and `main`.
+- M1-M5 are published to `main`; M5 adds a repeatable disposable Windows integration smoke and is published on `codex/phase2-integration-validation` and `main` at `744a428` (implementation checkpoint `e29c90f`).
 - Cathulu already records objectives, tasks, runs, immutable events, QA checks, evidence artifacts, and context transfers through SQLite-backed semantic MCP tools.
 - Codex remains the owner of agent execution, worktrees, approvals, and the user-facing conversation.
 - Current official Codex documentation confirms main-session model/reasoning settings, global subagent defaults, explicit spawn overrides, and custom-agent files with per-role `model` and `model_reasoning_effort`. It documents no API for Cathulu to change the currently running Codex turn. See [ADR-0002](../decisions/ADR-0002-cathulu-hosted-agent-selectors.md).
@@ -22,7 +22,7 @@ The first two phases now provide local project/workflow state, quality gates, me
 
 ## Desired state
 
-- A delegation is an immutable, provenance-linked child work record attached to an existing project/task/run, with a bounded structured task packet and validated lifecycle transitions.
+- A delegation has immutable, provenance-linked identity and packet content attached to an existing project/task/run, plus validated lifecycle transitions recorded in the append-only event journal.
 - A worker report contains structured summary, changed paths, check results, artifact references, commit/worktree facts, and blockers; a report is evidence, not verified success.
 - Worktree isolation is represented using Git-derived base/head/branch/path data and a clear relationship to the delegated task. Cathulu records and verifies isolation; Codex continues to create and manage worktrees.
 - Requested model/effort values, when present, are distinguishable from effective values. Effective values remain unknown unless a trusted source reports them.
@@ -46,7 +46,7 @@ The first two phases now provide local project/workflow state, quality gates, me
 
 ## Source-of-truth impact
 
-- `src/migrations.rs` and the existing Rust domain modules: delegation schema and deterministic operations.
+- `src/migrations.rs`, `src/delegation.rs`, and `src/gardener.rs`: delegation schema, deterministic operations, and evidence-reference protection.
 - `src/mcp.rs` and MCP resources: explicit task packet, lifecycle, report, and isolation contracts.
 - `apps/desktop/src-tauri/` and `apps/desktop/src/`: read-only delegation status/evidence presentation; no orchestration controls.
 - `docs/project-definition.md`, `docs/architecture.md`, `docs/local-mcp.md`, ADR-0002, `docs/roadmap.md`, and this plan.
@@ -95,11 +95,11 @@ Goal: create one durable, auditable representation for a Codex-native delegation
 
 Subtasks:
 
-- [ ] Add an additive SQLite migration for stable delegation IDs, parent project/task/run links, role, lifecycle, packet schema/version/hash, requested model/effort, and opaque external correlation hashes.
-- [ ] Define a bounded typed task packet with objective, acceptance criteria, constraints, allowed scope, referenced memories/artifacts, and requested report shape.
-- [ ] Add deterministic create/read/transition operations and append-only lifecycle events; retrying the same idempotency key must not duplicate a delegation.
-- [ ] Add semantic MCP tools and a `cathulu://delegations/{id}` resource; expose no generic SQL and no agent spawning operation.
-- [ ] Preserve project/task/run referential integrity and ensure `prepared` or `dispatched` delegations do not change parent run quality status.
+- [x] Add an additive SQLite v5 migration for stable delegation IDs, parent project/task/run links, role, lifecycle, packet schema/version/hash, requested model/effort, hashed idempotency keys, and opaque external correlation hashes.
+- [x] Define a bounded typed task packet with objective, acceptance criteria, constraints, allowed scope, referenced memories/artifacts, and requested report shape.
+- [x] Add deterministic create/read/transition operations and append-only lifecycle events; retrying the same idempotency key must not duplicate a delegation.
+- [x] Add semantic MCP tools and a `cathulu://delegations/{id}` resource; expose no generic SQL and no agent spawning operation.
+- [x] Preserve project/task/run referential integrity, protect linked artifacts from evidence collection, and ensure delegation states do not change parent run quality status.
 
 Affected areas: `src/migrations.rs`, new/existing Rust domain module, `src/lib.rs`, `src/mcp.rs`, `tests/`, `docs/local-mcp.md`.
 
@@ -107,17 +107,17 @@ Dependencies: M5 combined integration pass; additive migration discipline.
 
 Acceptance criteria:
 
-- [ ] A delegation can be prepared for a valid task/run and read back with stable ID and packet hash.
-- [ ] Invalid project/task/run relationships, oversized/invalid packet fields, and illegal lifecycle transitions leave state unchanged.
-- [ ] Repeated idempotent creation returns the same record; lifecycle history is append-only and survives reopen.
-- [ ] Requested model/effort is stored separately from effective values and never implies that Codex applied it.
-- [ ] MCP exposes delegation-specific semantic operations/resources only; it cannot start an agent, run a tool, or write Codex configuration.
+- [x] A delegation can be prepared for a valid task/run and read back with stable ID and packet hash.
+- [x] Invalid project/run relationships, oversized or escaped-scope packet fields, and illegal lifecycle transitions leave state unchanged.
+- [x] Repeated idempotent creation returns the same record; lifecycle history is append-only and survives reopen.
+- [x] Requested model/effort is stored separately from effective values and never implies that Codex applied it.
+- [x] MCP exposes delegation-specific semantic operations/resources only; it cannot start an agent, run a tool, or write Codex configuration.
 
 Validation:
 
-- [ ] Migration from schema v4 with existing project/run/memory rows preserved.
-- [ ] Domain and MCP integration tests for valid/invalid lifecycle, idempotency, provenance links, and restart persistence.
-- [ ] `cargo fmt --all -- --check`, `cargo test --offline --workspace`, React tests/build, Windows Tauri build, and `git diff --check`.
+- [x] Migration from schema v4 with existing project/run/memory rows preserved.
+- [x] Domain and MCP integration tests for valid/invalid lifecycle, idempotency, provenance links, artifact retention protection, and restart persistence.
+- [x] `cargo fmt --all -- --check`, `cargo test --offline --workspace`, React tests/build, Windows Tauri build, and `git diff --check`.
 
 Documentation updates: architecture, local MCP, roadmap, plan; ADR only if an accepted authority boundary changes.
 
@@ -243,7 +243,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Current Codex documentation checked for model/effort and custom-agent per-role settings.
 - [x] M5 combined M1-M4 integration gate passed locally on Windows.
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
-- [ ] Implement and validate M6.
+- [ ] Publish the validated M6 Git checkpoint to `main` and record its revision.
 - [ ] Implement and validate M7.
 - [ ] Implement and validate M8.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
@@ -253,7 +253,8 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: OpenAI documentation confirms `model`/`model_reasoning_effort` for custom agents, global `agents.default_subagent_model` and `agents.default_subagent_reasoning_effort`, and explicit spawn overrides. The current local app must still be checked before claiming effective values.
 - 2026-10-21: Cathulu will prepare and record native delegation; it will not spawn agents, create/delete worktrees, run tools, accept code, or mutate Codex configuration through MCP.
 - 2026-10-21: M5 uses a disposable repo/database and verifies shared MCP/Tauri SQLite state and restart Git reconciliation.
+- 2026-10-21: M6 uses SQLite schema v5, structured 16 KiB task packets, hashed retry/correlation identifiers, scope-checked memory/artifact links, and lifecycle events in the existing append-only journal. Dispatch records a native Codex handoff action but does not start a worker.
 
 ## Completion evidence
 
-Not started. Each milestone must record exact validation output, source-of-truth documentation, and Git checkpoint before the next one is marked complete.
+M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. The milestone branch commit and publication to `main` remain pending. Each later milestone must record exact validation output, source-of-truth documentation, and Git checkpoint.

@@ -1,3 +1,4 @@
+use crate::delegation::DelegationTaskPacket;
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::telemetry::CodexHookEvent;
@@ -88,6 +89,26 @@ struct StartRunArgs {
     task_id: Option<i64>,
     #[serde(default)]
     workflow_version_id: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PrepareDelegationArgs {
+    project_id: i64,
+    task_id: i64,
+    run_id: i64,
+    role: String,
+    task_packet: DelegationTaskPacket,
+    idempotency_key: String,
+    #[serde(default)]
+    requested_model: Option<String>,
+    #[serde(default)]
+    requested_effort: Option<String>,
+    #[serde(default)]
+    external_correlation: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DelegationIdArgs {
+    delegation_id: i64,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -394,6 +415,52 @@ impl CathuluServer {
                 a.task_id,
                 a.workflow_version_id,
             )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Prepare an auditable native-Codex delegation packet for an existing task and run. This records the request only; it does not spawn a worker or change Codex configuration."
+    )]
+    fn prepare_delegation(
+        &self,
+        Parameters(a): Parameters<PrepareDelegationArgs>,
+    ) -> CallToolResult {
+        self.store
+            .prepare_delegation(
+                a.project_id,
+                a.task_id,
+                a.run_id,
+                &a.role,
+                &a.task_packet,
+                &a.idempotency_key,
+                a.requested_model.as_deref(),
+                a.requested_effort.as_deref(),
+                a.external_correlation.as_deref(),
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record that the owner dispatched a prepared delegation using native Codex. This does not start or control a worker."
+    )]
+    fn mark_delegation_dispatched(
+        &self,
+        Parameters(a): Parameters<DelegationIdArgs>,
+    ) -> CallToolResult {
+        self.store
+            .mark_delegation_dispatched(a.delegation_id)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Mark a prepared or dispatched delegation as cancelled in Cathulu's audit record."
+    )]
+    fn cancel_delegation(&self, Parameters(a): Parameters<DelegationIdArgs>) -> CallToolResult {
+        self.store
+            .cancel_delegation(a.delegation_id)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -740,6 +807,9 @@ impl ServerHandler for CathuluServer {
             ResourceTemplate::new("cathulu://runs/{id}", "Cathulu run")
                 .with_description("One run and its quality check results.")
                 .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://delegations/{id}", "Cathulu delegation")
+                .with_description("One bounded task packet, requested settings, and append-only lifecycle history.")
+                .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://decisions/{id}", "Cathulu decision")
                 .with_description("One immutable project decision and its supersession link.")
                 .with_mime_type("application/json"),
@@ -781,6 +851,19 @@ impl ServerHandler for CathuluServer {
         } else if request.uri == "cathulu://dashboard" {
             serde_json::to_string(&self.store.dashboard_snapshot().map_err(internal_error)?)
                 .map_err(internal_error)?
+        } else if let Some(delegation_id) = request.uri.strip_prefix("cathulu://delegations/") {
+            let delegation_id = parse_resource_id(delegation_id, &request.uri)?;
+            let delegation = self
+                .store
+                .get_delegation(delegation_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "delegation_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&delegation).map_err(internal_error)?
         } else if let Some(run_id) = request.uri.strip_prefix("cathulu://runs/") {
             let run_id = parse_resource_id(run_id, &request.uri)?;
             let run = self

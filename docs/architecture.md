@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1 and the M2 workflow/managed-memory foundation are implemented and validated on Windows; live Codex MCP connection remains an owner-controlled follow-up.
+Status: product boundaries are NORMATIVE. M1-M5 are validated and published on Windows. M6 delegation identity and packet tracking pass the full Windows validation gate on `codex/phase3-delegation-contract`; publication is pending. The live owner Codex MCP connection remains an owner-controlled follow-up.
 
 ## System boundary
 
@@ -11,6 +11,7 @@ Codex app / Main Overseer
   ↕ local MCP (domain reads and state transitions)
 Cathulu Core ───── local SQLite database
   ├─ project, objective, task, and run state
+  ├─ structured delegation packets and lifecycle evidence
   ├─ append-only event, decision, QA, and workflow history
   ├─ managed memory lifecycle over domain records and evidence
   ├─ Git reconciliation
@@ -36,15 +37,21 @@ Keep the Rust workspace small: a core library for project persistence and Git re
 
 The M1 implementation uses Tauri 2, React/TypeScript, `rusqlite` with bundled SQLite, RMCP over stdio, and Git CLI reconciliation. Exact resolved dependency versions are recorded in the Rust and npm lockfiles. The desktop host and MCP process share one SQLite database path when configured with the same data-directory environment; the dashboard reads snapshots through a Tauri command and polls every five seconds. The dashboard remains read-only. Windows/MSVC builds embed the Common Controls v6 manifest in app and test binaries so the Tauri mock IPC test harness can load. This follows the [Tauri Windows test-manifest example](https://github.com/tauri-apps/tauri/blob/dev/examples/api/src-tauri/build.rs). A later, separate settings surface will own model/effort selection.
 
-M2 adds an additive SQLite v2 foundation alongside the existing M1 project table. The shared schema covers project dependencies, objectives/tasks, immutable decisions and workflow versions, runs and quality checks, evidence artifact references, append-only domain events, memory metadata/provenance, known-by state, context transfers, and per-scope HOT budgets. Semantic MCP operations update mutable projections and append events in one transaction; the MCP API exposes named domain operations and JSON resources rather than SQL/table CRUD. The desktop reads a compact dashboard snapshot that includes objectives, blockers, recent runs, failed/inconclusive checks, and memory-health counts/sizes. M2 itself does not automate memory management; M4 adds the manual, proposal-first Gardener, explicit consolidation, and configurable reference-aware artifact-reference collection.
+M2 adds an additive SQLite v2 foundation alongside the original M1 project table. The shared schema covers project dependencies, objectives/tasks, immutable decisions and workflow versions, runs and quality checks, evidence artifact references, append-only domain events, memory metadata/provenance, known-by state, context transfers, and per-scope HOT budgets. M4 adds selective SQL/FTS retrieval, the manual proposal-first Gardener, explicit consolidation, and configurable reference-aware artifact-reference collection. M5 validates the shared MCP/Tauri store and restart behavior through a disposable Windows integration smoke.
 
-M2 validation passes all seven Rust workspace tests, all three React tests, formatting, the production frontend and Windows Tauri release builds, an isolated five-second app startup/database smoke, and a visible browser preview/focus check. Git commit freshness currently invalidates only memories tied to the changed project; Graphify, contract, and dependency freshness inputs remain stored metadata without automatic invalidation until their snapshot sources are implemented.
+M1-M5 implementation and Windows release-build validation is recorded in [PLAN-001](plans/PLAN-001-phase1-first-slice.md). Git commit freshness currently invalidates only memories tied to the changed project; Graphify, contract, and dependency freshness inputs remain stored metadata without automatic invalidation until their snapshot sources are implemented.
 
 ## Data and transaction model
 
-SQLite is the source of truth. Use relational columns for projects, dependencies, objectives, tasks, decisions, workflow identities/versions, runs, quality checks, memory lifecycle metadata, and state needed for filtering. Use JSON for bounded heterogeneous event payloads only. Each important transition appends its domain event and updates the corresponding current-state projection in one transaction. Decisions and workflow versions are immutable. Artifacts are stored as local references and hashes where possible, not copied into prompts.
+SQLite is the source of truth. Use relational columns for projects, dependencies, objectives, tasks, decisions, workflow identities/versions, runs, quality checks, delegation identity/lifecycle, memory lifecycle metadata, and state needed for filtering. Use bounded JSON for typed delegation packets and heterogeneous event payloads. Each important transition appends its domain event and updates the corresponding current-state projection in one transaction. Decisions, workflow versions, delegation identity/packet content, and delegation reference links are immutable; only a delegation's validated lifecycle status may change. Artifacts are stored as local references and hashes where possible, not copied into packets.
 
-The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs additive database migrations and rejects databases newer than the app. M1 registration captures a Git snapshot and the explicit `reconcile_project` MCP tool refreshes it; startup does not yet reconcile every registered repository. Git HEAD changes deterministically invalidate only memory records whose freshness basis names that project. The memory layer stores distilled knowledge and source references; it does not duplicate current project, decision, workflow, run, or artifact state.
+The initial data path is an OS-local application data directory. SQLite is configured for transactional writes and WAL. Startup runs additive database migrations and rejects databases newer than the app. MCP and desktop startup both attempt to reconcile every registered repository; the explicit `reconcile_project` tool refreshes one project. Git HEAD changes deterministically invalidate only memory records whose freshness basis names that project. The memory layer stores distilled knowledge and source references; it does not duplicate current project, decision, workflow, run, or artifact state.
+
+### Codex-native delegation records
+
+M6 adds an additive v5 delegation schema that links each record to one project, task, and matching running or blocked run. The typed v1 task packet is limited to 16 KiB and contains an objective, acceptance criteria, constraints, repository-relative allowed paths, current memory/artifact IDs, and requested report fields. Packet content is normalized before hashing. Memory references must be accepted, current, and visible to the same project/task scope. Artifact references must be available and associated with the parent run or unscoped; foreign-key links keep those artifacts from being collected as orphaned evidence.
+
+The stable delegation ID and packet identity persist in SQLite. Idempotency keys and optional external correlation values are SHA-256 hashed; their raw values are not stored. Requested model and effort are stored separately, and effective values remain absent until a trusted source exists. `prepared`, `dispatched`, and `cancelled` are audit states; dispatch records an owner action through native Codex and does not prove that a worker started or completed. Status transitions append events in the existing journal, and the parent run's quality state is unchanged. MCP exposes semantic prepare/transition tools and `cathulu://delegations/{id}` only; it does not spawn agents, run tools, manage worktrees, or write Codex configuration.
 
 ### Managed memory lifecycle
 
@@ -112,7 +119,7 @@ Desktop and MCP process startup both attempt Git reconciliation for every regist
 
 Repository files and telemetry inputs are untrusted. MCP input is validated and mapped to domain operations. Registered paths are canonicalized and restricted to the explicit registry. No generic SQL operation is exposed. No unnecessary TCP listener is opened. Never treat hooks as an authorization boundary or as proof that a tool succeeded; preserve Codex's sandbox and approval mechanisms for consequential operations.
 
-Do not persist secrets, raw prompts, or full agent transcripts by default. Store provenance, event type, identifiers, bounded/sanitized metadata, content hashes, and artifact references. Treat any future prompt retention as a separate privacy decision. Keep all memory, artifacts, telemetry, indexes, and policy experiments local. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
+Do not persist secrets, raw prompts, or full agent transcripts by default. Store structured task fields, provenance links, event type, hashed identifiers, bounded metadata, content hashes, and artifact references. Treat any future prompt or transcript retention as a separate privacy decision. Keep all memory, artifacts, telemetry, indexes, and policy experiments local. Use OS-local storage permissions, database transactions, idempotent state transitions, and startup reconciliation for recovery. Protect unique provenance conservatively and compact redundant representations only after useful knowledge has been preserved.
 
 ## Dashboard interaction contract
 

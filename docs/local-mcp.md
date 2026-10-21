@@ -121,6 +121,9 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 - `register_project` accepts a local Git repository path. It stores the canonical repository root and an initial branch, HEAD, dirty flag, and changed-path list.
 - `reconcile_project` refreshes the Git snapshot for a registered project ID.
 - Workflow tools create objectives and tasks, record immutable decisions and workflow versions, start runs, record quality checks and local evidence references, and finish runs using mandatory-check results.
+- `prepare_delegation` stores a typed v1 task packet against a matching project, task, and running/blocked run. Packets are limited to 16 KiB and include an objective, acceptance criteria, constraints, repository-relative allowed paths, current memory/artifact references, and requested report fields. Invalid or cross-scope references are rejected.
+- `mark_delegation_dispatched` and `cancel_delegation` append validated lifecycle events. These only record the owner's native Codex action or Cathulu cancellation state; they do not spawn or signal a worker and do not change parent-run quality.
+- Requested model/effort values are preferences only. Idempotency and optional external correlation values are SHA-256 hashed and the raw values are discarded. Effective model/effort values are not inferred.
 - `record_codex_hook_event` accepts only an allowlist of Codex lifecycle metadata. One observed session/turn maps to a run; stopping or interrupting it records an inconclusive outcome, never verified success.
 - Memory tools create provenance-bearing candidates, review candidates, change temperature or scope activation, set a HOT byte budget, read scope memories, and prepare explicit context transfers. A canonical memory requires a provenance source; current reads omit rejected, stale, superseded, and COLD memory by default.
 - Context transfers persist hashes, scope IDs, class/temperature, byte/token counts, retrieval method, and first-time/reintroduced state. The transfer ledger does not retain raw transferred bodies; the explicit transfer tool returns the body only when a full or delta transfer is requested.
@@ -129,6 +132,7 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 - `cathulu://projects/{id}` reads one project's snapshot.
 - `cathulu://dashboard` reads the compact dashboard snapshot.
 - `cathulu://runs/{id}`, `cathulu://decisions/{id}`, `cathulu://memories/{id}`, and `cathulu://transfers/{id}` read one durable record.
+- `cathulu://delegations/{id}` reads one structured task packet, its stable packet hash, requested settings, artifact/memory IDs, and append-only lifecycle history.
 - `cathulu://objectives/{id}`, `cathulu://tasks/{id}`, `cathulu://dependencies/{id}`, and `cathulu://artifacts/{id}` read current domain records and protection metadata.
 - `cathulu://events/run/{id}` reads a run's append-only event history.
 
@@ -165,7 +169,7 @@ target\release\cathulu-maintain.exe evidence-gc preview
 target\release\cathulu-maintain.exe evidence-gc collect
 ```
 
-The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks policy, extraction, protected state, direct memory references, active holds, QA outcome, and legacy URI-bearing events before each change. It replaces only the local URI with a tombstone and preserves the artifact row, stable ID, hashes, extraction receipt, and external file. Collection does not delete external files or promise physical SQLite disk compaction. Use `evidence-gc hold ARTIFACT_ID REASON` and `evidence-gc release-hold HOLD_ID` to maintain an auditable investigation hold. `evidence-gc disable-retention` returns collection to its disabled-by-default state.
+The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks policy, extraction, protected state, direct memory and delegation references, active holds, QA outcome, and legacy URI-bearing events before each change. It replaces only the local URI with a tombstone and preserves the artifact row, stable ID, hashes, extraction receipt, and external file. Collection does not delete external files or promise physical SQLite disk compaction. Use `evidence-gc hold ARTIFACT_ID REASON` and `evidence-gc release-hold HOLD_ID` to maintain an auditable investigation hold. `evidence-gc disable-retention` returns collection to its disabled-by-default state.
 
 ## Data location
 

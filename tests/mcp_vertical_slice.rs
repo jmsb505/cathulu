@@ -309,7 +309,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 4);
+    assert_eq!(schema_version, 5);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");
@@ -328,6 +328,15 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
     migrated_database
         .prepare("SELECT policy_id FROM memory_policy_evaluations LIMIT 0")
         .expect("versioned memory policy evaluations");
+    migrated_database
+        .prepare("SELECT packet_hash, idempotency_key_hash FROM delegations LIMIT 0")
+        .expect("version-five delegation records");
+    migrated_database
+        .prepare("SELECT memory_id FROM delegation_memory_refs LIMIT 0")
+        .expect("delegation memory references");
+    migrated_database
+        .prepare("SELECT artifact_id FROM delegation_artifact_refs LIMIT 0")
+        .expect("delegation evidence references");
     drop(migrated_database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
