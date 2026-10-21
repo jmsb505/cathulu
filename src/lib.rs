@@ -1,5 +1,6 @@
 pub mod codex_config;
 pub mod codex_config_files;
+pub mod context_extraction;
 pub mod dashboard;
 pub mod delegation;
 mod events;

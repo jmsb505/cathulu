@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15 MERGED; M16 SHADOW MECHANICS LOCALLY VALIDATED; M17-M19 PROPOSED. No provider adapters or live model calls are implemented. Active treatments remain gated until the M18 approval stage.
+Status: M15-M16 MERGED; M17 SHADOW MECHANICS LOCALLY VALIDATED; M18-M19 PROPOSED. No provider adapters or live model calls are implemented. Active treatments remain gated until the M18 approval stage.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -237,6 +237,14 @@ Jev was not integrated or called. Context7 `resolve-library-id` returned “Mont
 
 **Expected checkpoint:** local shadow extraction evidence; no active compression or source replacement.
 
+**Result (2026-10-21):** implemented an M17-only selected-span loader for registered local `test_log`, `compiler_log`, `ci_log`, `tool_output`, and `tool_result` artifacts. It enforces file-size and UTF-8 bounds, verifies any registered hash, selects error-adjacent byte spans, and provides only the selected text plus a stable `cathulu://artifacts/{id}` reference to a local ContextModel. The filesystem path stays inside the loader. Model candidates require a closed kind, bounded summary, exact quote-to-source-byte match, selected-range membership, matching artifact IDs/content hashes, and a bounded response. The original file remains untouched and retrievable by its artifact reference.
+
+The run-attributed shadow path records invocation metadata and a separate append-only extraction event in the existing event ledger. The event includes source IDs/hashes, selected-input hash and size, raw-source size, deterministic-baseline hash/count, exact candidate span overlap counts, model result hash, and the validated bounded result. Remote providers are recorded as skipped before invocation; empty selected inputs, invalid responses, timeouts, and provider errors also do not affect the run. There is no schema migration, active mode, provider adapter, frontend change, QA change, or context replacement.
+
+Validation includes seven integration tests and a locally generated failing Rust test-harness output captured as a real tool artifact. The model used in tests is a deterministic test double; exact span checks and baseline overlap validate mechanics, not model quality, information-recovery rate, Codex savings, or workflow value. ScaleDown and local model candidates remain unreviewed/unintegrated; M18 must not claim benefit from this sample.
+
+**Validation evidence:** `cargo test --offline --test context_extraction_m17` — 7 passed, 0 failed. Full-workspace validation is recorded under Completion evidence after the final gate.
+
 ### M18 — Controlled ablation and evidence review
 
 **Goal:** determine actual efficiency and quality impact under comparable conditions.
@@ -334,7 +342,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] Validate documentation with git diff whitespace checks, local link resolution, and a trailing-whitespace scan.
 - [x] M15 provider-neutral contracts, disabled-by-default configuration, immutable run attribution, and append-only telemetry; merged via [PR #6](https://github.com/jmsb505/cathulu/pull/6) at `bf9e9a9b5f78ef45da6f31b549fdd857c80201c8`.
 - [x] M16 local shadow-trial mechanics, strict decision schemas, SQLite routing-state minimization, and evidence-linked human review; no provider or live call.
-- [ ] M17 ContextModel shadow extraction.
+- [x] M17 local ContextModel shadow extraction boundary and selected-span provenance; no provider or live call.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -347,6 +355,8 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - 2026-10-21: `Store::start_run` continues to use the all-disabled defaults. A host may pass a typed `OptimizationConfig` to `start_run_with_optimization`; an immutable workflow version can override selected entries under its `optimization.capabilities` object. This milestone does not add a settings UI, provider registry, credential store, provider adapter, or model call.
 - 2026-10-21: M16 uses only the existing event ledger for shadow invocations and post-run counterfactual review; no schema migration or duplicate experiment store was necessary. The SQLite-derived routing projection excludes user task text, repository paths, artifact contents, memory bodies, and summaries. The call boundary enforces this projection exactly and currently accepts only local providers.
 - 2026-10-21: Context7's Jev documentation lookup hit the monthly quota. The Jev API and service-terms pages and its API repository README were inspected directly. The API wrapper's relationship to the underlying model, request-retention/data-handling details, and a secure local credential path remain unresolved, so no Jev adapter or network call was added; this is a deliberate M16 scope limit, not a model evaluation result.
+- 2026-10-21: M17 reuses the existing evidence-artifact registry and event ledger without a migration. The extraction request contains selected text and a stable Cathulu resource ID, never the local filesystem path; the output event stores hashes and validated spans while retaining the raw artifact by reference. Remote extraction remains unimplemented and is skipped regardless of configured remote opt-in.
+- 2026-10-21: `.env.example` documents empty reserved decision/context API-key placeholders and `.gitignore` excludes local `.env` files. The runtime currently has no dotenv loader, provider adapter, or secure credential path; adding key values to `.env.local` does not activate a provider.
 
 ## Completion evidence
 
@@ -369,5 +379,16 @@ M16 passed local Windows validation on 2026-10-21. Commands and results:
 - M16 tests cover fixed outcome/escape schemas, strict/oversized response parsing, probability normalization, SQLite-derived minimized state, rejected unminimized state, no shadow influence, disabled/remote/failure fallback, and append-only post-run review idempotency and persistence after reopening SQLite.
 - No migration or frontend change was required. The M16 runner rejected remote providers before invoking a model. No provider call, active treatment, or product-value result is claimed.
 
-No live model call, active treatment, or measured optimization result is claimed complete. M17-M19 remain proposed.
+M17 passed focused local Windows validation on 2026-10-21. Commands and results:
+
+- `cargo fmt --all` — passed; final `--check` is recorded after the full gate.
+- `cargo test --offline --test context_extraction_m17` — passed (7 tests).
+- Tests cover selected byte spans and hashes, non-disclosure of local paths, raw artifact retrieval, a captured local Rust test-harness failure, deterministic candidate provenance, shadow run isolation, malformed quote rejection, provider timeout/unavailability, remote and empty-input skips, changed-hash rejection, and unsupported artifact kinds.
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --workspace` — passed (55 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed).
+- `git diff --check` — passed. `.env.local` is ignored and `.env.example` remains trackable.
+- `cargo clippy --offline --workspace --all-targets -- -D warnings` — not clean because of 10 existing lints in `codex_config_files.rs`, `gardener.rs`, `graphify.rs`, `mcp.rs`, `memory.rs`, `workflow.rs`, and `lib.rs`. The strict run reported no remaining M17 lint after cleanup; unrelated lint debt was left unchanged.
+- No migration, dependency, provider adapter, real model call, active treatment, UI, or product-value claim was added. Model effectiveness, information-recovery rate, Codex-turn savings, and latency impact remain unknown.
+
+No live model call, active treatment, or measured optimization result is claimed complete. M18-M19 remain proposed; M17's tested shadow boundary is ready for review, while provider/model quality remains unmeasured.
 

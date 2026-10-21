@@ -705,6 +705,11 @@ pub struct ContextSource {
     pub content_hash: String,
     pub source_ref: String,
     pub content: String,
+    /// Absolute byte ranges in the original artifact represented by `content`.
+    /// M17 extraction requests use these ranges to keep model citations tied to
+    /// the unmodified evidence file. Earlier request versions may omit them.
+    #[serde(default)]
+    pub source_spans: Vec<ContextSourceSpan>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -730,13 +735,43 @@ impl ContextRequest {
             return Err("context output limit must be between 1 byte and 64 KiB".to_string());
         }
         let mut total = 0usize;
+        let mut artifact_ids = BTreeSet::new();
         for source in &self.sources {
             if source.artifact_id <= 0 {
                 return Err("context source artifact IDs must be positive".to_string());
             }
+            if !artifact_ids.insert(source.artifact_id) {
+                return Err("context source artifact IDs must be unique".to_string());
+            }
             validate_hash("context source content hash", &source.content_hash)?;
             validate_label("context source reference", &source.source_ref, 2_000)?;
             total = total.saturating_add(source.content.len());
+            if self.schema_version >= 2 {
+                if source.source_spans.len() > 128 {
+                    return Err("context source has more than 128 selected spans".to_string());
+                }
+                let mut mapped_bytes = 0u64;
+                let mut previous_end = 0u64;
+                for span in &source.source_spans {
+                    if span.artifact_id != source.artifact_id
+                        || span.start_byte >= span.end_byte
+                        || span.start_byte < previous_end
+                    {
+                        return Err(
+                            "selected context spans must be ordered, non-overlapping ranges in their source artifact"
+                                .to_string(),
+                        );
+                    }
+                    mapped_bytes = mapped_bytes.saturating_add(span.end_byte - span.start_byte);
+                    previous_end = span.end_byte;
+                }
+                if mapped_bytes != source.content.len() as u64 {
+                    return Err(
+                        "selected context spans must map byte-for-byte to their excerpt"
+                            .to_string(),
+                    );
+                }
+            }
         }
         if total > MAX_CONTEXT_INPUT_BYTES {
             return Err("context request sources exceed the 512 KiB input limit".to_string());
