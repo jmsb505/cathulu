@@ -325,6 +325,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 
 - [x] Inspect the existing M4 memory/run/telemetry substrate and M9/M11 boundaries.
 - [x] Record the optional specialist architecture and M15-M19 plan. No implementation or provider call is included in this documentation milestone.
+- [x] Validate documentation with git diff whitespace checks, local link resolution, and a trailing-whitespace scan.
 - [ ] M15 provider-neutral contracts and attribution.
 - [ ] M16 DecisionModel shadow trials.
 - [ ] M17 ContextModel shadow extraction.
@@ -339,5 +340,5 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 
 ## Completion evidence
 
-This document and ADR-0007 record the proposed architecture only. No code, SQLite migration, provider integration, network call, active treatment, or implementation test is claimed complete. Documentation validation and publication evidence will be recorded after review.
+This documentation milestone passed git diff whitespace checks, local Markdown link resolution, and a trailing-whitespace scan. No implementation tests were run because no code changed. No SQLite migration, provider integration/API validation, network call, active treatment, or measured optimization result is claimed complete.
 
