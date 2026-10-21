@@ -1,6 +1,6 @@
 # PLAN-006 — Bounded per-project agent hierarchy
 
-Status: M20-M23 are implemented and validated on Windows. M24's project-scoped graph, truthful activity states, per-project monitor, and automated checks are implemented; native Windows visual smoke and review are still required. M25 remains gated on an owner-selected real task. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with role-specific memory-tool availability still open and no hook events observed in that probe.
+Status: M20-M23 are implemented and validated on Windows. M24's truthful activity graph, portfolio-wide Main view, project-focus filter, per-project monitor, and automated checks are implemented; native Windows visual smoke and review are still required. M25 remains gated on an owner-selected real task. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with role-specific memory-tool availability still open and no hook events observed in that probe.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -270,13 +270,13 @@ Expected Git checkpoint: validated memory-activation milestone branch and cohere
 
 Goal: show truthful, role-labeled Main → Project Manager → Worker activity for independent project runs.
 
-Design direction: make the recorded project graph the first activity view and keep detail progressive. Adapt the user's rough observability canvas for a single selected project/run; its illustrative cross-project edges, agent names, metrics, and percentages are not Cathulu evidence and must not appear. Use the existing React/CSS stack for this fixed three-level topology rather than adding a graph library. Render one stable Main Overseer coordinator identity across project/run views; chats are session representations of that same logical role, not separate Main agents. Explicit Cathulu delegation relationships render the assigned hierarchy, while only a linked `SubagentStart` without a later `SubagentStop`, while its run remains `running`, may pulse as observed active. A recorded dispatch without linked hook activity is `unobserved`, never active. M21 surfaced no hook events, so unobserved states are expected and the dashboard must communicate that state without implying a proven idle agent. Keep the detached monitor as a separate compact per-project board; do not shrink the main dashboard into it. Native window and document corners must remain transparent, with a low-opacity clipped CSS surface rather than a native full-window material.
+Design direction: make the recorded activity graph the first view and keep detail progressive. The default is a portfolio overview with exactly one stable Main Overseer root and a separate project lane for each registered project; lanes show only that project's latest running or recent run and explicit delegation relationships. Project chips are visualization filters that focus one lane and its run history; they do not select an orchestrator or alter project assignment. The owner can return to `All projects` at any time. Illustrative cross-project edges, agent names, metrics, and percentages from the rough canvas are not Cathulu evidence and must not appear. Use the existing React/CSS stack for this fixed topology rather than adding a graph library. Chats are session representations of the same Main role, not separate Main agents. Only a linked `SubagentStart` without a later `SubagentStop`, while its run remains `running`, may pulse as observed active. A recorded dispatch without linked hook activity is `unobserved`, never active. M21 surfaced no hook events, so unobserved states are expected and the dashboard must communicate that state without implying a proven idle agent. The application surface must fit its native window without document-level scrollbars; content should be compacted or contained in its own view where necessary. Keep the detached monitor as a separate compact per-project board; do not shrink the main dashboard into it. Native window and document corners must remain transparent, with a low-opacity clipped CSS surface rather than a native full-window material.
 
 Subtasks:
 
 - [x] Extend the existing read-only snapshot with stable project IDs, explicit hierarchy relationships, and coarse hook activity.
 - [x] Correlate observed start/stop events only through stable hashes and explicit delegation references; keep unbound hooks separate and retain privacy minimization.
-- [x] Show one project graph at a time, with active/blocked/stopped/unobserved states and no inferred cross-project edges.
+- [x] Default to one portfolio graph with one Main root and project-scoped lanes; allow explicit project focus and per-project run history without implying multiple Main identities.
 - [x] Add a clear unobserved state that distinguishes missing hook data from a proven idle agent.
 - [x] Keep the compact floating monitor focused on each project's state; show short project rows when expanded.
 
@@ -287,6 +287,7 @@ Dependencies: M21 nested-spawn capability findings (including the absence of hoo
 Acceptance criteria:
 
 - [x] A recorded run renders one Main root; manager and worker nodes follow explicit persisted assignment/parent relationships.
+- [x] The default dashboard shows the same single Main Overseer connected to every registered project's latest recorded activity; project selection is clearly labeled as a focus filter and can return to All projects.
 - [x] Main remains the same global coordinator identity across project/run views; the selected run does not create another Main agent.
 - [x] A completed or failed child remains visible as history without pulsing as active.
 - [x] Missing telemetry never creates an active node or percentage.
@@ -296,6 +297,7 @@ Acceptance criteria:
 Validation:
 
 - [x] Frontend build and Rust snapshot checks.
+- [x] Main dashboard root/document sizing prevents body-margin overflow and page-level horizontal/vertical scrollbars.
 - [ ] Windows native manual smoke with one recorded hierarchy, missing telemetry, stopped/blocked run, independent projects, transparent corners, dragging, always-on-top, and compact/expanded sizing.
 - [x] Reduced-motion/reduced-transparency behavior and `git diff --check`.
 
@@ -384,4 +386,6 @@ M23 implementation and validation (2026-10-21): migration 11 adds append-only re
 M24 implementation and automated validation (2026-10-21): added a project-ID-scoped read-only graph for Main, explicitly assigned Project Managers, and parent-linked Workers; hook observations without a delegation binding stay in a separate unlinked strip. The dashboard marks dispatches without linked starts unobserved, and only a linked start on a running run may pulse as active. Added project IDs to dashboard run/blocker/delegation records, a bounded hook-activity projection, separate dashboard/monitor Tauri capabilities, and a 148×42 compact / 324×204 expanded always-on-top monitor with a transparent document and clipped low-opacity glass. Rust workspace tests passed (74 passed, 1 existing ignored), frontend tests passed (4), the frontend build passed, and formatting passed. Automated coverage includes real and missing hierarchy links, unlinked hooks, stop state, and project isolation. Native Windows visual smoke has not been performed; M24 is therefore not complete and must not merge until that smoke passes.
 
 Logical identity clarification (2026-10-21): the owner clarified that one logical Main Overseer exists portfolio-wide while multiple Codex chats may represent or resume that role. Updated ADR-0009 and the normative agent contract. M24 now renders a stable coordinator node without run-specific identity or an active-work pulse; project/run context remains in the graph toolbar. This is a presentation and role-contract invariant, not runtime chat authentication or a cross-chat lock.
+
+Portfolio observability clarification (2026-10-21): the owner could not tell what the project chips controlled and could not see Main's interactions with all projects at once. M24 therefore defaults to an `All projects` portfolio graph with one Main root and one latest-activity lane per project; choosing a project explicitly narrows the view. The visible global scrollbars came from the default body margin combined with a viewport-sized root; the desktop document now resets margin, uses border-box sizing, and clips the app viewport. Current frontend validation: `npm test -- --run` — 5 passed; `npm run build` — passed; `git diff --check` — passed. The native Windows viewport-fit and monitor smoke remains required before merge; no native visual pass is claimed.
 

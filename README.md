@@ -8,7 +8,7 @@ Cathulu is progressing through Windows-first milestones. M1 registers Git reposi
 
 - `cathulu-core`: Rust domain validation, additive SQLite migrations, workflow and memory persistence, and Git reconciliation.
 - `cathulu-mcp`: official RMCP stdio server with named domain tools and JSON resources; it does not expose SQL or table CRUD.
-- `apps/desktop`: Tauri 2 and React/TypeScript read-only dashboard plus separate model/effort settings for projects, objectives, runs, quality, and compact memory health.
+- `apps/desktop`: Tauri 2 and React/TypeScript read-only dashboard with one portfolio-wide Main Overseer activity graph, project-focus filters, and a separate model/effort settings surface.
 - `docs/`: product definition, architecture, decisions, roadmap, and implementation plans.
 
 The settings surface stores choices locally, offers a reviewed TOML diff before any project/user/profile config write, creates backups, and supports export-only. Named-agent settings update only matching existing custom-agent files. Cathulu does not infer account availability or claim that a config was loaded by Codex; those states remain unverified. MCP remains unable to edit Codex configuration.

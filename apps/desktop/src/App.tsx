@@ -145,6 +145,18 @@ type GraphAgentNode = {
   parentId?: string;
 };
 
+type ProjectActivitySnapshot = {
+  project: ProjectSnapshot;
+  state: ProjectMonitorState;
+  run: RunRecord | null;
+  managers: DelegationSnapshot[];
+  childrenByManager: Map<number, DelegationSnapshot[]>;
+  unlinkedNodes: GraphAgentNode[];
+  delegations: DelegationSnapshot[];
+  hookAgents: HookAgentRecord[];
+  attentionCount: number;
+};
+
 const dashboardTabs: { id: DashboardTab; label: string; icon: "activity" | "repositories" | "memory" }[] = [
   { id: "activity", label: "Agent activity", icon: "activity" },
   { id: "repositories", label: "Repositories", icon: "repositories" },
@@ -424,14 +436,127 @@ function agentRole(delegation: DelegationSnapshot) {
   return delegation.role.replace(/_/g, " ");
 }
 
+function projectActivitySnapshot(snapshot: DashboardSnapshot, project: ProjectSnapshot): ProjectActivitySnapshot {
+  const projectRuns = snapshot.recentRuns
+    .filter((item) => item.projectId === project.id)
+    .sort((left, right) => right.startedAt - left.startedAt || right.id - left.id);
+  const run = projectRuns.find((item) => item.status === "running") ?? projectRuns[0] ?? null;
+  const delegations = run ? snapshot.delegations.filter((item) => item.runId === run.id && item.projectId === project.id) : [];
+  const managers = delegations.filter((item) => item.role === "sub_overseer" && item.parentDelegationId === null && item.projectManagerAssignmentStatus !== null);
+  const managerIds = new Set(managers.map((item) => item.id));
+  const childrenByManager = new Map<number, DelegationSnapshot[]>();
+  for (const worker of delegations) {
+    if (worker.role !== "worker" || worker.parentDelegationId === null || !managerIds.has(worker.parentDelegationId)) continue;
+    const children = childrenByManager.get(worker.parentDelegationId) ?? [];
+    children.push(worker);
+    childrenByManager.set(worker.parentDelegationId, children);
+  }
+  const unlinkedDelegations = delegations.filter((item) => item.role === "worker" && (item.parentDelegationId === null || !managerIds.has(item.parentDelegationId)));
+  const hookAgents = run ? snapshot.agentActivity.filter((item) => item.runId === run.id) : [];
+  const unlinkedNodes: GraphAgentNode[] = [
+    ...unlinkedDelegations.map((delegation) => ({
+      id: `delegation-${delegation.id}`,
+      state: agentState(delegation),
+      label: "Unlinked worker",
+      initial: "W",
+      delegation,
+    })),
+    ...hookAgents.map((activity) => ({
+      id: `hook-${activity.id}`,
+      state: unlinkedHookState(activity),
+      label: activity.agentType.replace(/_/g, " "),
+      initial: activity.agentType.toLowerCase().includes("worker") ? "W" : "?",
+      activity,
+    })),
+  ];
+  const monitorState = projectMonitorItems(snapshot).find((item) => item.project.id === project.id)?.state ?? "idle";
+  const attentionCount = delegations.filter((item) => agentState(item) === "blocked").length
+    + (run ? snapshot.failedChecks.filter((check) => check.runId === run.id && check.mandatory && check.status.toLowerCase() === "failed").length : 0);
+  return { project, state: monitorState, run, managers, childrenByManager, unlinkedNodes, delegations, hookAgents, attentionCount };
+}
+
+function PortfolioActivityGraph({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const projects = snapshot.projects.map((project) => projectActivitySnapshot(snapshot, project));
+  const activeCount = projects.reduce((count, item) => count + item.delegations.filter((delegation) => agentState(delegation) === "active").length, 0);
+  const attentionCount = projects.reduce((count, item) => count + item.attentionCount, 0);
+  const branches = projects.map((item, index) => ({
+    ...item,
+    center: ((index + 0.5) * 1000) / Math.max(1, projects.length),
+  }));
+  const selectedNode = projects.flatMap((item) => [
+    ...item.managers,
+    ...[...item.childrenByManager.values()].flat(),
+    ...item.unlinkedNodes.flatMap((node) => node.delegation ? [node.delegation] : []),
+  ]).find((item) => `delegation-${item.id}` === selectedAgentId) ?? null;
+  const selectedHook = projects.flatMap((item) => item.unlinkedNodes).find((node) => node.id === selectedAgentId)?.activity ?? null;
+
+  return <>
+    <div className="graph-toolbar">
+      <div className="graph-run-copy portfolio-copy">
+        <i className="run-light" aria-hidden="true" />
+        <span>Portfolio</span>
+        <small>One Main Overseer · {projects.length} project{projects.length === 1 ? "" : "s"}</small>
+      </div>
+      <div className="graph-counts" aria-label="Portfolio activity summary">
+        <span className="count-active" title={`${activeCount} agents observed active`} aria-label={`${activeCount} agents observed active`}><i />{activeCount}</span>
+        <span className={attentionCount ? "count-blocked has-issues" : "count-blocked"} title={`${attentionCount} blocked agents or failed required checks`} aria-label={`${attentionCount} items need attention`}><i />{attentionCount}</span>
+      </div>
+    </div>
+
+    <div className="portfolio-stage" aria-label="Portfolio-wide Main Overseer and project activity">
+      <div className="portfolio-root-row">
+        <div className="hierarchy-node hierarchy-main state-coordinator" role="group" aria-label="Main Overseer, global coordinator">
+          <span className="hierarchy-avatar"><BrandMark /></span><span className="hierarchy-copy"><small>One logical coordinator</small><strong>Main Overseer</strong></span>
+        </div>
+      </div>
+      {projects.length > 0 && <svg className="portfolio-edges" viewBox="0 0 1000 42" preserveAspectRatio="none" aria-hidden="true">
+        {branches.map((item) => <path key={item.project.id} d={`M500 0 C500 19 ${item.center} 19 ${item.center} 42`} className={`portfolio-edge state-${item.state}`} />)}
+      </svg>}
+      {projects.length > 0 ? <div className="portfolio-project-grid" style={{ gridTemplateColumns: `repeat(${Math.min(projects.length, 4)}, minmax(0, 1fr))` }}>
+        {projects.map((item) => <article key={item.project.id} className={`portfolio-project state-${item.state}`} role="group" aria-label={`${item.project.name}: ${monitorStateLabel(item.state)}${item.run ? `, ${runTitle(item.run)}` : ", no recorded run"}`}>
+          <header className="portfolio-project-heading">
+            <i className={`project-state-dot state-${item.state}`} aria-hidden="true" />
+            <span className="portfolio-project-copy"><strong title={item.project.name}>{item.project.name}</strong><small title={item.run ? `${item.run.status} · ${runTitle(item.run)}` : "No recorded run"}>{item.run ? `${item.run.status.replace(/_/g, " ")} · ${runTitle(item.run)}` : "No recorded run"}</small></span>
+            <span className={`portfolio-state state-${item.state}`} title={monitorStateLabel(item.state)} aria-label={monitorStateLabel(item.state)} />
+          </header>
+          <div className="portfolio-assignment-flow">
+            {item.managers.length > 0 ? item.managers.map((manager) => {
+              const managerState = agentState(manager);
+              const children = item.childrenByManager.get(manager.id) ?? [];
+              return <div className="portfolio-assignment" key={manager.id}>
+                <button type="button" className={`portfolio-agent hierarchy-manager state-${managerState}`} onClick={() => setSelectedAgentId(`delegation-${manager.id}`)} aria-label={`Project Manager, ${stateLabel(managerState)}: ${manager.taskTitle}`} title={`${manager.taskTitle} · ${stateLabel(managerState)}`}>
+                  <span className="portfolio-agent-avatar">PM<i className="node-state-mark" /></span><span className="portfolio-agent-copy"><small>Project Manager</small><strong>{manager.taskTitle}</strong></span>
+                </button>
+                {children.length > 0 ? <div className="portfolio-workers">{children.map((worker) => {
+                  const workerState = agentState(worker);
+                  return <button key={worker.id} type="button" className={`portfolio-agent portfolio-worker hierarchy-worker state-${workerState}`} onClick={() => setSelectedAgentId(`delegation-${worker.id}`)} aria-label={`Worker, ${stateLabel(workerState)}: ${worker.taskTitle}`} title={`${worker.taskTitle} · ${stateLabel(workerState)}`}>
+                    <span className="portfolio-agent-avatar">W<i className="node-state-mark" /></span><span className="portfolio-agent-copy"><small>Worker</small><strong>{worker.taskTitle}</strong></span>
+                  </button>;
+                })}</div> : <div className="portfolio-no-worker">No linked workers</div>}
+              </div>;
+            }) : <div className="portfolio-no-manager"><span className="portfolio-agent-avatar">PM</span><span><strong>No Project Manager</strong><small>{item.run ? "No assignment recorded for this run" : "No run to assign"}</small></span></div>}
+            {item.unlinkedNodes.length > 0 && <div className="portfolio-unlinked">{item.unlinkedNodes.map((node) => <button key={node.id} type="button" className={`portfolio-unlinked-node state-${node.state}`} title={`${node.label} · ${stateLabel(node.state)}`} aria-label={`${node.label === "Unlinked worker" ? "worker" : node.label}, ${stateLabel(node.state)}`} onClick={() => setSelectedAgentId(node.id)}><i />{node.initial}</button>)}<small>Unlinked</small></div>}
+            {(selectedNode && item.delegations.some((delegation) => delegation.id === selectedNode.id) || selectedHook && item.hookAgents.some((activity) => activity.id === selectedHook.id)) && <div className="portfolio-agent-detail" role="status">
+              <i className={`detail-state state-${selectedNode ? agentState(selectedNode) : unlinkedHookState(selectedHook!)}`} />
+              <span><strong>{selectedNode?.taskTitle ?? selectedHook?.agentType.replace(/_/g, " ")}</strong><small>{selectedNode ? `${agentRole(selectedNode)} · ${stateLabel(agentState(selectedNode))}${selectedNode.workerTelemetry?.effectiveModel ? ` · ${selectedNode.workerTelemetry.effectiveModel}` : ""}` : `${stateLabel(unlinkedHookState(selectedHook!))} · ${selectedHook?.eventCount} events, unlinked`}</small></span>
+              <button type="button" onClick={() => setSelectedAgentId(null)} aria-label="Close agent details"><Icon name="close" /></button>
+            </div>}
+          </div>
+        </article>)}
+      </div> : <div className="portfolio-empty"><BrandMark /><span>Register projects through Cathulu MCP to see them here.</span></div>}
+    </div>
+  </>;
+}
+
 function AgentActivityView({ snapshot, selectedRunId, onSelectRun, selectedProjectId, onSelectProject }: {
   snapshot: DashboardSnapshot;
   selectedRunId: number | null;
   onSelectRun: (id: number) => void;
   selectedProjectId: number | null;
-  onSelectProject: (id: number) => void;
+  onSelectProject: (id: number | null) => void;
 }) {
-  const project = snapshot.projects.find((item) => item.id === selectedProjectId) ?? snapshot.projects[0] ?? null;
+  const project = selectedProjectId === null ? null : snapshot.projects.find((item) => item.id === selectedProjectId) ?? null;
   const projectRuns = project ? snapshot.recentRuns
     .filter((item) => item.projectId === project.id)
     .sort((left, right) => right.startedAt - left.startedAt || right.id - left.id) : [];
@@ -480,14 +605,18 @@ function AgentActivityView({ snapshot, selectedRunId, onSelectRun, selectedProje
 
   return (
     <section className="agent-activity-view" aria-label="Project agent activity">
-      {snapshot.projects.length > 0 && <nav className="project-switcher" aria-label="Projects">
+      {snapshot.projects.length > 0 && <nav className="project-switcher" aria-label="Filter activity by project">
+        <span className="project-switcher-label">Focus</span>
+        <button type="button" className={`project-switcher-item ${project === null ? "is-selected" : ""}`} aria-pressed={project === null} title="Show the single Main Overseer and activity across every project" onClick={() => onSelectProject(null)}>All projects</button>
         {snapshot.projects.map((item) => {
           const state = projectMonitorItems(snapshot).find((status) => status.project.id === item.id)?.state ?? "idle";
-          return <button key={item.id} type="button" className={`project-switcher-item ${project?.id === item.id ? "is-selected" : ""}`} aria-current={project?.id === item.id ? "page" : undefined} onClick={() => onSelectProject(item.id)}>
+          return <button key={item.id} type="button" className={`project-switcher-item ${project?.id === item.id ? "is-selected" : ""}`} aria-pressed={project?.id === item.id} title={`Focus activity for ${item.name}`} onClick={() => onSelectProject(item.id)}>
             <i className={`project-state-dot state-${state}`} aria-hidden="true" /><span>{item.name}</span>
           </button>;
         })}
       </nav>}
+
+      {project === null ? <PortfolioActivityGraph snapshot={snapshot} /> : <>
 
       <div className="graph-toolbar">
         <div className="graph-run-copy">
@@ -552,6 +681,7 @@ function AgentActivityView({ snapshot, selectedRunId, onSelectRun, selectedProje
       {projectRuns.length > 1 && <div className="run-history" aria-label="Project run history">
         {projectRuns.slice(0, 8).reverse().map((item) => <button key={item.id} type="button" className={`run-history-mark state-${statusTone(item.status)} ${run?.id === item.id ? "is-selected" : ""}`} onClick={() => onSelectRun(item.id)} title={`${runTitle(item)} · ${item.status}`} aria-label={`Show ${runTitle(item)}, ${item.status}`} />)}
       </div>}
+      </>}
     </section>
   );
 }

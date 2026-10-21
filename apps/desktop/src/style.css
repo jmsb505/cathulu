@@ -17,9 +17,10 @@
   --ease-ui: cubic-bezier(.2, .8, .2, 1);
 }
 
-html, body, #root { width: 100%; height: 100%; min-height: 100%; }
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; min-height: 0; margin: 0; overflow: hidden; }
 html { background: #0b1012; }
-body { min-width: 360px; min-height: 100%; color: var(--ink); background: #0b1012; }
+body { min-width: 360px; color: var(--ink); background: #0b1012; }
 button { color: inherit; }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 ::selection { color: #07110b; background: #8fd3ad; }
@@ -519,8 +520,9 @@ html.monitor-document, html.monitor-document body, html.monitor-document #root {
 
 /* M24: keep the primary surface focused on a single project's recorded hierarchy. */
 .agent-activity-view { gap: 8px; }
-.project-switcher { display: flex; flex: 0 0 31px; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.project-switcher { display: flex; flex: 0 0 31px; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
 .project-switcher::-webkit-scrollbar { display: none; }
+.project-switcher-label { flex: 0 0 auto; padding: 0 2px 0 1px; color: #697773; font: 7px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .project-switcher-item { display: inline-flex; min-width: 0; height: 25px; flex: 0 0 auto; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; padding: 0 8px; color: #8c9994; background: transparent; font-size: 9px; cursor: pointer; transition: color 160ms var(--ease-ui), background-color 160ms var(--ease-ui), border-color 160ms var(--ease-ui); }
 .project-switcher-item:hover { color: #dbe5e1; background: #151d1f; }
 .project-switcher-item.is-selected { border-color: #32443b; color: #dcebe1; background: #14201a; }
@@ -575,6 +577,72 @@ html.monitor-document, html.monitor-document body, html.monitor-document #root {
 .unlinked-observation i { display: none; }
 .run-history { flex-basis: 14px; }
 .run-history-mark { width: 5px; height: 5px; }
+
+/* Portfolio view: one global coordinator branches into each independent project scope. */
+.portfolio-copy small { overflow: hidden; color: #899792; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; border: 1px solid #202c2e; border-radius: 13px; background: radial-gradient(ellipse at 50% 28%, #1b292574 0, #11171935 48%, transparent 78%), #0d1315; isolation: isolate; }
+.portfolio-stage::before { position: absolute; z-index: -1; inset: 0; background-image: radial-gradient(#64757032 .65px, transparent .65px); background-size: 18px 18px; content: ""; mask-image: linear-gradient(to bottom, #0008, transparent 90%); }
+.portfolio-root-row { display: flex; flex: 0 0 48px; align-items: flex-start; justify-content: center; padding-top: 4px; }
+.portfolio-root-row .hierarchy-node { position: relative; top: auto; left: auto; width: min(220px, 80%); min-height: 42px; transform: none; }
+.portfolio-edges { display: block; width: 100%; height: 36px; flex: 0 0 36px; overflow: visible; pointer-events: none; }
+.portfolio-edge { fill: none; stroke: #65736e70; stroke-width: 1.5; stroke-dasharray: 3 7; vector-effect: non-scaling-stroke; }
+.portfolio-edge.state-working { stroke: #89dca474; }
+.portfolio-edge.state-blocked, .portfolio-edge.state-failed { stroke: #ef81786e; }
+.portfolio-project-grid { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; gap: 8px; padding: 0 8px 8px; }
+.portfolio-project { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid #283437; border-radius: 9px; background: linear-gradient(160deg, #141c1dcb, #0f1516d9); }
+.portfolio-project.state-working { border-color: #344b3f; }
+.portfolio-project.state-blocked, .portfolio-project.state-failed { border-color: #4a3c34; }
+.portfolio-project-heading { display: flex; min-width: 0; align-items: center; gap: 7px; border-bottom: 1px solid #253033; padding: 8px 8px 7px; }
+.portfolio-project-heading .project-state-dot { width: 6px; height: 6px; }
+.portfolio-project-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 3px; }
+.portfolio-project-copy strong, .portfolio-project-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-project-copy strong { color: #dce6e1; font-size: 9px; font-weight: 600; }
+.portfolio-project-copy small { color: #82908b; font: 7px var(--mono); }
+.portfolio-state { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: #77827d; }
+.portfolio-state.state-working { background: #8be0a8; box-shadow: 0 0 7px #8be0a886; animation: project-signal-pulse 1.7s ease-in-out infinite; }
+.portfolio-state.state-blocked { background: #e7c36f; }
+.portfolio-state.state-failed { background: #ef827b; }
+.portfolio-state.state-stopped { background: #77a688; }
+.portfolio-assignment-flow { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 7px; overflow: hidden; padding: 9px 7px 7px; }
+.portfolio-assignment { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+.portfolio-agent { position: relative; display: flex; width: 100%; min-width: 0; min-height: 38px; align-items: center; gap: 7px; transform: none; border: 1px solid #33413b; border-radius: 7px; padding: 5px 6px; background: #141d19ed; box-shadow: none; cursor: pointer; transition: border-color 150ms var(--ease-ui), background-color 150ms var(--ease-ui); }
+.portfolio-agent:hover { transform: none; border-color: #6e987d; background: #1a2820; }
+.portfolio-agent-avatar { position: relative; display: grid; width: 23px; height: 23px; flex: 0 0 auto; place-items: center; border: 1px solid #42534a; border-radius: 50%; color: #b8d8c2; background: #17231c; font: 7px var(--mono); }
+.portfolio-agent-avatar .node-state-mark { width: 7px; height: 7px; }
+.portfolio-agent-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 3px; }
+.portfolio-agent-copy small, .portfolio-agent-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-agent-copy small { color: #92a49b; font: 6px var(--mono); letter-spacing: .03em; text-transform: uppercase; }
+.portfolio-agent-copy strong { color: #d7e1dc; font-size: 8px; font-weight: 500; }
+.portfolio-agent.state-active { border-color: #548b67; }
+.portfolio-agent.state-active .node-state-mark { background: #8be0a8; box-shadow: 0 0 7px #8be0a88c; animation: node-breathe 2s ease-in-out infinite; }
+.portfolio-agent.state-blocked { border-color: #764742; }
+.portfolio-agent.state-blocked .node-state-mark { background: #f0847c; }
+.portfolio-agent.state-finished .node-state-mark { background: #84bc96; }
+.portfolio-agent.state-unknown .node-state-mark { background: #e2bf6b; }
+.portfolio-workers { display: flex; min-width: 0; flex-direction: column; gap: 4px; margin-left: 10px; border-left: 1px solid #405048; padding-left: 7px; }
+.portfolio-worker { min-height: 33px; border-color: #293631; background: #111917c9; }
+.portfolio-worker .portfolio-agent-avatar { width: 20px; height: 20px; }
+.portfolio-no-worker { margin: 0 0 0 10px; border-left: 1px solid #334039; padding: 4px 0 4px 8px; color: #697772; font: 6px var(--mono); }
+.portfolio-no-manager { display: flex; min-width: 0; align-items: center; gap: 7px; border: 1px dashed #39443f; border-radius: 7px; padding: 7px; color: #a4b0aa; background: #121817a6; }
+.portfolio-no-manager .portfolio-agent-avatar { border-style: dashed; color: #8d9a94; background: #121817; }
+.portfolio-no-manager > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.portfolio-no-manager strong { color: #aeb9b3; font-size: 8px; font-weight: 500; }
+.portfolio-no-manager small { overflow: hidden; color: #75827d; font: 6px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-unlinked { display: flex; align-items: center; gap: 5px; margin-top: auto; border-top: 1px solid #263034; padding-top: 6px; color: #82908b; }
+.portfolio-unlinked-node { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; gap: 3px; border: 1px dashed #43514b; border-radius: 10px; color: #bac5c0; background: #111819; font: 7px var(--mono); cursor: pointer; }
+.portfolio-unlinked-node i { width: 4px; height: 4px; border-radius: 50%; background: #65736e; }
+.portfolio-unlinked-node.state-active i { background: #8be0a8; box-shadow: 0 0 6px #8be0a8; }
+.portfolio-unlinked-node.state-blocked i { background: #f0847c; }
+.portfolio-unlinked small { color: #788680; font: 6px var(--mono); }
+.portfolio-agent-detail { display: flex; min-width: 0; align-items: center; gap: 6px; border: 1px solid #35433d; border-radius: 6px; padding: 5px 5px; background: #101715ef; }
+.portfolio-agent-detail > span { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; }
+.portfolio-agent-detail strong, .portfolio-agent-detail small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-agent-detail strong { color: #e3ebe7; font-size: 7px; font-weight: 550; }
+.portfolio-agent-detail small { color: #8f9d97; font: 6px var(--mono); }
+.portfolio-agent-detail button { display: grid; width: 19px; height: 19px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 5px; color: #9aa7a2; background: transparent; cursor: pointer; }
+.portfolio-agent-detail .ui-icon { width: 12px; height: 12px; }
+.portfolio-empty { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; gap: 8px; color: #82908b; font: 8px var(--mono); }
+.portfolio-empty .brand-mark { width: 21px; height: 21px; }
 
 /* The detached monitor has a transparent document and a small clipped glass surface. */
 html.monitor-document, html.monitor-document body, html.monitor-document #root { width: 100%; height: 100%; min-width: 0 !important; min-height: 0; margin: 0; overflow: hidden; background: transparent !important; }

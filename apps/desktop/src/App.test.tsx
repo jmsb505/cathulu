@@ -41,6 +41,18 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 describe("project activity graph", () => {
   beforeEach(() => { cleanup(); invokeMock.mockReset(); });
 
+  it("defaults to one portfolio-wide Main root and labels project selection as a focus filter", async () => {
+    invokeMock.mockResolvedValueOnce(snapshot() as never);
+    render(<App />);
+
+    const allProjects = await screen.findByRole("button", { name: "All projects" });
+    expect(allProjects.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getAllByRole("group", { name: "Main Overseer, global coordinator" })).toHaveLength(1);
+    expect(screen.getByRole("group", { name: /PULSO: Working/ })).toBeTruthy();
+    expect(screen.getByRole("group", { name: /Mecanografica proposals: Stopped/ })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Filter activity by project" })).toBeTruthy();
+  });
+
   it("shows only recorded Main → Project Manager → parent-linked Worker relationships", async () => {
     invokeMock.mockResolvedValueOnce(snapshot() as never);
     render(<App />);
@@ -61,7 +73,7 @@ describe("project activity graph", () => {
     invokeMock.mockResolvedValueOnce(snapshot({ delegations }) as never);
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: /Project Manager, Unobserved/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Project Manager, Unobserved: Coordinate PULSO/ })).toBeTruthy();
     expect(screen.getByLabelText("0 agents observed active")).toBeTruthy();
   });
 

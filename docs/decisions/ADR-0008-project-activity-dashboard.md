@@ -11,11 +11,13 @@ M21 verified a Main → Project Manager → Worker spawn sequence and Cathulu MC
 
 ## Decision
 
-- Keep the main dashboard read-only and scoped to one selected project and run at a time. Stable project IDs, not display names, determine membership.
-- Render Main as the same logical portfolio-wide coordinator in every project/run view. Chat sessions are representations of that role; do not label or animate each run as a distinct Main agent.
-- Render the explicit Main run, Project Manager assignment, and `parentDelegationId` relationships as the activity graph. Unparented workers and unbound hook observations remain visibly separate from that hierarchy.
+- Keep the main dashboard read-only. Its default activity view is portfolio-wide: render one stable Main root and one lane per registered project, each showing that project's latest running or recent run. Stable project IDs, not display names, determine membership.
+- Label project chips as a focus filter. Selecting a project narrows the graph and exposes that project's run history; `All projects` restores the portfolio view. This selector does not create or select an orchestrator.
+- Render Main once as the same logical portfolio-wide coordinator. Chat sessions are representations of that role; do not label or animate each run as a distinct Main agent.
+- Render each project's recorded run context, Project Manager assignment, and `parentDelegationId` relationships as the activity graph beneath the stable Main root. Unparented workers and unbound hook observations remain visibly separate from that hierarchy.
 - A dispatched assignment without linked `started` telemetry is unobserved. Only a linked start event on a running parent run may pulse as active; recorded stop, blocker, and failed-check evidence determines terminal/attention states.
 - Keep graph and activity as the primary view. Put repository and memory summaries in secondary views to keep the support surface compact.
+- Size the desktop app to its native viewport with no document-level horizontal or vertical scrollbars. Reset the browser's default body margin and use border-box sizing; let individual secondary views own any necessary content overflow.
 - Keep the detached monitor separate from the dashboard: 148×42 logical pixels when compact and 324×204 when expanded. It shows project state signals and a short per-project status row, not a scaled-down dashboard.
 - On Windows, use a transparent native window and transparent document with clipped, low-opacity CSS glass. Do not apply native full-window Acrylic. Respect reduced-motion and reduced-transparency preferences.
 - Scope Tauri capabilities separately for the dashboard and monitor; grant the monitor only its window controls and the dashboard only the ability to create/focus it.
@@ -23,7 +25,7 @@ M21 verified a Main → Project Manager → Worker spawn sequence and Cathulu MC
 
 ## Consequences
 
-The dashboard can truthfully show a recorded assignment as unobserved when hooks are absent. It cannot claim that a native agent is active until the stable telemetry binding exists. Visual verification of Windows transparency, corner clipping, resizing, dragging, and always-on-top behavior remains a required native smoke test before M24 is complete.
+The portfolio graph makes project separation and the shared Main identity visible together while still allowing a project-focused view. It can truthfully show a recorded assignment as unobserved when hooks are absent; it cannot claim that a native agent is active until the stable telemetry binding exists. Visual verification of Windows transparency, corner clipping, resizing, dragging, always-on-top behavior, and viewport fit remains a required native smoke test before M24 is complete.
 
 ## References
 
