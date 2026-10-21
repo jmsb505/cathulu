@@ -44,11 +44,17 @@ Each PM assignment can have at most two worker delegation records over its lifet
 
 Tests cover version-ten migration/reopen, concurrent PM and Worker admissions, slot release, cancellation/replacement counting, parent scope and role validation, dispatch order, and PM completion guards. These deterministic checks do not spawn Codex agents or prove live agent hierarchy telemetry; M23 and M24 retain the memory-activation and hook/activity-graph work.
 
+## M23 implementation note — 2026-10-21
+
+Schema migration 11 adds append-only, revisioned activation receipts and memory-reference rows. A ready receipt must reference a successful `search_memory_candidates` event associated with the delegation run and declared logical receiver. Selected memories must retain their current content hash and provenance, remain accepted/current/fresh and non-COLD, fit the project/task scope and HOT budget, and be evidenced by a same-run transfer or exact known-by hash. An explicit `no_relevant_memory` receipt is valid only after that bounded search; incomplete receipts remain in history but prevent Cathulu from recording dispatch. Old delegation and memory rows remain intact, and the implementation reuses SQLite's existing memory, known-by, transfer, artifact, and event authorities.
+
+The receipt does not authenticate which native Codex agent called MCP: Cathulu receives no per-agent caller identity or tool inventory. Its receiver scope is a declared workflow identity, and the search event proves a successful scoped search was recorded. The role contract requires the receiving PM/Worker to perform the activation call; M21's PM `read_memories` gap remains a runtime capability issue until a fresh nested-agent probe observes the bounded search operation in that role. The database gate constrains Cathulu's dispatch record but cannot stop a native agent from acting before that record is written. Tests cover missing/incomplete/ready dispatch gates, idempotent and revised receipts, first/repeated/delta transfer behavior, no-relevant-memory search, stale/superseded/COLD/foreign/over-budget rejection, and legacy/hierarchy migration preservation. Local tests validate MCP and SQLite behavior, not native role identity or live spawning.
+
 ## Consequences
 
 - Existing M6-M9 delegation records remain valid and readable, with null parentage and no inferred PM assignment. New hierarchy-aware delegations have deterministic parent links and SQLite-enforced admission limits; legacy rows remain outside those new assignments.
 - Activity in the dashboard must be projected from actual runs, delegation relationships, and observed lifecycle events. Missing events stay visibly unknown; no progress or agent nodes are fabricated.
-- Memory transfer ledger entries are the auditable evidence that relevant Cathulu memory was supplied. Agent instructions alone are not a hard enforcement boundary; the implementation plan adds deterministic checks and reports missing receipts.
+- Memory transfer ledger entries and ready activation receipts are the auditable evidence that relevant Cathulu memory was selected and supplied. Missing or incomplete receipts block Cathulu's dispatch transition. Native agent behavior remains governed by the Codex runtime and role contract; the receipt does not prove the native caller identity or prevent work before dispatch is recorded.
 - The tested client/session supports nested spawning and Cathulu MCP reachability, but memory-tool parity and lifecycle correlation remain incomplete. If a future target client/configuration lacks the required capabilities, expose that gap and preserve the baseline workflow. Never let Main silently take over implementation or flatten the hierarchy.
 
 ## Reconsider if

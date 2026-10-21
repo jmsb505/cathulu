@@ -1218,7 +1218,7 @@ fn validate_memory_input(input: &MemoryCreateInput) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_scope(
+pub(crate) fn normalize_scope(
     transaction: &Transaction<'_>,
     scope_type: &str,
     scope_id: Option<&str>,

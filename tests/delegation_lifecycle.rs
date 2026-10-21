@@ -145,6 +145,59 @@ fn hierarchy_packet() -> Value {
     })
 }
 
+fn activation_args(
+    delegation_id: i64,
+    receiver_scope_id: &str,
+    disposition: &str,
+    memory_tools_available: bool,
+    retrieval_completed: bool,
+    memory_references: Vec<Value>,
+    idempotency_key: &str,
+) -> Value {
+    json!({
+        "delegation_id": delegation_id,
+        "receiver_scope_type": "scope",
+        "receiver_scope_id": receiver_scope_id,
+        "disposition": disposition,
+        "memory_tools_available": memory_tools_available,
+        "retrieval_completed": retrieval_completed,
+        "memory_references": memory_references,
+        "idempotency_key": idempotency_key
+    })
+}
+
+fn activate_with_no_relevant_memory(
+    data_dir: &Path,
+    delegation_id: i64,
+    receiver_scope_id: &str,
+    idempotency_key: &str,
+) {
+    call_tool(
+        data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "task objective constraints acceptance",
+            "receiver_scope_type": "scope", "receiver_scope_id": receiver_scope_id,
+            "limit": 10, "delegation_id": delegation_id
+        }),
+    );
+    let receipt = call_tool(
+        data_dir,
+        "record_delegation_activation",
+        activation_args(
+            delegation_id,
+            receiver_scope_id,
+            "no_relevant_memory",
+            true,
+            true,
+            Vec::new(),
+            idempotency_key,
+        ),
+    );
+    assert_eq!(receipt["status"], json!("ready"));
+}
+
 fn create_task_and_run(data_dir: &Path, project_id: i64, label: &str) -> (i64, i64, i64) {
     let objective = call_tool(
         data_dir,
@@ -610,6 +663,12 @@ fn worker_parent_delegation_is_stored_and_returned_through_public_mcp() {
         }),
     );
     let manager_id = manager["id"].as_i64().expect("manager delegation ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        manager_id,
+        "agent:hierarchy-manager",
+        "hierarchy-manager-activation",
+    );
     call_tool(
         &data_dir,
         "mark_delegation_dispatched",
@@ -769,6 +828,12 @@ fn project_manager_slot_is_unique_auditable_and_released_on_completion() {
     assert_eq!(rejection_count, 1, "rejection is auditable on its run");
     drop(database);
 
+    activate_with_no_relevant_memory(
+        &data_dir,
+        first_id,
+        "agent:hierarchy-slot-manager",
+        "hierarchy-slot-first-manager-activation",
+    );
     call_tool(
         &data_dir,
         "mark_delegation_dispatched",
@@ -946,6 +1011,12 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         }),
     );
     let manager_id = manager["id"].as_i64().expect("manager ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        manager_id,
+        "agent:hierarchy-worker-cap-manager",
+        "hierarchy-worker-cap-manager-activation",
+    );
     call_tool(
         &data_dir,
         "mark_delegation_dispatched",
@@ -1151,6 +1222,18 @@ fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
         }),
     );
     let worker_id = worker["id"].as_i64().expect("worker ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        manager_id,
+        "agent:hierarchy-parent-manager",
+        "hierarchy-parent-dispatch-manager-activation",
+    );
+    activate_with_no_relevant_memory(
+        &data_dir,
+        worker_id,
+        "agent:hierarchy-parent-worker",
+        "hierarchy-parent-dispatch-worker-activation",
+    );
     let rejected = tool_error(
         &data_dir,
         "mark_delegation_dispatched",
@@ -1188,6 +1271,637 @@ fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
         json!({ "delegation_id": worker_id }),
     );
     assert_eq!(dispatched["status"], json!("dispatched"));
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
+    let root = unique_temp_dir("hierarchy-memory-activation");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-memory-fixture', 'C:/fixture/hierarchy-memory', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "memory-activation");
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-memory-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager ID");
+
+    let missing = tool_error(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    let missing_text = missing
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        missing_text.contains("memory activation receipt"),
+        "unexpected rejection: {missing}"
+    );
+
+    let incomplete = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "memory_tools_unavailable",
+            false,
+            false,
+            Vec::new(),
+            "hierarchy-memory-manager-incomplete",
+        ),
+    );
+    assert_eq!(incomplete["status"], json!("incomplete"));
+    let blocked = tool_error(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    let blocked_text = blocked
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        blocked_text.contains("incomplete"),
+        "unexpected rejection: {blocked}"
+    );
+
+    let claimed_without_read = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "no_relevant_memory",
+            true,
+            true,
+            Vec::new(),
+            "hierarchy-memory-manager-unverified-read",
+        ),
+    );
+    assert!(
+        claimed_without_read
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("successful bounded Cathulu memory search"),
+        "a boolean claim alone cannot satisfy activation: {claimed_without_read}"
+    );
+    call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "hierarchy memory activation",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "limit": 10, "delegation_id": manager_id
+        }),
+    );
+
+    let ready = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "no_relevant_memory",
+            true,
+            true,
+            Vec::new(),
+            "hierarchy-memory-manager-ready",
+        ),
+    );
+    assert_eq!(ready["status"], json!("ready"));
+    assert_eq!(ready["revision"], json!(2));
+    assert!(ready["retrievalEventId"].as_i64().is_some());
+    let dispatched_manager = call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    assert_eq!(dispatched_manager["status"], json!("dispatched"));
+
+    let worker = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-memory-worker"
+        }),
+    );
+    let worker_id = worker["id"].as_i64().expect("worker ID");
+    let worker_blocked = tool_error(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": worker_id }),
+    );
+    assert!(
+        worker_blocked
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("memory activation receipt"),
+        "a Worker also needs activation evidence: {worker_blocked}"
+    );
+    call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "worker task objective constraints",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-worker",
+            "limit": 10, "delegation_id": worker_id
+        }),
+    );
+    let worker_activation = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            worker_id,
+            "agent:m23-worker",
+            "no_relevant_memory",
+            true,
+            true,
+            Vec::new(),
+            "hierarchy-memory-worker-ready",
+        ),
+    );
+    assert_eq!(worker_activation["status"], json!("ready"));
+    assert_eq!(
+        call_tool(
+            &data_dir,
+            "mark_delegation_dispatched",
+            json!({ "delegation_id": worker_id }),
+        )["status"],
+        json!("dispatched")
+    );
+
+    let read = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{manager_id}") }),
+        )],
+    );
+    let manager_record = resource_text(response(&read, 2));
+    assert_eq!(
+        manager_record["activationReceipt"]["status"],
+        json!("ready")
+    );
+    assert_eq!(
+        manager_record["activationReceipt"]["disposition"],
+        json!("no_relevant_memory")
+    );
+    assert_eq!(
+        manager_record["activationReceipt"]["memoryReferences"],
+        json!([])
+    );
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
+    let root = unique_temp_dir("hierarchy-memory-transfer");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-transfer-fixture', 'C:/fixture/hierarchy-transfer', 'main', NULL, 0, '[]', 1, 1),
+                    ('hierarchy-transfer-foreign', 'C:/fixture/hierarchy-transfer-foreign', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "memory-transfer");
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-transfer-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager ID");
+    let memory = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "memory_class": "canonical", "temperature": "warm", "kind": "contract",
+            "body": "The adapter contract requires stable request IDs.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "m23-test" }],
+            "importance": 0.8, "confidence": 0.95, "active": true, "protected": false
+        }),
+    );
+    let memory_id = memory["id"].as_i64().expect("memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": memory_id, "decision": "accepted" }),
+    );
+    let foreign_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:someone-else",
+            "run_id": run_id, "retrieval_method": "explicit", "token_count": 12
+        }),
+    );
+    call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "adapter contract stable request IDs",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "limit": 10, "delegation_id": manager_id
+        }),
+    );
+    let foreign_rejected = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": foreign_transfer["transferId"]
+            })],
+            "hierarchy-transfer-wrong-receiver",
+        ),
+    );
+    assert!(
+        foreign_rejected
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("receiver scope"),
+        "foreign transfer cannot activate this delegation: {foreign_rejected}"
+    );
+
+    let transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "run_id": run_id, "retrieval_method": "explicit", "token_count": 12
+        }),
+    );
+    let receipt = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": transfer["transferId"]
+            })],
+            "hierarchy-transfer-valid",
+        ),
+    );
+    assert_eq!(receipt["status"], json!("ready"));
+    assert_eq!(
+        receipt["memoryReferences"][0]["contentHash"],
+        memory["contentHash"]
+    );
+    let idempotent_receipt = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": transfer["transferId"]
+            })],
+            "hierarchy-transfer-valid",
+        ),
+    );
+    assert_eq!(idempotent_receipt["id"], receipt["id"]);
+
+    let repeated_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "run_id": run_id, "retrieval_method": "explicit", "token_count": 12
+        }),
+    );
+    assert_eq!(repeated_transfer["action"], json!("omitted_known"));
+    call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "adapter contract stable request IDs",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "limit": 10, "delegation_id": manager_id
+        }),
+    );
+    let known_receipt = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "already_known"
+            })],
+            "hierarchy-transfer-known",
+        ),
+    );
+    assert_eq!(known_receipt["revision"], json!(2));
+    assert_eq!(
+        known_receipt["memoryReferences"][0]["delivery"],
+        json!("already_known")
+    );
+
+    let successor = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "memory_class": "canonical", "temperature": "warm", "kind": "contract",
+            "body": "The adapter contract requires stable request IDs and bounded retries.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "m23-test-successor" }],
+            "importance": 0.9, "confidence": 0.96, "active": true, "protected": false,
+            "supersedes_id": memory_id
+        }),
+    );
+    let successor_id = successor["id"].as_i64().expect("successor memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": successor_id, "decision": "accepted" }),
+    );
+    let delta_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": successor_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "run_id": run_id, "retrieval_method": "explicit", "token_count": 15
+        }),
+    );
+    assert_eq!(delta_transfer["action"], json!("delta"));
+    call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "adapter contract stable request IDs bounded retries",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "limit": 10, "delegation_id": manager_id
+        }),
+    );
+    let delta_receipt = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": successor_id,
+                "content_hash": successor["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": delta_transfer["transferId"]
+            })],
+            "hierarchy-transfer-delta",
+        ),
+    );
+    assert_eq!(delta_receipt["revision"], json!(3));
+    let superseded_rejected = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": transfer["transferId"]
+            })],
+            "hierarchy-transfer-superseded",
+        ),
+    );
+    assert!(
+        superseded_rejected
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("stale"),
+        "superseded knowledge cannot be activated as current: {superseded_rejected}"
+    );
+
+    let foreign_memory = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": "2",
+            "memory_class": "canonical", "temperature": "warm", "kind": "contract",
+            "body": "This contract belongs to the independent foreign project.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "m23-foreign" }],
+            "importance": 0.7, "confidence": 0.9, "active": true, "protected": false
+        }),
+    );
+    let foreign_memory_id = foreign_memory["id"].as_i64().expect("foreign memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": foreign_memory_id, "decision": "accepted" }),
+    );
+    let foreign_scope_rejected = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": foreign_memory_id,
+                "content_hash": foreign_memory["contentHash"],
+                "delivery": "already_known"
+            })],
+            "hierarchy-transfer-foreign-memory",
+        ),
+    );
+    assert!(
+        foreign_scope_rejected
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("outside the delegation project/task scope"),
+        "foreign project memory cannot be activated: {foreign_scope_rejected}"
+    );
+
+    let hot_memory = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "memory_class": "working", "temperature": "hot", "kind": "summary",
+            "body": "Active HOT context for budget validation.",
+            "sources": [], "importance": 0.5, "confidence": 0.8,
+            "active": true, "protected": false
+        }),
+    );
+    let hot_memory_id = hot_memory["id"].as_i64().expect("HOT memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": hot_memory_id, "decision": "accepted" }),
+    );
+    let hot_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": hot_memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "run_id": run_id, "retrieval_method": "explicit", "token_count": 8
+        }),
+    );
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open activation budget fixture");
+    database
+        .execute(
+            "UPDATE memory_scope_budgets SET hot_budget_bytes = 0 WHERE scope_key = 'project:1'",
+            [],
+        )
+        .expect("lower HOT budget for validation");
+    drop(database);
+    let over_budget_rejected = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": hot_memory_id,
+                "content_hash": hot_memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": hot_transfer["transferId"]
+            })],
+            "hierarchy-transfer-over-budget",
+        ),
+    );
+    assert!(
+        over_budget_rejected
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("exceeds its 0-byte budget"),
+        "over-budget HOT memory cannot be activated: {over_budget_rejected}"
+    );
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("restore HOT memory budget fixture");
+    database
+        .execute(
+            "UPDATE memory_scope_budgets SET hot_budget_bytes = 8192 WHERE scope_key = 'project:1'",
+            [],
+        )
+        .expect("restore HOT budget");
+    database
+        .execute(
+            "UPDATE memories SET temperature = 'cold' WHERE id = ?1",
+            [hot_memory_id],
+        )
+        .expect("demote HOT memory for validation");
+    drop(database);
+    let cold_rejected = tool_error(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            manager_id,
+            "agent:m23-pm",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": hot_memory_id,
+                "content_hash": hot_memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": hot_transfer["transferId"]
+            })],
+            "hierarchy-transfer-cold",
+        ),
+    );
+    assert!(
+        cold_rejected
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("COLD activation memory"),
+        "COLD memory cannot be activated automatically: {cold_rejected}"
+    );
+    assert_eq!(
+        call_tool(
+            &data_dir,
+            "mark_delegation_dispatched",
+            json!({ "delegation_id": manager_id }),
+        )["status"],
+        json!("dispatched")
+    );
+
     fs::remove_dir_all(root).expect("remove temporary test data");
 }
 
@@ -1328,6 +2042,7 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"prepare_delegation"));
+    assert!(tool_names.contains(&"record_delegation_activation"));
     assert!(tool_names.contains(&"mark_delegation_dispatched"));
     assert!(tool_names.contains(&"cancel_delegation"));
     assert!(tool_names.contains(&"reconcile_delegation_worktree"));
@@ -1565,7 +2280,7 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
 }
 
 #[test]
-fn version_ten_migration_preserves_existing_version_five_delegations() {
+fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let root = unique_temp_dir("delegation-v5-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1618,7 +2333,9 @@ fn version_ten_migration_preserves_existing_version_five_delegations() {
         .expect("open v5 database fixture");
     database
         .execute_batch(
-            "DROP TABLE delegation_worker_event_refs;
+            "DROP TABLE delegation_activation_memory_refs;
+             DROP TABLE delegation_activation_receipts;
+             DROP TABLE delegation_worker_event_refs;
              DROP TABLE delegation_worker_bindings;
              DROP TABLE codex_subagent_hook_events;
              DROP TABLE delegation_worktree_states;
@@ -1633,7 +2350,7 @@ fn version_ten_migration_preserves_existing_version_five_delegations() {
              DROP TRIGGER delegations_parent_immutable;
              DROP INDEX delegations_parent_idx;
              ALTER TABLE delegations DROP COLUMN parent_delegation_id;
-             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10);",
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11);",
         )
         .expect("restore the populated version-five schema");
     drop(database);
@@ -1653,13 +2370,14 @@ fn version_ten_migration_preserves_existing_version_five_delegations() {
     assert_eq!(delegation["worktree"], Value::Null);
     assert_eq!(delegation["parentDelegationId"], Value::Null);
     assert_eq!(delegation["projectManagerAssignmentStatus"], Value::Null);
+    assert_eq!(delegation["activationReceipt"], Value::Null);
     assert_eq!(
         delegation["lifecycleEvents"].as_array().map(Vec::len),
         Some(2)
     );
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open upgraded version-ten database");
+        .expect("open upgraded version-eleven database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1668,7 +2386,7 @@ fn version_ten_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -1687,7 +2405,89 @@ fn version_ten_migration_preserves_existing_version_five_delegations() {
 }
 
 #[test]
-fn version_five_through_ten_migrations_preserve_version_four_project_run_and_memory_state() {
+fn version_eleven_migration_preserves_existing_hierarchy_links() {
+    let root = unique_temp_dir("delegation-v10-migration");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-v10-fixture', 'C:/fixture/hierarchy-v10', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "v10 hierarchy preservation");
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "v10-preserve-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager ID");
+    let worker = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "v10-preserve-worker"
+        }),
+    );
+    let worker_id = worker["id"].as_i64().expect("worker ID");
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open version-ten fixture");
+    database
+        .execute_batch(
+            "DROP TABLE delegation_activation_memory_refs;
+             DROP TABLE delegation_activation_receipts;
+             DELETE FROM schema_migrations WHERE version = 11;",
+        )
+        .expect("restore the populated version-ten schema");
+    drop(database);
+
+    let migrated = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{worker_id}") }),
+        )],
+    );
+    let worker_record = resource_text(response(&migrated, 2));
+    assert_eq!(worker_record["parentDelegationId"], json!(manager_id));
+    assert_eq!(worker_record["activationReceipt"], Value::Null);
+    assert_eq!(worker_record["projectManagerAssignmentStatus"], Value::Null);
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open upgraded version-eleven fixture");
+    let version: i64 = database
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    assert_eq!(version, 11);
+    let assignment_status: String = database
+        .query_row(
+            "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
+            [manager_id],
+            |row| row.get(0),
+        )
+        .expect("read preserved manager assignment");
+    assert_eq!(assignment_status, "active");
+
+    drop(database);
+    fs::remove_dir_all(root).expect("remove migration fixture");
+}
+
+#[test]
+fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_memory_state() {
     let root = unique_temp_dir("delegation-v4-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1744,7 +2544,9 @@ fn version_five_through_ten_migrations_preserve_version_four_project_run_and_mem
         .expect("seed version-four memory state");
     database
         .execute_batch(
-            "DROP TABLE delegation_worker_event_refs;
+            "DROP TABLE delegation_activation_memory_refs;
+             DROP TABLE delegation_activation_receipts;
+             DROP TABLE delegation_worker_event_refs;
              DROP TABLE delegation_worker_bindings;
              DROP TABLE codex_subagent_hook_events;
              DROP TABLE delegation_worktree_states;
@@ -1766,7 +2568,7 @@ fn version_five_through_ten_migrations_preserve_version_four_project_run_and_mem
              DROP TABLE project_manager_assignments;
              DROP TRIGGER delegations_parent_immutable;
              DROP INDEX delegations_parent_idx;
-             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10);
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11);
              DROP TRIGGER delegation_memory_refs_no_update;
              DROP TRIGGER delegation_memory_refs_no_delete;
              DROP TRIGGER delegation_artifact_refs_no_update;
@@ -1819,7 +2621,7 @@ fn version_five_through_ten_migrations_preserve_version_four_project_run_and_mem
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");
