@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M9 and M11 are validated and published on Windows. M15-M18a are merged to main. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers; live provider trials still require owner-supplied keys and an explicit per-run remote opt-in. M18 comparative scoring remains ineligible until representative Cathulu runs exist; M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
+Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers; live provider trials still require owner-supplied keys, an MCP reload, and explicit per-run remote opt-in. M18 comparative scoring remains ineligible until representative Cathulu runs exist; M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
 
 ## System boundary
 
