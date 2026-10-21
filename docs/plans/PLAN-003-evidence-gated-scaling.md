@@ -1,6 +1,6 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: M9 is validated and published to `main`; M11 is implemented and validated. M10 and M12-M14 remain conditional on their evidence gates below.
+Status: M9 is validated and published to `main`; M11 is implemented, validated, and published to `main` as `e18dc46` (PR #1). M10 and M12-M14 remain conditional on their evidence gates below.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -14,9 +14,9 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 ## Current state
 
-- M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`.
+- M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`. M11 is validated and published as `e18dc46` (PR #1).
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
-- The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No project-root Graphify snapshot exists; Graphify 0.9.82 is available through the existing user Python site package and a temporary ignored pilot snapshot was generated locally.
+- The 2026-10-21 entry-gate audit was rechecked after M11 publication: `CATHULU_DATA_DIR` is unset, the default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` database is absent, `codex mcp list` has no Cathulu server, and there is no project-root Graphify snapshot. Graphify 0.9.82 remains available through the existing user Python site package; the pilot snapshot is ignored and temporary.
 - No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
 
 ## Desired state
@@ -93,6 +93,15 @@ Entry gate:
 - Collect a real, local baseline showing repeated cross-project context reconstruction for the same recurring work pattern.
 - Measure context bytes/tokens when observable, reintroduction, delay/rework, task outcomes, and the expected maintenance/coordination cost.
 - Agree on the comparison method and decision threshold before implementation. Do not use synthetic fixtures or an arbitrary run count as the product-value proof.
+
+Evidence collection protocol (complete before the first scored pair):
+
+- Define a privacy-safe recurring-work label, task inclusion/exclusion rules, a common acceptance check, and which runs are exploratory versus held out.
+- Declare the baseline and Cathulu-assisted procedure, how task order will be handled, the outcome/rework measures, the acceptable regression guard, and the decision rule. Choose the observation count from observed variation and coverage; do not set a run count here.
+- For each run, retain the Cathulu run ID when one exists, the paired run reference, project/task class, start/end or elapsed time, verified outcome and QA results, context bytes/tokens when observable, context reintroduction, rework, and human interventions.
+- Record scope setup, refresh/resume, curation, and coordination time separately as manual observations until those costs have a trustworthy automatic source. Include the measurement method and observer.
+- Existing records can supply run status and timestamps (`runs`), QA outcomes (`quality_checks`), Cathulu-controlled transfer size/token estimate/reintroduction (`context_transfers`), and explicitly entered rework/intervention/latency measures (`memory_policy_evaluations`). Cathulu only observes transfers routed through its own boundary; unavailable token counts and external activity remain unknown rather than inferred.
+- Keep prompt and transcript bodies out of the worksheet. Store local run IDs and coded labels, and record enough source references for an owner to verify the result locally.
 
 Subtasks:
 
@@ -308,6 +317,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 - [x] Implement and validate the read-only Graphify adapter, bounded structural retrieval, stale/malformed snapshot rejection, and current-source filtering.
 - [x] Update architecture, roadmap, setup, and the Graphify source-contract ADR after the implementation passes validation.
 - [x] Validate the additive SQLite v9 snapshot migration against version-four and version-five data fixtures.
+- [x] Publish M11 after local Windows validation and recheck the M10-M14 entry gates.
 - [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
 
 ## Implementation discoveries / decisions
@@ -324,5 +334,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 ## Completion evidence
 
 M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed with 37 tests and one dedicated desktop/MCP smoke test ignored for its PowerShell harness; all three focused Graphify MCP tests passed; the offline Windows release MCP build passed; and `git diff --check` passed. The migration tests exercise version-four and version-five data through v9. SQLite remains authoritative and no Graphify dependency or bundled code was added.
+
+M11 was merged to `main` at `e18dc46` through PR #1. The rechecked local profile still has no Cathulu MCP registration and no local Cathulu database, so the M10-M14 real-run evidence task remains open.
 
 M10 and M12-M14 are not claimed complete. The entry-gate audit above remains the evidence: M10 needs repeated real cross-project context reconstruction in local Cathulu use; M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.
