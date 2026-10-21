@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M10 and M12-M14 remain evidence-gated. See PLAN-004 for current evidence.
+Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M20's role and memory contract is documented in ADR-0009; M21-M25 runtime/implementation work is pending. M10 and M12-M14 remain evidence-gated. See PLAN-004 and PLAN-006 for current evidence.
 
 ## System boundary
 
@@ -23,6 +23,12 @@ Tauri desktop app / React UI
 Codex owns model/tool execution, shell, Git edits, worktrees, approvals, and native subagents. Cathulu owns portfolio persistence and evidence. The M1 dashboard reads a materialized state boundary and cannot mutate project state. A future Cathulu selector surface is separate from this dashboard and is defined in ADR-0002. The local MCP server exposes domain resources and semantic operations; it never exposes SQL or table CRUD.
 
 The optional specialist-model layer in ADR-0007 is an optimization boundary inside the local Cathulu control plane. Deterministic Cathulu code handles exact facts and rules. A DecisionModel may make bounded, typed choices; a ContextModel may extract or reduce selected existing information. Both default to disabled, and the same baseline workflow remains available without either. Codex remains the primary reasoning, coding, planning, debugging, and user-interaction system. These specialist interfaces do not run agents, replace Codex model/effort selectors from M9, or change deterministic QA authority.
+
+### Bounded project-agent hierarchy
+
+ADR-0009 defines the role boundary: Main Overseer coordinates only and never implements project changes. One Project Manager may own each active project assignment, and that manager may dispatch at most two implementation workers total for the assignment. Project Managers plan, delegate, monitor, and review evidence; workers perform scoped project work. Each role uses the existing Cathulu MCP memory and evidence operations. The portable normative instructions are in [agent-operating-contract.md](agent-operating-contract.md).
+
+This hierarchy is separate from Phase 4 M10's evidence-gated cross-project scope/Sub-Overseer work. The current focus is independent project tasks; no cross-repository edge or handoff is inferred. Existing M6-M9 records do not yet encode nested parentage or enforce the new limits. PLAN-006 stages runtime capability verification, additive hierarchy/cap enforcement, memory-transfer receipts, and a truthful activity graph. Native Codex child spawning and inherited Cathulu MCP access are verified at runtime before any implementation is described as active. Cathulu remains an evidence/control plane and does not spawn or steer agents.
 
 ## Phase 1 starting stack
 
