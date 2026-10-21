@@ -9,6 +9,7 @@ mod migrations;
 mod sqlite;
 pub mod telemetry;
 pub mod workflow;
+pub mod worktree;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -299,7 +300,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 6 {
+        if version > 7 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -362,6 +363,14 @@ impl Store {
         if version < 6 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_6) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 7 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_7) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }

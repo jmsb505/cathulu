@@ -64,6 +64,33 @@ describe("read-only project dashboard", () => {
           qualityCheckRefs: [{ qualityCheckId: 5, checkKey: "workspace-tests", status: "passed" }],
           reviewHistory: [],
         },
+        worktree: {
+          worktreePathHash: "f".repeat(64),
+          branch: "codex/worker-fixture",
+          baseCommit: "abcdef0123456789abcdef0123456789abcdef01",
+          observedHead: "0123456789abcdef0123456789abcdef01234567",
+          isClean: true,
+          changedPaths: ["src/delegation.rs"],
+          reportVerification: {
+            status: "verified",
+            verifiedCommits: ["0123456789abcdef0123456789abcdef01234567"],
+            unverifiedCommits: [],
+            verifiedPaths: ["src/delegation.rs"],
+            unverifiedPaths: [],
+          },
+          lastReconciledAt: 1_800_000_151,
+        },
+        workerTelemetry: {
+          hookEventId: 17,
+          agentType: "worker",
+          effectiveModel: "gpt-5-codex",
+          effectiveEffort: null,
+          linkedAt: 1_800_000_149,
+          events: [
+            { eventId: 17, eventKind: "started", agentType: "worker", model: "gpt-5-codex", createdAt: 1_800_000_149 },
+            { eventId: 18, eventKind: "stopped", agentType: "worker", model: "gpt-5-codex", createdAt: 1_800_000_150 },
+          ],
+        },
       }, {
         id: 14,
         projectName: "Atlas",
@@ -122,6 +149,10 @@ describe("read-only project dashboard", () => {
     expect(screen.getByText("Implement worker reports")).toBeTruthy();
     expect(screen.getByText("Reported · awaiting review")).toBeTruthy();
     expect(screen.getByText("Worker-reported outcome: completed")).toBeTruthy();
+    expect(screen.getByText("Report Git verification")).toBeTruthy();
+    expect(screen.getByText("verified")).toBeTruthy();
+    expect(screen.getByText(/Observed worker/)).toBeTruthy();
+    expect(screen.getByText(/gpt-5-codex · effort unavailable/)).toBeTruthy();
     expect(screen.getAllByText("Parent run blocked").length).toBe(2);
     expect(screen.getByText("needs follow up")).toBeTruthy();
     expect(screen.getByText("Resolve the schema mismatch before retrying.")).toBeTruthy();

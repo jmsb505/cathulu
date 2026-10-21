@@ -686,9 +686,16 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
     assert!(tool_names.contains(&"prepare_delegation"));
     assert!(tool_names.contains(&"mark_delegation_dispatched"));
     assert!(tool_names.contains(&"cancel_delegation"));
+    assert!(tool_names.contains(&"reconcile_delegation_worktree"));
+    assert!(tool_names.contains(&"associate_delegation_worker"));
     assert!(!tool_names.iter().any(|name| name.contains("spawn")));
     assert!(!tool_names.iter().any(|name| {
-        name.contains("execute") || name.contains("config") || name.contains("worktree")
+        name.contains("execute")
+            || name.contains("config")
+            || matches!(
+                *name,
+                "create_worktree" | "move_worktree" | "remove_worktree" | "merge_worktree"
+            )
     }));
     let first = tool_text(response(&prepared, 3));
     let repeated = tool_text(response(&prepared, 4));
@@ -914,7 +921,7 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
 }
 
 #[test]
-fn version_six_migration_preserves_existing_version_five_delegations() {
+fn version_seven_migration_preserves_existing_version_five_delegations() {
     let root = unique_temp_dir("delegation-v5-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -967,11 +974,15 @@ fn version_six_migration_preserves_existing_version_five_delegations() {
         .expect("open v5 database fixture");
     database
         .execute_batch(
-            "DROP TABLE worker_report_reviews;
+            "DROP TABLE delegation_worker_event_refs;
+             DROP TABLE delegation_worker_bindings;
+             DROP TABLE codex_subagent_hook_events;
+             DROP TABLE delegation_worktree_states;
+             DROP TABLE worker_report_reviews;
              DROP TABLE worker_report_quality_check_refs;
              DROP TABLE worker_report_artifact_refs;
              DROP TABLE worker_reports;
-             DELETE FROM schema_migrations WHERE version = 6;",
+             DELETE FROM schema_migrations WHERE version IN (6, 7);",
         )
         .expect("restore the populated version-five schema");
     drop(database);
@@ -988,13 +999,14 @@ fn version_six_migration_preserves_existing_version_five_delegations() {
     assert_eq!(delegation["packetHash"], packet_hash);
     assert_eq!(delegation["status"], json!("dispatched"));
     assert_eq!(delegation["report"], Value::Null);
+    assert_eq!(delegation["worktree"], Value::Null);
     assert_eq!(
         delegation["lifecycleEvents"].as_array().map(Vec::len),
         Some(2)
     );
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open upgraded v6 database");
+        .expect("open upgraded v7 database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1003,7 +1015,7 @@ fn version_six_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     assert_eq!(delegation_count, 1);
 
     drop(database);
@@ -1011,7 +1023,7 @@ fn version_six_migration_preserves_existing_version_five_delegations() {
 }
 
 #[test]
-fn version_five_and_six_migrations_preserve_version_four_project_run_and_memory_state() {
+fn version_five_six_and_seven_migrations_preserve_version_four_project_run_and_memory_state() {
     let root = unique_temp_dir("delegation-v4-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1068,7 +1080,11 @@ fn version_five_and_six_migrations_preserve_version_four_project_run_and_memory_
         .expect("seed version-four memory state");
     database
         .execute_batch(
-            "DROP TRIGGER worker_report_reviews_no_update;
+            "DROP TABLE delegation_worker_event_refs;
+             DROP TABLE delegation_worker_bindings;
+             DROP TABLE codex_subagent_hook_events;
+             DROP TABLE delegation_worktree_states;
+             DROP TRIGGER worker_report_reviews_no_update;
              DROP TRIGGER worker_report_reviews_no_delete;
              DROP TRIGGER worker_report_quality_check_refs_no_update;
              DROP TRIGGER worker_report_quality_check_refs_no_delete;
@@ -1080,7 +1096,7 @@ fn version_five_and_six_migrations_preserve_version_four_project_run_and_memory_
              DROP TABLE worker_report_quality_check_refs;
              DROP TABLE worker_report_artifact_refs;
              DROP TABLE worker_reports;
-             DELETE FROM schema_migrations WHERE version = 6;
+             DELETE FROM schema_migrations WHERE version IN (6, 7);
              DROP TRIGGER delegation_memory_refs_no_update;
              DROP TRIGGER delegation_memory_refs_no_delete;
              DROP TRIGGER delegation_artifact_refs_no_update;
@@ -1133,7 +1149,7 @@ fn version_five_and_six_migrations_preserve_version_four_project_run_and_memory_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

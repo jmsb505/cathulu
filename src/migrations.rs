@@ -550,3 +550,92 @@ BEGIN SELECT RAISE(ABORT, 'worker report review history is retained for audit');
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (6, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_7: &str = r#"
+CREATE TABLE delegation_worktree_states (
+  delegation_id INTEGER PRIMARY KEY REFERENCES delegations(id) ON DELETE RESTRICT,
+  base_commit TEXT,
+  worktree_path TEXT,
+  worktree_path_hash TEXT,
+  branch TEXT,
+  observed_head TEXT,
+  is_clean INTEGER CHECK(is_clean IN (0, 1)),
+  changed_paths_json TEXT,
+  report_verification_json TEXT,
+  last_reconciled_at INTEGER,
+  created_at INTEGER NOT NULL,
+  CHECK(
+    (worktree_path IS NULL AND worktree_path_hash IS NULL AND branch IS NULL
+      AND observed_head IS NULL AND is_clean IS NULL AND changed_paths_json IS NULL
+      AND report_verification_json IS NULL AND last_reconciled_at IS NULL)
+    OR
+    (worktree_path IS NOT NULL AND worktree_path_hash IS NOT NULL AND is_clean IS NOT NULL
+      AND changed_paths_json IS NOT NULL AND report_verification_json IS NOT NULL
+      AND last_reconciled_at IS NOT NULL)
+  )
+);
+
+CREATE TABLE codex_subagent_hook_events (
+  event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE RESTRICT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('started', 'stopped')),
+  session_hash TEXT NOT NULL,
+  turn_hash TEXT NOT NULL,
+  agent_id_hash TEXT NOT NULL,
+  agent_type TEXT NOT NULL,
+  model_slug TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX codex_subagent_hooks_run_idx
+  ON codex_subagent_hook_events(run_id, session_hash, turn_hash, agent_id_hash, event_kind);
+
+CREATE TABLE delegation_worker_bindings (
+  delegation_id INTEGER PRIMARY KEY REFERENCES delegations(id) ON DELETE RESTRICT,
+  hook_event_id INTEGER NOT NULL UNIQUE REFERENCES codex_subagent_hook_events(event_id) ON DELETE RESTRICT,
+  session_hash TEXT NOT NULL,
+  turn_hash TEXT NOT NULL,
+  agent_id_hash TEXT NOT NULL,
+  agent_type TEXT NOT NULL,
+  effective_model TEXT,
+  effective_effort TEXT,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  linked_at INTEGER NOT NULL,
+  UNIQUE(session_hash, turn_hash, agent_id_hash)
+);
+CREATE INDEX delegation_worker_bindings_agent_idx
+  ON delegation_worker_bindings(session_hash, turn_hash, agent_id_hash);
+
+CREATE TABLE delegation_worker_event_refs (
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  event_id INTEGER NOT NULL UNIQUE REFERENCES codex_subagent_hook_events(event_id) ON DELETE RESTRICT,
+  event_kind TEXT NOT NULL CHECK(event_kind IN ('started', 'stopped')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(delegation_id, event_id)
+);
+
+CREATE TRIGGER delegation_worktree_base_immutable BEFORE UPDATE ON delegation_worktree_states
+WHEN NEW.delegation_id IS NOT OLD.delegation_id
+  OR NEW.base_commit IS NOT OLD.base_commit
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'delegation worktree baseline is immutable'); END;
+CREATE TRIGGER delegation_worktree_no_delete BEFORE DELETE ON delegation_worktree_states
+BEGIN SELECT RAISE(ABORT, 'delegation worktree state is retained for audit'); END;
+
+CREATE TRIGGER codex_subagent_hook_events_no_update BEFORE UPDATE ON codex_subagent_hook_events
+BEGIN SELECT RAISE(ABORT, 'Codex subagent hook metadata is immutable'); END;
+CREATE TRIGGER codex_subagent_hook_events_no_delete BEFORE DELETE ON codex_subagent_hook_events
+BEGIN SELECT RAISE(ABORT, 'Codex subagent hook metadata is retained for audit'); END;
+
+CREATE TRIGGER delegation_worker_bindings_no_update BEFORE UPDATE ON delegation_worker_bindings
+BEGIN SELECT RAISE(ABORT, 'delegation worker bindings are immutable'); END;
+CREATE TRIGGER delegation_worker_bindings_no_delete BEFORE DELETE ON delegation_worker_bindings
+BEGIN SELECT RAISE(ABORT, 'delegation worker bindings are retained for audit'); END;
+CREATE TRIGGER delegation_worker_event_refs_no_update BEFORE UPDATE ON delegation_worker_event_refs
+BEGIN SELECT RAISE(ABORT, 'delegation worker event references are immutable'); END;
+CREATE TRIGGER delegation_worker_event_refs_no_delete BEFORE DELETE ON delegation_worker_event_refs
+BEGIN SELECT RAISE(ABORT, 'delegation worker event references are retained for audit'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (7, CAST(strftime('%s','now') AS INTEGER));
+"#;

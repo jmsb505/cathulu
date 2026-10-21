@@ -1,10 +1,15 @@
-use crate::{events::append_event, hash::content_hash, workflow::EventRecord, Store};
+use crate::worktree::DelegationWorktreeState;
+use crate::{
+    events::append_event, hash::content_hash, telemetry::DelegationWorkerBinding,
+    workflow::EventRecord, Store,
+};
 use rmcp::schemars;
 use rmcp::schemars::JsonSchema;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PACKET_BYTES: usize = 16 * 1024;
@@ -122,6 +127,8 @@ pub struct DashboardDelegationSummary {
     pub created_at: i64,
     pub updated_at: i64,
     pub report: Option<WorkerReportRecord>,
+    pub worktree: Option<DelegationWorktreeState>,
+    pub worker_telemetry: Option<DelegationWorkerBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -142,6 +149,8 @@ pub struct DelegationRecord {
     pub updated_at: i64,
     pub lifecycle_events: Vec<EventRecord>,
     pub report: Option<WorkerReportRecord>,
+    pub worktree: Option<DelegationWorktreeState>,
+    pub worker_telemetry: Option<DelegationWorkerBinding>,
 }
 
 impl Store {
@@ -186,6 +195,7 @@ impl Store {
         .map_err(|error| format!("cannot serialize delegation request identity: {error}"))?;
         let request_hash = content_hash(&request_json);
         let now = unix_time();
+        let base_commit = current_registered_head(self, project_id)?;
 
         let mut connection = self.connection()?;
         let transaction = connection
@@ -248,6 +258,13 @@ impl Store {
             )
             .map_err(sqlite_error)?;
         let id = transaction.last_insert_rowid();
+        transaction
+            .execute(
+                "INSERT INTO delegation_worktree_states (delegation_id, base_commit, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![id, base_commit, now],
+            )
+            .map_err(sqlite_error)?;
         for memory_id in &task_packet.referenced_memory_ids {
             transaction
                 .execute(
@@ -667,6 +684,8 @@ impl Store {
                         created_at,
                         updated_at,
                         report: self.get_delegation_report(id)?,
+                        worktree: self.delegation_worktree_state(id)?,
+                        worker_telemetry: self.delegation_worker_binding(id)?,
                     })
                 },
             )
@@ -739,6 +758,8 @@ impl Store {
             updated_at,
             lifecycle_events,
             report: self.get_delegation_report(id)?,
+            worktree: self.delegation_worktree_state(id)?,
+            worker_telemetry: self.delegation_worker_binding(id)?,
         }))
     }
 
@@ -879,6 +900,33 @@ impl Store {
         self.get_delegation(id)?
             .ok_or_else(|| format!("delegation {id} disappeared from the database"))
     }
+}
+
+fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<String>, String> {
+    let project_path = store
+        .connection()?
+        .raw()
+        .query_row(
+            "SELECT path FROM projects WHERE id = ?1",
+            params![project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| format!("registered project {project_id} was not found"))?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_path)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map_err(|error| format!("cannot launch Git to capture delegation baseline: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let head = String::from_utf8(output.stdout)
+        .map_err(|_| "Git returned a non-UTF-8 delegation baseline".to_string())?;
+    let head = head.trim();
+    Ok((!head.is_empty()).then(|| head.to_string()))
 }
 
 fn normalize_and_validate_packet(

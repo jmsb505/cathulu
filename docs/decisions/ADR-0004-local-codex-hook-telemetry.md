@@ -10,7 +10,7 @@ Phase 1 needs local evidence that associates Codex activity with project runs wh
 
 ## Decision
 
-Use Codex MCP tool hooks to call the existing `record_codex_hook_event` operation. Support only `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt`. The hook configuration passes a fixed allowlist of event name, session ID, turn ID, current directory, and—only after a tool call—tool name and tool-use ID. It never passes prompt text, transcript paths, tool input, or tool response.
+At M3, use Codex MCP tool hooks to call the existing `record_codex_hook_event` operation for `UserPromptSubmit`, `PostToolUse`, `Stop`, and `Interrupt`. The hook configuration passes a fixed allowlist of event name, session ID, turn ID, current directory, and—only after a tool call—tool name and tool-use ID. It never passes prompt text, transcript paths, tool input, or tool response. M8 extends the allowlist with privacy-minimized `SubagentStart` and `SubagentStop` metadata under the separate correlation rules in [ADR-0005](ADR-0005-codex-worker-telemetry-and-worktree-verification.md).
 
 Cathulu maps a registered Git working directory to its canonical project root and stores no directory string from the hook. Session, turn, tool-use, and source-event identifiers are SHA-256 hashed before persistence. Tool names are reduced to the categories `shell`, `edit`, `mcp`, or `other`. An external event ID makes repeated delivery idempotent. A Codex session/turn pair maps to one existing Cathulu run record; the run remains unverified and becomes `inconclusive` on `Stop` or `Interrupt` unless a separate Cathulu quality workflow has already established another terminal state.
 

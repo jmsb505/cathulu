@@ -22,7 +22,7 @@ The product question is whether durable, selectively disclosed state improves ve
 1. The owner asks the Main Overseer in Codex to work across registered projects.
 2. The Main Overseer reads a compact portfolio or project snapshot from Cathulu, then asks for only the scoped detail required for the task.
 3. Codex performs coding and delegation with its native tools. The Overseer records objectives, decisions, run events, artifacts, and quality results through semantic MCP operations, and prepares a bounded task packet before recording a native delegation lifecycle action.
-4. Cathulu reconciles registered repositories against Git and presents resulting project state, blockers, runs, quality evidence, and read-only worker report claims in the desktop dashboard. Explicit report review remains separate from parent-run quality verification.
+4. Cathulu reconciles registered repositories against Git and can read the facts from an already-existing native worker worktree. It presents project state, blockers, runs, quality evidence, worker report claims, and the separate Git verification result in the read-only dashboard. Explicit report review remains separate from parent-run quality verification.
 5. A run becomes `verified_success` only after its acceptance criteria and all mandatory deterministic gates pass. A timeout or missing evidence is `blocked` or `inconclusive`, never success.
 
 The dashboard's first views are Overview, Activity, Project/Scope, and Evidence. The first increment needs only the project registry and Git state path, with the other views introduced as their supporting state exists.
@@ -47,7 +47,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 ### Explicitly deferred
 
 - A custom agent/worker runtime or permanent model processes.
-- Cathulu spawning, steering, cancelling, or accepting changes from native Codex workers; Cathulu records structured packets and lifecycle evidence while Codex remains the execution owner.
+- Cathulu spawning, steering, cancelling, or accepting changes from native Codex workers, or creating/moving/removing/merging their worktrees; Cathulu records structured packets, reconciles existing worktree evidence, and records lifecycle telemetry while Codex remains the execution owner.
 - Durable Sub-Overseers before measured repeated cross-project reconstruction.
 - Graphify integration, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, cloud services, and reinforcement learning.
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
@@ -60,7 +60,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - **Scope:** a logical context and ownership boundary spanning one or more projects; it may initially key off stable global/project/objective/task identities without a separate scope registry. Persistent Sub-Overseer scopes remain optional until evidence justifies them.
 - **Run:** one recorded Overseer execution unit. A run may be an explicit Cathulu workflow execution tied to an immutable workflow version, or a sanitized observed Codex turn with no implied workflow, transcript, or success claim.
 - **Evidence:** a traceable artifact or deterministic check result supporting a finding or outcome.
-- **Delegation:** an auditable child task packet linked to a project, task, and run. Its `prepared`, `dispatched`, or `cancelled` state records Cathulu's view of the handoff; it does not prove a worker ran or completed work. A bounded worker report and append-only review may be attached as evidence, but neither changes parent-run quality or bypasses mandatory gates.
+- **Delegation:** an auditable child task packet linked to a project, task, and run. Its `prepared`, `dispatched`, or `cancelled` state records Cathulu's view of the handoff; it does not prove a worker ran or completed work. A bounded worker report and append-only review may be attached as evidence, and a report may be compared with an existing linked worktree and explicitly associated SubagentStart/Stop metadata. Git verification, report review, and parent-run quality remain separate findings.
 - **Memory class:** the kind of information (`working`, `canonical`, `episodic`, `evidence`, or `aggregate`).
 - **Memory temperature:** retrieval readiness (`hot`, `warm`, or `cold`), independent of class. HOT is bounded per logical scope; WARM is selective; COLD is not automatically injected.
 - **Canonical memory:** a distilled durable knowledge claim with a stable identity, content hash, temporal validity, provenance, and explicit supersession history. It supplements and links to authoritative domain records; it does not copy their mutable state.

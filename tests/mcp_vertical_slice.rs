@@ -11,7 +11,10 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock is after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cathulu-{label}-{}-{stamp}", std::process::id()))
+    std::env::current_dir()
+        .expect("resolve repository root")
+        .join("target")
+        .join(format!("cathulu-{label}-{}-{stamp}", std::process::id()))
 }
 
 fn make_git_repo(path: &Path) {
@@ -309,7 +312,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 6);
+    assert_eq!(schema_version, 7);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");
@@ -337,6 +340,12 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
     migrated_database
         .prepare("SELECT artifact_id FROM delegation_artifact_refs LIMIT 0")
         .expect("delegation evidence references");
+    migrated_database
+        .prepare("SELECT base_commit, observed_head FROM delegation_worktree_states LIMIT 0")
+        .expect("version-seven worktree baseline and reconciliation state");
+    migrated_database
+        .prepare("SELECT agent_id_hash, model_slug FROM codex_subagent_hook_events LIMIT 0")
+        .expect("version-seven privacy-preserving subagent hook metadata");
     drop(migrated_database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
@@ -1243,6 +1252,60 @@ fn register_repo(data_dir: &Path, repo: &Path) -> i64 {
     tool_text(&response)["id"].as_i64().expect("project ID")
 }
 
+fn create_task_for_project(data_dir: &Path, project_id: i64, label: &str) -> (i64, i64) {
+    let objective = tool_text(&call_tool(
+        data_dir,
+        "create_objective",
+        json!({ "project_id": project_id, "title": format!("{label} objective") }),
+    ));
+    let objective_id = objective["id"].as_i64().expect("objective ID");
+    let task = tool_text(&call_tool(
+        data_dir,
+        "create_task",
+        json!({ "objective_id": objective_id, "title": format!("{label} task") }),
+    ));
+    (objective_id, task["id"].as_i64().expect("task ID"))
+}
+
+fn prepare_and_dispatch_delegation(
+    data_dir: &Path,
+    project_id: i64,
+    task_id: i64,
+    run_id: i64,
+    label: &str,
+    allowed_scope: &[&str],
+) -> i64 {
+    let prepared = tool_text(&call_tool(
+        data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": project_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "role": "worker",
+            "task_packet": {
+                "schema_version": 1,
+                "title": format!("{label} worker"),
+                "objective": "Complete the bounded worker task and return auditable evidence.",
+                "acceptance_criteria": ["Keep the worker result auditable"],
+                "constraints": ["Do not change unrelated project files"],
+                "allowed_scope": allowed_scope,
+                "referenced_memory_ids": [],
+                "referenced_artifact_ids": [],
+                "requested_report_fields": ["summary", "changed_paths", "commits"]
+            },
+            "idempotency_key": format!("{label}-delegation")
+        }),
+    ));
+    let delegation_id = prepared["id"].as_i64().expect("delegation ID");
+    call_tool(
+        data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": delegation_id }),
+    );
+    delegation_id
+}
+
 fn call_tool(data_dir: &Path, name: &str, arguments: Value) -> Value {
     let responses = run_initialized_server(data_dir, &[tool_call(2, name, arguments)]);
     response(&responses, 2).clone()
@@ -1345,7 +1408,14 @@ fn current_head(repo: &Path) -> String {
 
 #[test]
 fn invalid_repository_is_reported_without_creating_a_project() {
-    let root = unique_temp_dir("invalid-repo");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "cathulu-invalid-repo-{}-{stamp}",
+        std::process::id()
+    ));
     fs::create_dir_all(&root).expect("create temp directory");
     let data_dir = root.join("data");
     let not_a_repo = root.join("not-a-repo");
@@ -1532,6 +1602,469 @@ fn codex_hook_events_are_sanitized_idempotent_and_recover_after_restart() {
         }),
     ));
     assert_eq!(duplicate_stop.get("duplicate"), Some(&json!(true)));
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn delegation_worktree_reconciliation_is_scoped_and_verifies_report_claims() {
+    let root = unique_temp_dir("delegation-worktree");
+    let repo = root.join("repo");
+    let worker = root.join("worker");
+    let foreign = root.join("foreign");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    make_git_repo(&foreign);
+    let project_id = register_repo(&data_dir, &repo);
+    let (objective_id, task_id) = create_task_for_project(&data_dir, project_id, "m8 git evidence");
+    let run = tool_text(&call_tool(
+        &data_dir,
+        "start_run",
+        json!({ "project_id": project_id, "objective_id": objective_id, "task_id": task_id }),
+    ));
+    let run_id = run["id"].as_i64().expect("parent run ID");
+    let delegation_id = prepare_and_dispatch_delegation(
+        &data_dir,
+        project_id,
+        task_id,
+        run_id,
+        "m8-git-evidence",
+        &["src/**"],
+    );
+    let base = current_head(&repo);
+
+    let rejected_paths = [
+        root.join("missing"),
+        foreign.clone(),
+        repo.join("nested"),
+        repo.clone(),
+    ];
+    fs::create_dir_all(repo.join("nested")).expect("create non-worktree nested directory");
+    for (index, rejected_path) in rejected_paths.iter().enumerate() {
+        let result = call_tool(
+            &data_dir,
+            "reconcile_delegation_worktree",
+            json!({
+                "delegation_id": delegation_id,
+                "worktree_path": rejected_path.to_string_lossy()
+            }),
+        );
+        assert_eq!(
+            result.pointer("/result/isError"),
+            Some(&json!(true)),
+            "rejected worktree path {index} unexpectedly reconciled: {result}"
+        );
+    }
+    let unreconciled = resource_text(&response(
+        &run_initialized_server(
+            &data_dir,
+            &[request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+            )],
+        ),
+        2,
+    ));
+    assert_eq!(unreconciled["worktree"]["baseCommit"], json!(base));
+    assert_eq!(unreconciled["worktree"]["lastReconciledAt"], Value::Null);
+
+    let add_worktree = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["worktree", "add", "--quiet", "-b", "codex/m8-worker"])
+        .arg(&worker)
+        .arg(&base)
+        .output()
+        .expect("launch git to create disposable linked worktree fixture");
+    assert!(
+        add_worktree.status.success(),
+        "cannot create Git worktree fixture: {}",
+        String::from_utf8_lossy(&add_worktree.stderr)
+    );
+    run_git(&worker, &["config", "user.name", "Cathulu Test"]);
+    run_git(
+        &worker,
+        &["config", "user.email", "cathulu-test@example.invalid"],
+    );
+    fs::create_dir_all(worker.join("src")).expect("create worker source directory");
+    fs::write(worker.join("src/worker.rs"), "pub fn worker_change() {}\n")
+        .expect("write worker change");
+    run_git(&worker, &["add", "src/worker.rs"]);
+    run_git(&worker, &["commit", "--quiet", "-m", "worker change"]);
+    let worker_head = current_head(&worker);
+
+    let report = call_tool(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": delegation_id,
+            "idempotency_key": "m8-worker-report",
+            "worker_report": {
+                "schemaVersion": 1,
+                "summary": "Added the requested worker file.",
+                "outcome": "completed",
+                "changedFiles": ["src/worker.rs"],
+                "commits": [worker_head],
+                "checkResults": [],
+                "blockers": [],
+                "artifactIds": [],
+                "qualityCheckIds": []
+            }
+        }),
+    );
+    tool_text(&report);
+    let reconciled = tool_text(&call_tool(
+        &data_dir,
+        "reconcile_delegation_worktree",
+        json!({
+            "delegation_id": delegation_id,
+            "worktree_path": worker.to_string_lossy()
+        }),
+    ));
+    assert_eq!(reconciled["baseCommit"], json!(base));
+    assert_eq!(reconciled["observedHead"], json!(worker_head));
+    assert_eq!(reconciled["branch"], json!("codex/m8-worker"));
+    assert_eq!(reconciled["isClean"], json!(true));
+    assert_eq!(reconciled["changedPaths"], json!(["src/worker.rs"]));
+    assert_eq!(
+        reconciled.pointer("/reportVerification/status"),
+        Some(&json!("verified"))
+    );
+    assert_eq!(
+        reconciled["reportVerification"]["verifiedCommits"],
+        json!([worker_head])
+    );
+
+    fs::write(
+        worker.join("src/pending.tmp"),
+        "uncommitted worker evidence\n",
+    )
+    .expect("write untracked worker evidence");
+    let dirty = tool_text(&call_tool(
+        &data_dir,
+        "reconcile_delegation_worktree",
+        json!({
+            "delegation_id": delegation_id,
+            "worktree_path": worker.to_string_lossy()
+        }),
+    ));
+    assert_eq!(dirty["isClean"], json!(false));
+    assert_eq!(
+        dirty["changedPaths"],
+        json!(["src/pending.tmp", "src/worker.rs"])
+    );
+    assert_eq!(
+        dirty.pointer("/reportVerification/status"),
+        Some(&json!("verified"))
+    );
+
+    let (mismatch_objective, mismatch_task) =
+        create_task_for_project(&data_dir, project_id, "m8 git mismatch");
+    let mismatch_run = tool_text(&call_tool(
+        &data_dir,
+        "start_run",
+        json!({
+            "project_id": project_id,
+            "objective_id": mismatch_objective,
+            "task_id": mismatch_task
+        }),
+    ));
+    let mismatch_delegation_id = prepare_and_dispatch_delegation(
+        &data_dir,
+        project_id,
+        mismatch_task,
+        mismatch_run["id"].as_i64().expect("mismatch parent run ID"),
+        "m8-git-mismatch",
+        &["src/**"],
+    );
+    fs::write(
+        foreign.join("foreign-only.txt"),
+        "not in the registered repository\n",
+    )
+    .expect("write foreign-only commit");
+    run_git(&foreign, &["add", "foreign-only.txt"]);
+    run_git(
+        &foreign,
+        &["commit", "--quiet", "-m", "foreign-only commit"],
+    );
+    let foreign_commit = current_head(&foreign);
+    tool_text(&call_tool(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": mismatch_delegation_id,
+            "idempotency_key": "m8-mismatch-worker-report",
+            "worker_report": {
+                "schemaVersion": 1,
+                "summary": "This report intentionally claims unrelated Git evidence.",
+                "outcome": "completed",
+                "changedFiles": ["src/not-actually-changed.rs"],
+                "commits": [foreign_commit],
+                "checkResults": [],
+                "blockers": [],
+                "artifactIds": [],
+                "qualityCheckIds": []
+            }
+        }),
+    ));
+    let mismatch = tool_text(&call_tool(
+        &data_dir,
+        "reconcile_delegation_worktree",
+        json!({
+            "delegation_id": mismatch_delegation_id,
+            "worktree_path": worker.to_string_lossy()
+        }),
+    ));
+    assert_eq!(
+        mismatch.pointer("/reportVerification/status"),
+        Some(&json!("mismatch"))
+    );
+    assert_eq!(
+        mismatch["reportVerification"]["unverifiedCommits"],
+        json!([foreign_commit])
+    );
+    assert_eq!(
+        mismatch["reportVerification"]["unverifiedPaths"],
+        json!(["src/not-actually-changed.rs"])
+    );
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open worktree snapshot count");
+    let snapshot_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM delegation_worktree_states WHERE delegation_id = ?1",
+            rusqlite::params![delegation_id],
+            |row| row.get(0),
+        )
+        .expect("count worktree projections");
+    assert_eq!(
+        snapshot_count, 1,
+        "reconciliation updates one state row per delegation"
+    );
+    drop(database);
+
+    let reopened = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+        )],
+    );
+    let delegation = resource_text(response(&reopened, 2));
+    assert_eq!(
+        delegation.pointer("/worktree/reportVerification/status"),
+        Some(&json!("verified"))
+    );
+    assert_eq!(
+        delegation.pointer("/worktree/observedHead"),
+        Some(&json!(worker_head))
+    );
+    assert_eq!(delegation.pointer("/worktree/isClean"), Some(&json!(false)));
+    fs::remove_dir_all(root).expect("remove temporary test data and linked worktree fixture");
+}
+
+#[test]
+fn subagent_hook_telemetry_requires_explicit_run_scoped_binding_and_stays_private() {
+    let root = unique_temp_dir("subagent-hook-telemetry");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+    let project_id = register_repo(&data_dir, &repo);
+    let (objective_id, task_id) =
+        create_task_for_project(&data_dir, project_id, "m8 worker telemetry");
+
+    let parent_hook = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "cwd": repo.to_string_lossy()
+        }),
+    ));
+    let run_id = parent_hook["runId"]
+        .as_i64()
+        .expect("observed parent run ID");
+    let database_path = data_dir.join("cathulu.sqlite3");
+    let database =
+        rusqlite::Connection::open(&database_path).expect("open test state to attach task");
+    database
+        .execute(
+            "UPDATE runs SET objective_id = ?1, task_id = ?2 WHERE id = ?3",
+            rusqlite::params![objective_id, task_id, run_id],
+        )
+        .expect("attach synthetic observed run to its task for delegation setup");
+    drop(database);
+
+    let delegation_id = prepare_and_dispatch_delegation(
+        &data_dir,
+        project_id,
+        task_id,
+        run_id,
+        "m8-worker-telemetry",
+        &["src/**"],
+    );
+    let schema = run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let hook_tool = response(&schema, 2)
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "record_codex_hook_event")
+        })
+        .expect("Codex hook tool is discoverable");
+    let hook_properties = hook_tool
+        .pointer("/inputSchema/properties")
+        .and_then(Value::as_object)
+        .expect("Codex hook input has typed properties");
+    for unsupported in [
+        "reasoning_effort",
+        "transcript_path",
+        "last_assistant_message",
+        "prompt",
+    ] {
+        assert!(!hook_properties.contains_key(unsupported));
+    }
+
+    let unknown_parent = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStart",
+            "session_id": "unmapped-session",
+            "turn_id": "unmapped-turn",
+            "agent_id": "unmapped-agent",
+            "agent_type": "worker",
+            "model": "gpt-5-codex",
+            "cwd": repo.to_string_lossy()
+        }),
+    ));
+    assert_eq!(unknown_parent["reason"], json!("unknown_parent_turn"));
+    assert_eq!(unknown_parent["runId"], Value::Null);
+
+    let start = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStart",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "agent_id": "m8-private-agent-id",
+            "agent_type": "worker",
+            "model": "gpt-5-codex"
+        }),
+    ));
+    let hook_event_id = start["eventId"].as_i64().expect("SubagentStart event ID");
+    assert_eq!(start["runId"], json!(run_id));
+    assert_eq!(start["recorded"], json!(true));
+    let duplicate = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStart",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "agent_id": "m8-private-agent-id",
+            "agent_type": "worker",
+            "model": "gpt-5-codex"
+        }),
+    ));
+    assert_eq!(duplicate["duplicate"], json!(true));
+    assert_eq!(duplicate["eventId"], json!(hook_event_id));
+
+    let binding = tool_text(&call_tool(
+        &data_dir,
+        "associate_delegation_worker",
+        json!({
+            "delegation_id": delegation_id,
+            "hook_event_id": hook_event_id,
+            "idempotency_key": "m8-worker-binding"
+        }),
+    ));
+    assert_eq!(binding["effectiveModel"], json!("gpt-5-codex"));
+    assert_eq!(binding["effectiveEffort"], Value::Null);
+    assert_eq!(binding["events"].as_array().map(Vec::len), Some(1));
+    let duplicate_binding = tool_text(&call_tool(
+        &data_dir,
+        "associate_delegation_worker",
+        json!({
+            "delegation_id": delegation_id,
+            "hook_event_id": hook_event_id,
+            "idempotency_key": "m8-worker-binding"
+        }),
+    ));
+    assert_eq!(duplicate_binding["hookEventId"], json!(hook_event_id));
+
+    let stop = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "agent_id": "m8-private-agent-id",
+            "agent_type": "worker",
+            "model": "gpt-5-codex"
+        }),
+    ));
+    assert_eq!(stop["recorded"], json!(true));
+
+    let reopened = run_initialized_server(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+            ),
+            request(
+                3,
+                "resources/read",
+                json!({ "uri": format!("cathulu://events/run/{run_id}") }),
+            ),
+        ],
+    );
+    let delegation = resource_text(response(&reopened, 2));
+    assert_eq!(
+        delegation.pointer("/workerTelemetry/effectiveModel"),
+        Some(&json!("gpt-5-codex"))
+    );
+    assert_eq!(
+        delegation.pointer("/workerTelemetry/effectiveEffort"),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        delegation.pointer("/workerTelemetry/events/1/eventKind"),
+        Some(&json!("stopped"))
+    );
+    let history = resource_text(response(&reopened, 3)).to_string();
+    for private_value in [
+        "m8-private-parent-session",
+        "m8-private-parent-turn",
+        "m8-private-agent-id",
+    ] {
+        assert!(
+            !history.contains(private_value),
+            "raw hook identifier persisted: {private_value}"
+        );
+    }
+    assert!(history.contains("agentIdHash"));
+
+    let database = rusqlite::Connection::open(&database_path).expect("open telemetry persistence");
+    let metadata: String = database
+        .query_row(
+            "SELECT session_hash || turn_hash || agent_id_hash || agent_type || COALESCE(model_slug, '')
+             FROM codex_subagent_hook_events ORDER BY created_at LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read persisted coarse metadata");
+    assert!(!metadata.contains("m8-private-parent-session"));
+    assert!(!metadata.contains("m8-private-parent-turn"));
+    assert!(!metadata.contains("m8-private-agent-id"));
+    drop(database);
     fs::remove_dir_all(root).expect("remove temporary test data");
 }
 

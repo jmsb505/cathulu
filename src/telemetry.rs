@@ -3,7 +3,7 @@ use crate::hash::content_hash;
 use crate::Store;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::Path;
 
 const OBSERVED_RUN_SUMMARY: &str = "Observed Codex turn; prompt and transcript content omitted.";
@@ -18,6 +18,9 @@ pub struct CodexHookEvent {
     pub cwd: Option<String>,
     pub tool_name: Option<String>,
     pub tool_use_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -26,7 +29,29 @@ pub struct CodexHookIngestResult {
     pub recorded: bool,
     pub duplicate: bool,
     pub run_id: Option<i64>,
+    pub event_id: Option<i64>,
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerHookEventRecord {
+    pub event_id: i64,
+    pub event_kind: String,
+    pub agent_type: String,
+    pub model: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationWorkerBinding {
+    pub hook_event_id: i64,
+    pub agent_type: String,
+    pub effective_model: Option<String>,
+    pub effective_effort: Option<String>,
+    pub linked_at: i64,
+    pub events: Vec<WorkerHookEventRecord>,
 }
 
 impl Store {
@@ -34,6 +59,9 @@ impl Store {
         &self,
         event: CodexHookEvent,
     ) -> Result<CodexHookIngestResult, String> {
+        if let Some(kind) = subagent_event_kind(&event.hook_event_name) {
+            return self.record_subagent_hook_event(event, kind);
+        }
         let Some(event_kind) = event_kind(&event.hook_event_name) else {
             return Ok(ignored("unsupported_event"));
         };
@@ -119,6 +147,7 @@ impl Store {
                     recorded: false,
                     duplicate: true,
                     run_id: Some(run_id),
+                    event_id: None,
                     reason: None,
                 });
             }
@@ -137,6 +166,7 @@ impl Store {
                 recorded: false,
                 duplicate: true,
                 run_id: None,
+                event_id: None,
                 reason: None,
             });
         }
@@ -219,6 +249,7 @@ impl Store {
                 recorded: false,
                 duplicate: true,
                 run_id: Some(run_id),
+                event_id: None,
                 reason: None,
             });
         }
@@ -251,8 +282,326 @@ impl Store {
             recorded: true,
             duplicate: false,
             run_id: Some(run_id),
+            event_id: None,
             reason: None,
         })
+    }
+
+    fn record_subagent_hook_event(
+        &self,
+        event: CodexHookEvent,
+        event_kind: &'static str,
+    ) -> Result<CodexHookIngestResult, String> {
+        if !valid_identifier(&event.session_id) || !valid_identifier(&event.turn_id) {
+            return Ok(ignored("invalid_identifier"));
+        }
+        let Some(agent_id) = event.agent_id.as_deref() else {
+            return Ok(ignored("missing_agent_metadata"));
+        };
+        if !valid_identifier(agent_id) {
+            return Ok(ignored("invalid_identifier"));
+        }
+        let Some(agent_type) = event.agent_type.as_deref() else {
+            return Ok(ignored("missing_agent_metadata"));
+        };
+        if !valid_metadata(agent_type, 128) {
+            return Ok(ignored("invalid_agent_metadata"));
+        }
+        if event
+            .model
+            .as_deref()
+            .is_some_and(|model| !valid_metadata(model, 128))
+        {
+            return Ok(ignored("invalid_model_metadata"));
+        }
+
+        let session_hash = content_hash(&format!("codex-session-v1\0{}", event.session_id));
+        let turn_hash = content_hash(&format!("codex-turn-v1\0{}", event.turn_id));
+        let agent_id_hash = content_hash(&format!("codex-agent-id-v1\0{agent_id}"));
+        let external_event_id = content_hash(&format!(
+            "codex-subagent-hook-v1\0{session_hash}\0{turn_hash}\0{agent_id_hash}\0{event_kind}"
+        ));
+        let Some(run_id) = self.find_codex_turn_run(&session_hash, &turn_hash)? else {
+            return Ok(ignored("unknown_parent_turn"));
+        };
+
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        if let Some(existing_event_id) = transaction
+            .query_row(
+                "SELECT id FROM events WHERE external_event_id = ?1",
+                params![external_event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(CodexHookIngestResult {
+                recorded: false,
+                duplicate: true,
+                run_id: Some(run_id),
+                event_id: Some(existing_event_id),
+                reason: None,
+            });
+        }
+
+        let payload = json!({
+            "source": "codex_hook",
+            "eventName": event.hook_event_name,
+            "sessionHash": session_hash,
+            "turnHash": turn_hash,
+            "agentIdHash": agent_id_hash,
+            "agentType": agent_type,
+            "model": event.model,
+            "sourceEventHash": external_event_id
+        });
+        let event_id = append_external_event(
+            &transaction,
+            "run",
+            run_id,
+            &format!("codex_{event_kind}"),
+            &external_event_id,
+            &payload,
+            now,
+        )?
+        .ok_or_else(|| "subagent lifecycle event could not be recorded".to_string())?;
+        let stored_kind = if event_kind == "subagent_started" {
+            "started"
+        } else {
+            "stopped"
+        };
+        transaction
+            .execute(
+                "INSERT INTO codex_subagent_hook_events
+                 (event_id, run_id, event_kind, session_hash, turn_hash, agent_id_hash,
+                  agent_type, model_slug, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    event_id,
+                    run_id,
+                    stored_kind,
+                    session_hash,
+                    turn_hash,
+                    agent_id_hash,
+                    agent_type,
+                    event.model,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        if let Some(delegation_id) = transaction
+            .query_row(
+                "SELECT delegation_id FROM delegation_worker_bindings
+                 WHERE session_hash = ?1 AND turn_hash = ?2 AND agent_id_hash = ?3",
+                params![session_hash, turn_hash, agent_id_hash],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            transaction
+                .execute(
+                    "INSERT INTO delegation_worker_event_refs (delegation_id, event_id, event_kind, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![delegation_id, event_id, stored_kind, now],
+                )
+                .map_err(sqlite_error)?;
+        }
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(CodexHookIngestResult {
+            recorded: true,
+            duplicate: false,
+            run_id: Some(run_id),
+            event_id: Some(event_id),
+            reason: None,
+        })
+    }
+
+    pub fn associate_delegation_worker(
+        &self,
+        delegation_id: i64,
+        hook_event_id: i64,
+        idempotency_key: &str,
+    ) -> Result<DelegationWorkerBinding, String> {
+        if delegation_id <= 0 || hook_event_id <= 0 {
+            return Err("delegation and hook event IDs must be positive".to_string());
+        }
+        let idempotency_key = idempotency_key.trim();
+        if idempotency_key.is_empty()
+            || idempotency_key.len() > 256
+            || idempotency_key.chars().any(char::is_control)
+        {
+            return Err(
+                "idempotency key must be nonempty, bounded, and contain no control characters"
+                    .to_string(),
+            );
+        }
+        let key_hash = content_hash(idempotency_key);
+        let request_hash = content_hash(&format!("{delegation_id}\0{hook_event_id}"));
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        if let Some((existing_id, existing_request)) = transaction
+            .query_row(
+                "SELECT delegation_id, request_hash FROM delegation_worker_bindings
+                 WHERE idempotency_key_hash = ?1",
+                params![key_hash],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            if existing_id != delegation_id || existing_request != request_hash {
+                return Err(
+                    "idempotency key was already used for a different worker binding".to_string(),
+                );
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            return self
+                .delegation_worker_binding(delegation_id)?
+                .ok_or_else(|| "idempotent worker binding disappeared".to_string());
+        }
+
+        let hook = transaction
+            .query_row(
+                "SELECT h.run_id, h.event_kind, h.session_hash, h.turn_hash, h.agent_id_hash,
+                        h.agent_type, h.model_slug, d.run_id, d.status
+                 FROM codex_subagent_hook_events h
+                 JOIN delegations d ON d.id = ?1
+                 WHERE h.event_id = ?2",
+                params![delegation_id, hook_event_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| "hook event or delegation was not found".to_string())?;
+        if hook.1 != "started" {
+            return Err("worker binding requires a recorded SubagentStart event".to_string());
+        }
+        if hook.0 != hook.7 {
+            return Err("worker hook parent run does not match the delegation run".to_string());
+        }
+        if hook.8 != "dispatched" {
+            return Err("worker can be associated only with a dispatched delegation".to_string());
+        }
+        transaction
+            .execute(
+                "INSERT INTO delegation_worker_bindings
+                 (delegation_id, hook_event_id, session_hash, turn_hash, agent_id_hash,
+                  agent_type, effective_model, effective_effort, request_hash,
+                  idempotency_key_hash, linked_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10)",
+                params![
+                    delegation_id,
+                    hook_event_id,
+                    hook.2,
+                    hook.3,
+                    hook.4,
+                    hook.5,
+                    hook.6,
+                    request_hash,
+                    key_hash,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO delegation_worker_event_refs (delegation_id, event_id, event_kind, created_at)
+                 SELECT ?1, event_id, event_kind, ?4 FROM codex_subagent_hook_events
+                 WHERE session_hash = ?2 AND turn_hash = ?3
+                   AND agent_id_hash = ?5",
+                params![delegation_id, hook.2, hook.3, now, hook.4],
+            )
+            .map_err(sqlite_error)?;
+        append_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            "delegation_worker_associated",
+            &json!({
+                "hookEventId": hook_event_id,
+                "agentType": hook.5,
+                "observedModel": hook.6,
+                "effectiveEffort": Value::Null
+            }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.delegation_worker_binding(delegation_id)?
+            .ok_or_else(|| "worker binding disappeared after commit".to_string())
+    }
+
+    pub(crate) fn delegation_worker_binding(
+        &self,
+        delegation_id: i64,
+    ) -> Result<Option<DelegationWorkerBinding>, String> {
+        let connection = self.connection()?;
+        let row = connection
+            .raw()
+            .query_row(
+                "SELECT hook_event_id, agent_type, effective_model, effective_effort, linked_at
+                 FROM delegation_worker_bindings WHERE delegation_id = ?1",
+                params![delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some((hook_event_id, agent_type, effective_model, effective_effort, linked_at)) = row
+        else {
+            return Ok(None);
+        };
+        let events = connection
+            .raw()
+            .prepare(
+                "SELECT h.event_id, h.event_kind, h.agent_type, h.model_slug, h.created_at
+                 FROM delegation_worker_event_refs ref
+                 JOIN codex_subagent_hook_events h ON h.event_id = ref.event_id
+                 WHERE ref.delegation_id = ?1 ORDER BY h.created_at, h.event_id",
+            )
+            .map_err(sqlite_error)?
+            .query_map(params![delegation_id], |row| {
+                Ok(WorkerHookEventRecord {
+                    event_id: row.get(0)?,
+                    event_kind: row.get(1)?,
+                    agent_type: row.get(2)?,
+                    model: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        Ok(Some(DelegationWorkerBinding {
+            hook_event_id,
+            agent_type,
+            effective_model,
+            effective_effort,
+            linked_at,
+            events,
+        }))
     }
 
     fn find_codex_turn_run(
@@ -282,8 +631,20 @@ fn event_kind(event_name: &str) -> Option<&'static str> {
     }
 }
 
+fn subagent_event_kind(event_name: &str) -> Option<&'static str> {
+    match event_name {
+        "SubagentStart" => Some("subagent_started"),
+        "SubagentStop" => Some("subagent_stopped"),
+        _ => None,
+    }
+}
+
 fn valid_identifier(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
+fn valid_metadata(value: &str, max_bytes: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
 }
 
 fn classify_tool(tool_name: &str) -> &'static str {
@@ -300,6 +661,7 @@ fn ignored(reason: &str) -> CodexHookIngestResult {
         recorded: false,
         duplicate: false,
         run_id: None,
+        event_id: None,
         reason: Some(reason.to_string()),
     }
 }

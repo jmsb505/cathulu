@@ -17,6 +17,7 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::path::Path;
 
 const SERVER_NAME: &str = "cathulu";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -128,6 +129,20 @@ struct ReviewDelegationReportArgs {
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ReconcileDelegationWorktreeArgs {
+    delegation_id: i64,
+    /// Absolute or relative path to an already-existing Git worktree belonging to the registered project.
+    worktree_path: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AssociateDelegationWorkerArgs {
+    delegation_id: i64,
+    hook_event_id: i64,
+    idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct CodexHookEventArgs {
     hook_event_name: String,
     session_id: String,
@@ -138,6 +153,12 @@ struct CodexHookEventArgs {
     tool_name: Option<String>,
     #[serde(default)]
     tool_use_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecordQualityCheckArgs {
@@ -507,6 +528,37 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
+    #[tool(
+        description = "Read and reconcile Git facts from an existing worktree that belongs to the registered project. Cathulu does not create, move, remove, or merge worktrees."
+    )]
+    fn reconcile_delegation_worktree(
+        &self,
+        Parameters(a): Parameters<ReconcileDelegationWorktreeArgs>,
+    ) -> CallToolResult {
+        if a.worktree_path.len() > 4_096 || a.worktree_path.chars().any(char::is_control) {
+            return tool_error(
+                "worktree path must be bounded and contain no control characters".to_string(),
+            );
+        }
+        self.store
+            .reconcile_delegation_worktree(a.delegation_id, Path::new(&a.worktree_path))
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Explicitly associate a recorded SubagentStart event with a dispatched delegation. Matching uses the parent run and the selected hook event; no worker is inferred or started."
+    )]
+    fn associate_delegation_worker(
+        &self,
+        Parameters(a): Parameters<AssociateDelegationWorkerArgs>,
+    ) -> CallToolResult {
+        self.store
+            .associate_delegation_worker(a.delegation_id, a.hook_event_id, &a.idempotency_key)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
     #[tool(description = "Record or update a named quality check for an open run.")]
     fn record_quality_check(
         &self,
@@ -543,6 +595,9 @@ impl CathuluServer {
                 cwd: a.cwd,
                 tool_name: a.tool_name,
                 tool_use_id: a.tool_use_id,
+                agent_id: a.agent_id,
+                agent_type: a.agent_type,
+                model: a.model,
             })
             .map(success)
             .unwrap_or_else(tool_error)

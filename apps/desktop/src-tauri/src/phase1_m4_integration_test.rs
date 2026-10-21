@@ -271,6 +271,42 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
         "mark_delegation_dispatched",
         json!({"delegation_id":delegation_id}),
     );
+    let worker_worktree = root.join("worker-worktree");
+    let worker_branch = "codex/phase3-m8-smoke-worker";
+    let add_worktree = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["worktree", "add", "--quiet", "-b", worker_branch])
+        .arg(&worker_worktree)
+        .arg(project["head"].as_str().expect("registered baseline"))
+        .output()
+        .expect("create the disposable linked-worktree fixture");
+    assert!(
+        add_worktree.status.success(),
+        "create worker worktree fixture: {}",
+        String::from_utf8_lossy(&add_worktree.stderr)
+    );
+    fs::write(
+        worker_worktree.join("worker-change.txt"),
+        "verified worker change\n",
+    )
+    .expect("write worker worktree change");
+    run_git(&worker_worktree, &["add", "worker-change.txt"]);
+    run_git(
+        &worker_worktree,
+        &["commit", "--quiet", "-m", "M8 worker change"],
+    );
+    let worker_head = Command::new("git")
+        .arg("-C")
+        .arg(&worker_worktree)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .expect("read worker worktree commit");
+    assert!(worker_head.status.success(), "read worker HEAD");
+    let worker_head = String::from_utf8(worker_head.stdout)
+        .expect("worker HEAD is UTF-8")
+        .trim()
+        .to_string();
     mcp_tool(
         &data_dir,
         "submit_delegation_report",
@@ -280,8 +316,8 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
                 "schemaVersion":1,
                 "summary":"The worker reports its scoped changes and checks are complete.",
                 "outcome":"completed",
-                "changedFiles":["README.md"],
-                "commits":[project["head"].as_str().expect("registered HEAD")],
+                "changedFiles":["worker-change.txt"],
+                "commits":[worker_head.clone()],
                 "checkResults":[{"name":"worker tests","status":"passed","summary":"Worker reports passing tests."}],
                 "blockers":[],
                 "artifactIds":[artifact_id],
@@ -289,6 +325,19 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
             },
             "idempotency_key":"phase3-m7-smoke-report"
         }),
+    );
+    let worktree_state = mcp_tool(
+        &data_dir,
+        "reconcile_delegation_worktree",
+        json!({
+            "delegation_id":delegation_id,
+            "worktree_path":worker_worktree.to_string_lossy()
+        }),
+    );
+    assert_eq!(worktree_state["observedHead"], json!(worker_head));
+    assert_eq!(
+        worktree_state.pointer("/reportVerification/status"),
+        Some(&json!("verified"))
     );
     let report_review = mcp_tool(
         &data_dir,
@@ -404,6 +453,21 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
             .map(|report| report.review_status.as_str()),
         Some("accepted")
     );
+    assert_eq!(
+        dashboard.delegations[0]
+            .worktree
+            .as_ref()
+            .and_then(|worktree| worktree.report_verification.as_ref())
+            .map(|verification| verification.status.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        dashboard.delegations[0]
+            .worktree
+            .as_ref()
+            .and_then(|worktree| worktree.observed_head.as_deref()),
+        Some(worker_head.as_str())
+    );
     assert!(dashboard.memory_health.hot_bytes > 0);
     assert!(dashboard.memory_health.hot_bytes <= 1024);
     assert!(dashboard.memory_health.largest_scope_hot_bytes <= 1024);
@@ -434,6 +498,10 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
         delegation_after_restart["report"]["report"]["artifactIds"],
         json!([artifact_id])
     );
+    assert_eq!(
+        delegation_after_restart.pointer("/worktree/reportVerification/status"),
+        Some(&json!("verified"))
+    );
     let memory_after_restart = mcp_resource(&data_dir, &format!("cathulu://memories/{memory_id}"));
     assert_eq!(
         memory_after_restart["sources"][0]["sourceId"],
@@ -447,5 +515,5 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     assert_eq!(transfer_after_restart["firstTimeForReceiver"], json!(true));
     assert!(transfer_after_restart.get("body").is_none());
 
-    println!("MCP registered project {project_id}, verified run {run_id}, reviewed delegation report {delegation_id}, memory {memory_id}, transfer {transfer_id}; the read-only Tauri dashboard returned the same SQLite state.");
+    println!("MCP registered project {project_id}, verified run {run_id}, reviewed delegation report {delegation_id}, verified its worker worktree at {worker_head}, and persisted memory {memory_id} and transfer {transfer_id}; the read-only Tauri dashboard returned the same SQLite state.");
 }

@@ -42,6 +42,32 @@ type WorkerReportRecord = {
   reviewHistory: { id: number; decision: string; note: string; createdAt: number }[];
 };
 
+type DelegationWorktreeState = {
+  worktreePathHash: string | null;
+  branch: string | null;
+  baseCommit: string | null;
+  observedHead: string | null;
+  isClean: boolean | null;
+  changedPaths: string[];
+  reportVerification: {
+    status: string;
+    verifiedCommits: string[];
+    unverifiedCommits: string[];
+    verifiedPaths: string[];
+    unverifiedPaths: string[];
+  } | null;
+  lastReconciledAt: number | null;
+};
+
+type DelegationWorkerTelemetry = {
+  hookEventId: number;
+  agentType: string;
+  effectiveModel: string | null;
+  effectiveEffort: string | null;
+  linkedAt: number;
+  events: { eventId: number; eventKind: string; agentType: string; model: string | null; createdAt: number }[];
+};
+
 type DelegationSnapshot = {
   id: number;
   projectName: string;
@@ -53,6 +79,8 @@ type DelegationSnapshot = {
   createdAt: number;
   updatedAt: number;
   report: WorkerReportRecord | null;
+  worktree: DelegationWorktreeState | null;
+  workerTelemetry: DelegationWorkerTelemetry | null;
 };
 
 type DashboardSnapshot = {
@@ -466,6 +494,36 @@ export default function App() {
                             <p className="delegation-report-pending">
                               {delegation.status === "dispatched" ? "Awaiting worker report." : "No report has been submitted."}
                             </p>
+                          )}
+                          {(delegation.worktree || delegation.workerTelemetry) && (
+                            <div className="worker-report" aria-label={`Git and worker evidence for ${delegation.taskTitle}`}>
+                              <dl className="report-facts">
+                                {delegation.worktree && (
+                                  <>
+                                    <div>
+                                      <dt>Observed worktree</dt>
+                                      <dd>
+                                        {delegation.worktree.lastReconciledAt
+                                          ? `${delegation.worktree.branch ?? "detached"} · ${delegation.worktree.isClean ? "clean" : "dirty"} · ${delegation.worktree.changedPaths.length} changed paths`
+                                          : `Baseline ${delegation.worktree.baseCommit?.slice(0, 12) ?? "unavailable"} · not reconciled`}
+                                      </dd>
+                                    </div>
+                                    <div>
+                                      <dt>Report Git verification</dt>
+                                      <dd>{delegation.worktree.reportVerification?.status.replace(/_/g, " ") ?? "not checked"}</dd>
+                                    </div>
+                                  </>
+                                )}
+                                {delegation.workerTelemetry && (
+                                  <div>
+                                    <dt>Observed worker</dt>
+                                    <dd>
+                                      {delegation.workerTelemetry.agentType} · {delegation.workerTelemetry.effectiveModel ?? "model unavailable"} · effort {delegation.workerTelemetry.effectiveEffort ?? "unavailable"}
+                                    </dd>
+                                  </div>
+                                )}
+                              </dl>
+                            </div>
                           )}
                         </li>
                       );

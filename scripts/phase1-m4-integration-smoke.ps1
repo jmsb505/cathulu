@@ -3,9 +3,10 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $tempBase = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
 $smokeRoot = Join-Path $tempBase ("cathulu-phase1-m4-" + [Guid]::NewGuid().ToString('N'))
+$smokeTargetDir = Join-Path $repoRoot 'target\m8-integration-smoke'
 $dataDir = Join-Path $smokeRoot 'data'
-$mcpPath = Join-Path $repoRoot 'target\debug\cathulu-mcp.exe'
-$desktopPath = Join-Path $repoRoot 'target\release\cathulu-desktop.exe'
+$mcpPath = Join-Path $smokeTargetDir 'debug\cathulu-mcp.exe'
+$desktopPath = Join-Path $smokeTargetDir 'release\cathulu-desktop.exe'
 $desktopProcess = $null
 $oldSmokeRoot = $env:CATHULU_SMOKE_ROOT
 $oldMcpBin = $env:CATHULU_MCP_BIN
@@ -84,9 +85,9 @@ try {
     Push-Location $repoRoot
     $pushedLocation = $true
 
-    cargo build --offline --bin cathulu-mcp
+    cargo build --offline --target-dir $smokeTargetDir --bin cathulu-mcp
     Assert-LastExitCode 'cargo build --offline --bin cathulu-mcp'
-    cargo tauri build --no-bundle -- --offline
+    cargo tauri build --no-bundle -- --offline --target-dir $smokeTargetDir
     Assert-LastExitCode 'cargo tauri build --no-bundle -- --offline'
 
     if (-not (Test-Path -LiteralPath $mcpPath -PathType Leaf)) {
@@ -98,7 +99,7 @@ try {
 
     $env:CATHULU_SMOKE_ROOT = $smokeRoot
     $env:CATHULU_MCP_BIN = $mcpPath
-    cargo test --offline -p cathulu-desktop --lib phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts -- --ignored --nocapture
+    cargo test --offline --target-dir $smokeTargetDir -p cathulu-desktop --lib phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts -- --ignored --nocapture
     Assert-LastExitCode 'combined MCP/Tauri integration test'
 
     $env:CATHULU_DATA_DIR = $dataDir
@@ -123,7 +124,7 @@ try {
         throw 'Git freshness reconciliation did not survive the restarts.'
     }
 
-    Write-Output 'PASS: MCP workflow and memory state persisted; the read-only Tauri command saw the same database; the Windows desktop started; a later MCP restart returned verified run and fresh Git state.'
+    Write-Output 'PASS: MCP workflow, memory, worker report, and verified worker worktree persisted; the read-only Tauri command saw the same database; the Windows desktop started; a later MCP restart returned verified run and fresh Git state.'
 }
 finally {
     if ($null -ne $desktopProcess -and -not $desktopProcess.HasExited) {

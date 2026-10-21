@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: M1-M7 are validated and published to `main`; M7 is published at `6251515`. M8 is next.
+Status: M1-M7 are validated and published to `main`; M7 is published at `6251515`. M8 is locally validated on `codex/phase3-worktree-telemetry` and ready to publish.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -167,11 +167,11 @@ Goal: connect reported worker changes to verifiable Git worktree facts without m
 
 Subtasks:
 
-- [ ] Record optional worktree reference, branch, base commit, observed head, cleanliness, changed paths, and last reconciliation time on a delegation.
-- [ ] Reconcile only worktrees that resolve under a registered repository/worktree boundary and confirm their Git common-dir relationship.
-- [ ] Associate available allowlisted Codex lifecycle events with delegations only when a supported correlation key exists; retain hashes/coarse metadata only.
-- [ ] Record requested and effective model/effort separately; leave effective values unknown without a supported source.
-- [ ] Document manual native Codex worker handoff and recovery of missing/unavailable worktrees.
+- [x] Record optional worktree reference, branch, base commit, observed head, cleanliness, changed paths, and last reconciliation time on a delegation.
+- [x] Reconcile only worktrees that resolve under a registered repository/worktree boundary and confirm their Git common-dir relationship.
+- [x] Associate available allowlisted Codex lifecycle events with delegations only when a supported correlation key exists; retain hashes/coarse metadata only.
+- [x] Record requested and effective model/effort separately; leave effective values unknown without a supported source.
+- [x] Document manual native Codex worker handoff and recovery of missing/unavailable worktrees.
 
 Affected areas: Git/domain operations, M3 telemetry mapping, migration if required, MCP, dashboard evidence, tests, docs.
 
@@ -179,18 +179,18 @@ Dependencies: M6, M7; current official Codex hook/configuration contract.
 
 Acceptance criteria:
 
-- [ ] Matching worktrees reconcile deterministically; unrelated, escaped, missing, or wrong-repository paths do not mutate delegation state.
-- [ ] A reported worker commit and changed paths can be checked against observed Git state.
-- [ ] Unsupported worker identity/model telemetry is reported as unavailable rather than inferred.
-- [ ] No tool spawns an agent, creates/removes a worktree, or merges changes.
+- [x] Matching worktrees reconcile deterministically; unrelated, escaped, missing, or wrong-repository paths do not mutate delegation state.
+- [x] A reported worker commit and changed paths can be checked against observed Git state.
+- [x] Unsupported worker identity/model telemetry is reported as unavailable rather than inferred.
+- [x] No tool spawns an agent, creates/removes a worktree, or merges changes.
 
 Validation:
 
-- [ ] Disposable Git worktree tests for clean, dirty, advanced, missing, escaped, and foreign-repository cases.
-- [ ] Hook ingestion tests for correlation, privacy minimization, duplicate delivery, and unsupported fields.
-- [ ] Restart and shared-store smoke plus all workspace checks and Windows build.
+- [x] Disposable Git worktree tests for clean, dirty, advanced, missing, escaped, and foreign-repository cases.
+- [x] Hook ingestion tests for correlation, privacy minimization, duplicate delivery, and unsupported fields.
+- [x] Restart and shared-store smoke plus all workspace checks and Windows build.
 
-Documentation updates: architecture, ADR-0004 if telemetry behavior changes, local MCP, roadmap, plan.
+Documentation updates: architecture, ADR-0005, local MCP, project definition, roadmap, plan.
 
 Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `tdd`, `openai-docs`.
 
@@ -246,7 +246,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
 - [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
 - [x] Implement, validate, and publish M7 to `main` at `6251515`.
-- [ ] Implement and validate M8.
+- [x] Implement and validate M8.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
 
 ## Implementation discoveries / decisions
@@ -259,9 +259,13 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: M7 uses additive SQLite schema v6. One immutable 16 KiB schema-v1 worker report may attach to a dispatched delegation. Changed paths are checked against packet scope; artifact and quality-check references are restricted to the parent run; parent quality-check state and details hashes are snapshotted. Report/review requests are idempotent, key values are hashed, reviews are append-only, and worker outcomes do not affect parent-run quality. Referenced report artifacts are protected from orphan collection.
 - 2026-10-21: The dashboard adds up to ten recently active delegation/report summaries as a read-only snapshot. React checks cover semantic labels/read-only states and responsive breakpoints are defined at 900px/620px. Browser viewport inspection could not run because available browser contexts could not reach the local Windows loopback server; no visual pass is claimed.
 - 2026-10-21: M7 commit `6251515156c033e15b276bacc73b54df92101643` was pushed as a fast-forward to `main` after local validation. GitHub's combined status response contained no status checks.
+- 2026-10-21: Current official OpenAI Hooks documentation lists `agent_id`, `agent_type`, and the active `model` on `SubagentStart`/`SubagentStop`; subagent hooks use the parent `session_id`. It documents no reasoning-effort field. M8 correlates through an explicit stored SubagentStart event reference and parent-run match, hashes session/agent identifiers, stores only coarse role/model metadata, and leaves effective effort unknown. Transcript paths and last assistant messages remain excluded. See [ADR-0005](../decisions/ADR-0005-codex-worker-telemetry-and-worktree-verification.md) and the [Hooks guide](https://learn.chatgpt.com/docs/hooks).
+- 2026-10-21: Git documentation confirms `git worktree list --porcelain` provides machine-readable worktree paths/HEAD/branch state, `rev-parse --show-toplevel` identifies the real worktree root, and `--git-common-dir` identifies shared repository metadata. M8 requires an exact canonical linked worktree, distinct from the registered root, and matching common directory before storing state; worker worktrees remain Codex-owned. New delegations capture the actual registered project HEAD at preparation; legacy rows remain baseline-unknown.
 
 ## Completion evidence
 
 M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. Commit `1814ccd` is published to `main`. GitHub reported no status checks for the commit; all applicable local gates passed.
 
 M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Commit `6251515` is published to `main`; GitHub returned no status checks. Each milestone must record source-of-truth documentation and its Git checkpoint.
+
+M8 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --target-dir target\m8-integration-smoke --workspace` passed 23 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that integration path with an actual linked worker worktree, report verification through MCP and Tauri, Windows desktop startup, and persisted MCP reads after restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. GitHub status checks and the Git checkpoint will be recorded after publication. The live owner Codex hook trust/configuration path remains unmodified and unverified.
