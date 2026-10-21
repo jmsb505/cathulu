@@ -19,6 +19,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 - The 2026-10-21 entry-gate audit was rechecked after M11 publication: `CATHULU_DATA_DIR` is unset, the default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` database is absent, `codex mcp list` has no Cathulu server, and there is no project-root Graphify snapshot. Graphify 0.9.82 remains available through the existing user Python site package; the pilot snapshot is ignored and temporary.
 - The local MCP registration and Cathulu project resource were verified during this continuation. No qualifying recurring cross-project workflow is currently available to evaluate.
 - M10 is not eligible under the currently observed work pattern. Do not infer dependencies, combine unrelated repository tasks, or manufacture cross-project evidence. Reconsider M10 if a naturally recurring task crosses repositories.
+- Backlog only: when real work naturally spans repositories, capture and evaluate the actual cross-repository handoff and its dependency/context evidence. No current task is available for this check, and it does not block unrelated tests, maintenance, or independently eligible milestones. Do not manufacture a task or treat a static dependency audit as proof of a successful handoff.
 
 ## Desired state
 
@@ -322,6 +323,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 - [x] Publish M11 after local Windows validation and recheck the M10-M14 entry gates.
 - [x] Configure the local Cathulu MCP with prompt-gated tool approval and register the Cathulu checkout; verify the projects resource reports it.
 - [x] Review available work-pattern evidence; no recurring cross-project task qualifies for the M10 gate.
+- [ ] Future backlog: evaluate a cross-repository handoff during naturally occurring work that spans repositories; this is not a prerequisite for unrelated validation or development.
 - [ ] Collect comparable real local Cathulu runs for M12-M14. Reconsider M10 only if a naturally recurring cross-project task appears.
 
 ## Implementation discoveries / decisions
@@ -340,6 +342,9 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 
 M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed with 37 tests and one dedicated desktop/MCP smoke test ignored for its PowerShell harness; all three focused Graphify MCP tests passed; the offline Windows release MCP build passed; and `git diff --check` passed. The migration tests exercise version-four and version-five data through v9. SQLite remains authoritative and no Graphify dependency or bundled code was added.
 
+Non-gating Windows regression validation on 2026-10-21: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed (37 passed, one dedicated integration test ignored by default); `scripts/phase1-m4-integration-smoke.ps1` passed (the dedicated MCP/Tauri shared-state and restart test, no-bundle desktop build/startup, and persisted MCP read); `npm test -- --run` passed (5 tests); `npm run build` passed; and `git diff --check` passed. This validates existing seams but does not satisfy the real-work evidence gates for M10 or M12-M14.
+
 M11 was merged to `main` at `e18dc46` through PR #1. The initial pre-onboarding check found no Cathulu MCP registration or database. Since then, the local MCP has been configured and Cathulu registered; no real run history exists yet.
 
 M10 and M12-M14 are not claimed complete. M10 is not eligible under current evidence because no qualifying recurring cross-project workflow has been observed; its gate requires naturally recurring cross-project context reconstruction and must not be manufactured. M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.
+
