@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: PROPOSED. The architecture boundary is accepted in ADR-0007; no provider adapters, model calls, active specialist flags, or schema changes are implemented.
+Status: M15 LOCALLY VALIDATED; M16-M19 PROPOSED. The architecture boundary is accepted in ADR-0007; no provider adapters or model calls are implemented. Active treatments remain gated until the M18 approval stage.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -326,7 +326,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] Inspect the existing M4 memory/run/telemetry substrate and M9/M11 boundaries.
 - [x] Record the optional specialist architecture and M15-M19 plan. No implementation or provider call is included in this documentation milestone.
 - [x] Validate documentation with git diff whitespace checks, local link resolution, and a trailing-whitespace scan.
-- [ ] M15 provider-neutral contracts and attribution.
+- [x] M15 provider-neutral contracts, disabled-by-default configuration, immutable run attribution, and append-only telemetry.
 - [ ] M16 DecisionModel shadow trials.
 - [ ] M17 ContextModel shadow extraction.
 - [ ] M18 controlled ablation and evidence review.
@@ -337,8 +337,21 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - 2026-10-21: This plan adds an optional provider layer around the current local Cathulu/Codex workflow; it does not change existing memory classes, temperatures, M9 Codex selectors, QA authority, or M10/M12-M14 gates.
 - 2026-10-21: Shadow results cannot demonstrate realized reductions in Codex work because they do not affect execution. They establish safety and prediction/extraction quality only; a separate explicitly approved, reversible active pilot is needed to measure actual impact.
 - 2026-10-21: Provider candidate names are not a commitment. Current primary documentation, API, privacy/terms, credentials, local alternatives, and maintenance need review before adapters are implemented.
+- 2026-10-21: M15 uses the existing append-only `run_started` event for immutable treatment snapshots and `external_event_id` for idempotent invocation telemetry. The audit found no need for a schema migration or a parallel experiment/telemetry table. Invalid base or workflow override configuration is captured as an all-disabled fallback so it cannot prevent run creation. Active settings are represented in the contract but rejected until the M18 owner-approved pilot gate.
+- 2026-10-21: `Store::start_run` continues to use the all-disabled defaults. A host may pass a typed `OptimizationConfig` to `start_run_with_optimization`; an immutable workflow version can override selected entries under its `optimization.capabilities` object. This milestone does not add a settings UI, provider registry, credential store, provider adapter, or model call.
 
 ## Completion evidence
 
-This documentation milestone passed git diff whitespace checks, local Markdown link resolution, and a trailing-whitespace scan. No implementation tests were run because no code changed. No SQLite migration, provider integration/API validation, network call, active treatment, or measured optimization result is claimed complete.
+M15 passed local Windows validation on 2026-10-21. Commands and results:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --workspace` — passed: core unit tests (10), delegation lifecycle (4), MCP vertical slice (16), memory lifecycle (4), M15 optimization tests (5), desktop library tests (3 passed, 1 existing integration test ignored by design), and doc tests.
+- `npm ci` in `apps/desktop` — installed the locked dependencies; 0 vulnerabilities reported. No package manifest or lockfile change was made.
+- `npm test -- --run` — passed (5 tests).
+- `npm run build` — passed.
+- `scripts/phase1-m4-integration-smoke.ps1` — passed, including the MCP/Tauri shared-state restart integration test and hidden Windows desktop startup.
+- M15 tests confirm that invocation payloads contain metadata only, reuse of an invocation ID is idempotent, differing telemetry under the same ID is rejected, and existing schema version 9 is unchanged.
+- Rollback is a code rollback only: no schema migration or new provider is present. Existing v9 databases and append-only treatment events remain readable; a prior binary ignores the additional `run_started` field and unknown invocation event type.
+
+No provider integration/API validation, network model call, active treatment, or measured optimization result is claimed complete. M16-M19 remain proposed.
 

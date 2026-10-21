@@ -9,6 +9,7 @@ mod hash;
 pub mod mcp;
 pub mod memory;
 mod migrations;
+pub mod optimization;
 mod sqlite;
 pub mod telemetry;
 pub mod workflow;
