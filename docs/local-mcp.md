@@ -135,6 +135,16 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 
 - `register_project` accepts a local Git repository path. It stores the canonical repository root and an initial branch, HEAD, dirty flag, and changed-path list.
 - `reconcile_project` refreshes the Git snapshot for a registered project ID.
+- `trace_code_path` optionally traces a directed path between exact code symbols in `<repository>\graphify-out\graph.json`. It defaults to three hops (maximum four), accepts optional repository-relative source/target file filters, and returns node IDs, edge relation/confidence, and current source locations without source contents. Graphify metadata is recorded in SQLite; a changed or unavailable snapshot invalidates only memories that name the previous graph snapshot. Missing, stale, malformed, or unsupported snapshots return no candidates so current SQLite/SQL/FTS and source inspection remain the fallback.
+- `cathulu://projects/{id}/graphify-snapshot` reads the current Graphify snapshot identity and freshness state. Cathulu does not install or run Graphify. If Graphify 0.9.82 is already installed and you want to create an optional local code-only snapshot, run this from the repository root in PowerShell:
+
+  ```powershell
+  $env:GRAPHIFY_BACKEND = "none"
+  $env:GRAPHIFY_QUERY_LOG_DISABLE = "1"
+  python -m graphify extract . --code-only --out .
+  ```
+
+  The supported export is schema 1 from Graphify 0.9.82. Newer versions remain unavailable until their export contract is reviewed. The generated `graphify-out` directory is a local retrieval artifact; keep it out of source commits unless the repository owner explicitly wants to version it.
 - Workflow tools create objectives and tasks, record immutable decisions and workflow versions, start runs, record quality checks and local evidence references, and finish runs using mandatory-check results.
 - `prepare_delegation` stores a typed v1 task packet against a matching project, task, and running/blocked run. Packets are limited to 16 KiB and include an objective, acceptance criteria, constraints, repository-relative allowed paths, current memory/artifact references, and requested report fields. Invalid or cross-scope references are rejected. New delegations capture the actual registered Git HEAD as the immutable comparison baseline; existing records are not backfilled.
 - `mark_delegation_dispatched` and `cancel_delegation` append validated lifecycle events. These only record the owner's native Codex action or Cathulu cancellation state; they do not spawn or signal a worker and do not change parent-run quality.

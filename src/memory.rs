@@ -162,6 +162,26 @@ impl Store {
                 return Err(format!("freshness repository {repo_id} was not found"));
             }
         }
+        if let Some(snapshot_id) = input.freshness_basis.graph_snapshot.as_deref() {
+            let repo_id = input
+                .freshness_basis
+                .repo_id
+                .ok_or_else(|| "a Graphify freshness basis requires repo_id".to_string())?;
+            let current: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM project_graphify_snapshots
+                     WHERE project_id = ?1 AND snapshot_id = ?2 AND status = 'available')",
+                    params![repo_id, snapshot_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !current {
+                return Err(
+                    "Graphify freshness basis is not the project's current available snapshot"
+                        .to_string(),
+                );
+            }
+        }
         transaction
             .execute(
                 "INSERT OR IGNORE INTO memory_scope_budgets
@@ -455,6 +475,11 @@ impl Store {
                    AND (m.valid_until IS NULL OR m.valid_until > ?3)
                    AND (m.freshness_repo_id IS NULL OR
                         (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                   AND (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                        SELECT 1 FROM project_graphify_snapshots g
+                        WHERE g.project_id = m.freshness_repo_id
+                          AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                          AND g.status = 'available'))
                  ORDER BY m.importance DESC, COALESCE(m.last_used_at, 0) DESC, m.created_at DESC, m.id DESC",
             )
             .map_err(sqlite_error)?;
@@ -505,6 +530,11 @@ impl Store {
                    AND (m.valid_until IS NULL OR m.valid_until > ?4)
                    AND (m.freshness_repo_id IS NULL OR
                         (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                   AND (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                        SELECT 1 FROM project_graphify_snapshots g
+                        WHERE g.project_id = m.freshness_repo_id
+                          AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                          AND g.status = 'available'))
                  ORDER BY bm25(memory_fts), CASE m.memory_class WHEN 'canonical' THEN 0 ELSE 1 END,
                           m.importance DESC, COALESCE(m.last_used_at, 0) DESC, m.id DESC
                  LIMIT ?5",
@@ -1051,6 +1081,59 @@ impl Store {
         }
         Ok(ids)
     }
+
+    pub(crate) fn invalidate_graph_snapshot_memories(
+        transaction: &Transaction<'_>,
+        project_id: i64,
+        current_snapshot_id: Option<&str>,
+        now: i64,
+    ) -> Result<Vec<i64>, String> {
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, freshness_basis_json FROM memories
+                 WHERE freshness_repo_id = ?1 AND invalidated_at IS NULL
+                   AND superseded_by_id IS NULL ORDER BY id",
+            )
+            .map_err(sqlite_error)?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        drop(statement);
+
+        let mut invalidated = Vec::new();
+        for (id, freshness_json) in rows {
+            let basis: FreshnessBasis = serde_json::from_str(&freshness_json)
+                .map_err(|error| format!("cannot read memory {id} freshness basis: {error}"))?;
+            let Some(snapshot_id) = basis.graph_snapshot.as_deref() else {
+                continue;
+            };
+            if current_snapshot_id.is_some_and(|current| current == snapshot_id) {
+                continue;
+            }
+            transaction
+                .execute(
+                    "UPDATE memories SET invalidated_at = ?1,
+                       invalidation_reason = 'graph_snapshot_changed', updated_at = ?1
+                     WHERE id = ?2 AND invalidated_at IS NULL",
+                    params![now, id],
+                )
+                .map_err(sqlite_error)?;
+            append_event(
+                transaction,
+                "memory",
+                id,
+                "memory_invalidated",
+                &json!({ "reason": "graph_snapshot_changed", "repoId": project_id }),
+                now,
+            )?;
+            invalidated.push(id);
+        }
+        Ok(invalidated)
+    }
 }
 
 fn quoted_fts_query(query: &str) -> Result<String, String> {
@@ -1113,6 +1196,21 @@ fn validate_memory_input(input: &MemoryCreateInput) -> Result<(), String> {
     }
     if input.memory_class == "canonical" && input.sources.is_empty() {
         return Err("canonical memory requires at least one provenance source".to_string());
+    }
+    if input
+        .freshness_basis
+        .graph_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| {
+            snapshot.len() != 64 || !snapshot.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err(
+            "Graphify freshness snapshot must be a 64-character hexadecimal ID".to_string(),
+        );
+    }
+    if input.freshness_basis.graph_snapshot.is_some() && input.freshness_basis.repo_id.is_none() {
+        return Err("a Graphify freshness basis requires repo_id".to_string());
     }
     if input.sources.len() > 32 || input.artifact_ids.len() > 64 {
         return Err("memory provenance exceeds the per-record reference limit".to_string());

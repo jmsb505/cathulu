@@ -1,6 +1,6 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: Planned after Phase 3. M9 is validated and published to `main`; M10-M14 remain conditional on the evidence gates below.
+Status: M9 is validated and published to `main`; M11 is implemented and validated. M10 and M12-M14 remain conditional on their evidence gates below.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -16,7 +16,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 - M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`.
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
-- The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No repository `graphify-out/graph.json` snapshot exists, and the Graphify CLI is not installed.
+- The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No project-root Graphify snapshot exists; Graphify 0.9.82 is available through the existing user Python site package and a temporary ignored pilot snapshot was generated locally.
 - No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
 
 ## Desired state
@@ -133,6 +133,15 @@ Entry gate:
 - Identify a reproducible Graphify export and version, and demonstrate it can be generated/consumed locally without sending private repository content to an unapproved service.
 - Select structurally complex tasks and compare Graphify neighborhoods with current SQL/FTS plus file/Git retrieval under the same context budget.
 - Adopt only if the predeclared relevance/usefulness and maintenance criteria are met.
+
+Pre-registered local benchmark (before scored retrieval runs):
+
+- Corpus: only code in the Cathulu repository at `92ee9d5`; Graphify `0.9.82`, schema version `1`, code-only extraction, no documentation/media extraction, no LLM backend, and query logging disabled.
+- Tasks: trace worktree reconciliation to report verification; trace `finish_run` to mandatory-check validation; trace Tauri Codex preview to its TOML preview builder.
+- Baseline: exact file search with `rg -n -C 2` around caller and callee, followed by source-line inspection. Graphify result: exact directed path plus the matching edge's relative file, source location, relation, and confidence.
+- Context budget: cap both representations at 8 KiB per task. A task succeeds only when the expected relationship is present with a source location that matches the current source and is neither stale nor outside the registered repository.
+- Adopt only if at least two of three tasks succeed, Graphify uses at most half the baseline bytes for those same tasks, and the adapter can fail closed on unsupported schema/version or stale source commits without adding a required runtime dependency. SQL-specific semantics remain an explicit FTS/manual fallback case.
+- Earlier exploratory CLI calls are feasibility checks only; they are not benchmark scores. The scored run records raw byte counts and source-verified edges below.
 
 Subtasks:
 
@@ -289,19 +298,31 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 ## Progress
 
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
-- [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, no Graphify snapshot, and no Graphify CLI were found on 2026-10-21.
+- [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, and no project-root Graphify snapshot were found on 2026-10-21.
 - [x] Validate M9 with explicit per-preview target selection and no implicit target.
 - [x] Publish the validated M9 checkpoint `f2381ae` and record its revision.
 - [x] Re-evaluate the M10-M14 entry gates after M9; the live local run-data gate remains unmet.
+- [x] Reproduce Graphify 0.9.82 schema 1 locally with code-only extraction, no LLM backend, and query logging disabled; verify snapshot commit identity against the unchanged code corpus.
+- [x] Review local privacy, offline, and distribution metadata: the installed Graphify distribution includes Apache-2.0 and MIT license texts; Cathulu adds no Graphify dependency, bundled code, or automatic extraction step.
+- [x] Pre-register and score the three-task Graphify comparison under the same 8 KiB cap; all three results matched current source and each Graphify packet was at most half the paired `rg` output.
+- [x] Implement and validate the read-only Graphify adapter, bounded structural retrieval, stale/malformed snapshot rejection, and current-source filtering.
+- [x] Update architecture, roadmap, setup, and the Graphify source-contract ADR after the implementation passes validation.
+- [x] Validate the additive SQLite v9 snapshot migration against version-four and version-five data fixtures.
 - [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
 
 ## Implementation discoveries / decisions
 
 - 2026-10-21: M10's gate is unmet in the current local Codex profile: no durable Cathulu MCP entry or database was found, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction. M9's disposable integration database was removed by the smoke script and is not product-use evidence.
-- 2026-10-21: M11's gate is unmet: there is no `graphify-out/graph.json` in this checkout and no installed Graphify CLI. No extraction was run because that tool may involve model-backed processing and no local Graphify/privacy contract is approved.
+- 2026-10-21: M11's evidence gate passed in a local-only pilot. Existing Graphify 0.9.82 was imported from the user Python site package; code-only extraction skipped all docs/media, used `GRAPHIFY_BACKEND=none`, and disabled query logging. The generated snapshot reported schema 1 and `built_at_commit=92ee9d571c3aa87278b6fd50a17d852e68216930`; the current source HEAD matched. No Graphify dependency or project-root artifact was added.
+- 2026-10-21: The local `graphifyy` 0.9.82 distribution contains Apache-2.0 and MIT license texts. Cathulu consumes the export format only; no Graphify code or package is being copied or bundled. Upstream source and current licensing are linked from ADR-0006.
+- 2026-10-21: The M11 benchmark was pre-registered before scored queries. Each Graphify packet contains the exact directed path plus compact edge metadata. Scored results: worktree reconciliation → report verification, 201/411 bytes (48.9%, EXTRACTED, `src/worktree.rs:L107`); `finish_run` → mandatory-check validation, 189/1040 bytes (18.2%, EXTRACTED, `src/workflow.rs:L691`); Tauri Codex preview → TOML preview builder, 222/2181 bytes (10.2%, INFERRED, `apps/desktop/src-tauri/src/lib.rs:L114`). The three edge locations were checked against current source. Earlier exploratory Graphify calls and Graphify's generic benchmark were excluded. The first task narrowly meets the 50% cutoff; benchmark byte accounting should be retained as defined, not rounded to a stricter threshold.
+- 2026-10-21: Graphify is optional retrieval infrastructure, not an automatic dependency or memory authority. The adapter rejects unsupported schema/version and commit mismatches, omits results whose referenced source files changed or disappeared, and retains SQL/FTS fallback for exact state and memory.
+- 2026-10-21: M10 remains ineligible because there is no real Cathulu use history. M11 proceeds independently because its pilot and adapter rely on the existing registered-project identity and M4 SQLite/FTS substrate; it does not add M10 Sub-Overseer or durable-scope behavior.
 - 2026-10-21: M12-M14 cannot be evaluated from this checkout without real completed and comparable run evidence. Synthetic fixtures will validate mechanics only and will not satisfy these gates.
 - 2026-10-21: Context7 resolution is currently unavailable because its monthly quota is exhausted; current official OpenAI docs were fetched for M9. Resolve the app-specific account catalog through a supported local Codex source and do not infer account entitlement from public docs.
 
 ## Completion evidence
 
-No M10-M14 implementation is claimed. The entry-gate audit above is the current evidence. Continue with normal local Cathulu use and fresh gate evaluation; implement each capability only after its own preconditions pass.
+M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed with 37 tests and one dedicated desktop/MCP smoke test ignored for its PowerShell harness; all three focused Graphify MCP tests passed; the offline Windows release MCP build passed; and `git diff --check` passed. The migration tests exercise version-four and version-five data through v9. SQLite remains authoritative and no Graphify dependency or bundled code was added.
+
+M10 and M12-M14 are not claimed complete. The entry-gate audit above remains the evidence: M10 needs repeated real cross-project context reconstruction in local Cathulu use; M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.

@@ -31,6 +31,79 @@ fn make_git_repo(path: &Path) {
     fs::write(path.join("work.txt"), "untracked evidence\n").expect("write untracked file");
 }
 
+fn make_graphify_repo(path: &Path) -> String {
+    fs::create_dir_all(path.join("src")).expect("create repository source folder");
+    run_git(path, &["init", "--quiet", "-b", "main"]);
+    run_git(path, &["config", "user.name", "Cathulu Test"]);
+    run_git(
+        path,
+        &["config", "user.email", "cathulu-test@example.invalid"],
+    );
+    fs::write(
+        path.join("src/lib.rs"),
+        "pub fn caller() { middle(); }\npub fn middle() { callee(); }\npub fn callee() {}\n",
+    )
+    .expect("write source fixture");
+    run_git(path, &["add", "src/lib.rs"]);
+    run_git(path, &["commit", "--quiet", "-m", "source fixture"]);
+    current_head(path)
+}
+
+fn graphify_document(head: &str) -> Value {
+    json!({
+        "directed": true,
+        "multigraph": false,
+        "graph": { "schema_version": 1, "graphify_version": "0.9.82" },
+        "built_at_commit": head,
+        "nodes": [
+            { "id": "src_lib_caller", "label": "caller()", "file_type": "code", "source_file": "src/lib.rs", "source_location": "L1" },
+            { "id": "src_lib_middle", "label": "middle()", "file_type": "code", "source_file": "src/lib.rs", "source_location": "L2" },
+            { "id": "src_lib_callee", "label": "callee()", "file_type": "code", "source_file": "src/lib.rs", "source_location": "L3" }
+        ],
+        "links": [
+            { "source": "src_lib_caller", "target": "src_lib_middle", "relation": "calls", "confidence": "EXTRACTED", "source_file": "src/lib.rs", "source_location": "L1" },
+            { "source": "src_lib_middle", "target": "src_lib_callee", "relation": "calls", "confidence": "EXTRACTED", "source_file": "src/lib.rs", "source_location": "L2" }
+        ]
+    })
+}
+
+fn write_graphify_document(repo: &Path, document: &Value) {
+    let graph_path = repo.join("graphify-out/graph.json");
+    fs::create_dir_all(graph_path.parent().expect("Graphify output folder"))
+        .expect("create Graphify output folder");
+    fs::write(
+        graph_path,
+        serde_json::to_vec(document).expect("serialize Graphify fixture"),
+    )
+    .expect("write Graphify fixture");
+}
+
+fn trace_graphify_path(data_dir: &Path, project_id: i64) -> Value {
+    tool_text(&call_tool(
+        data_dir,
+        "trace_code_path",
+        json!({
+            "project_id": project_id,
+            "source_symbol": "caller",
+            "target_symbol": "callee",
+            "source_file": "src/lib.rs",
+            "target_file": "src/lib.rs"
+        }),
+    ))
+}
+
+fn read_graphify_snapshot(data_dir: &Path, project_id: i64) -> Value {
+    let responses = run_initialized_server(
+        data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://projects/{project_id}/graphify-snapshot") }),
+        )],
+    );
+    resource_text(response(&responses, 2))
+}
+
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
@@ -259,6 +332,291 @@ fn register_reconcile_read_and_reopen_through_mcp() {
 }
 
 #[test]
+fn graphify_path_returns_current_source_location_through_mcp() {
+    let root = unique_temp_dir("graphify-path");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    let head = make_graphify_repo(&repo);
+    write_graphify_document(&repo, &graphify_document(&head));
+
+    let project_id = register_repo(&data_dir, &repo);
+    let traced = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(traced["status"], json!("found"));
+    assert_eq!(traced["sourceCommit"], json!(head));
+    assert_eq!(traced["nodes"].as_array().map(Vec::len), Some(3));
+    assert_eq!(traced["edges"].as_array().map(Vec::len), Some(2));
+    assert_eq!(traced["edges"][0]["sourceFile"], json!("src/lib.rs"));
+    assert_eq!(traced["edges"][0]["sourceLocation"], json!("L1"));
+    assert_eq!(traced["edges"][0]["relation"], json!("calls"));
+    assert_eq!(traced["edges"][0]["confidence"], json!("EXTRACTED"));
+    let bounded = tool_text(&call_tool(
+        &data_dir,
+        "trace_code_path",
+        json!({
+            "project_id": project_id,
+            "source_symbol": "caller",
+            "target_symbol": "callee",
+            "source_file": "src/lib.rs",
+            "target_file": "src/lib.rs",
+            "max_hops": 1
+        }),
+    ));
+    assert_eq!(bounded["status"], json!("no_path"));
+    let snapshot_id = traced["snapshotId"].as_str().expect("snapshot identity");
+    assert_eq!(snapshot_id.len(), 64);
+
+    let snapshot = read_graphify_snapshot(&data_dir, project_id);
+    assert_eq!(snapshot["snapshotId"], json!(snapshot_id));
+    assert_eq!(snapshot["status"], json!("available"));
+    assert_eq!(
+        trace_graphify_path(&data_dir, project_id)["snapshotId"],
+        json!(snapshot_id)
+    );
+
+    fs::remove_dir_all(root).expect("remove Graphify test data");
+}
+
+#[test]
+fn graphify_unavailable_and_stale_snapshots_fail_closed_through_mcp() {
+    let root = unique_temp_dir("graphify-freshness");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    let head = make_graphify_repo(&repo);
+    write_graphify_document(&repo, &graphify_document(&head));
+    let project_id = register_repo(&data_dir, &repo);
+
+    assert_eq!(
+        trace_graphify_path(&data_dir, project_id)["status"],
+        json!("found")
+    );
+
+    let mut stale = graphify_document(&head);
+    stale["built_at_commit"] = json!("0".repeat(40));
+    write_graphify_document(&repo, &stale);
+    let stale_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(stale_result["status"], json!("unavailable"));
+    assert_eq!(stale_result["reason"], json!("source_commit_mismatch"));
+    assert!(stale_result["edges"]
+        .as_array()
+        .expect("edge list")
+        .is_empty());
+    assert_eq!(
+        read_graphify_snapshot(&data_dir, project_id)["status"],
+        json!("stale")
+    );
+
+    let mut unsupported = graphify_document(&head);
+    unsupported["graph"]["schema_version"] = json!(2);
+    write_graphify_document(&repo, &unsupported);
+    let unsupported_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(unsupported_result["status"], json!("unavailable"));
+    assert_eq!(
+        unsupported_result["reason"],
+        json!("unsupported_snapshot_version")
+    );
+
+    let mut unsupported_version = graphify_document(&head);
+    unsupported_version["graph"]["graphify_version"] = json!("0.9.83");
+    write_graphify_document(&repo, &unsupported_version);
+    let unsupported_version_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(unsupported_version_result["status"], json!("unavailable"));
+    assert_eq!(
+        unsupported_version_result["reason"],
+        json!("unsupported_snapshot_version")
+    );
+
+    write_graphify_document(&repo, &json!({ "not": "a Graphify snapshot" }));
+    let malformed_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(malformed_result["status"], json!("unavailable"));
+    assert_eq!(malformed_result["reason"], json!("malformed_snapshot"));
+    let persisted = read_graphify_snapshot(&data_dir, project_id);
+    assert_eq!(persisted["status"], json!("unavailable"));
+    assert_eq!(persisted["statusReason"], json!("malformed_snapshot"));
+
+    let mut empty = graphify_document(&head);
+    empty["nodes"] = json!([]);
+    empty["links"] = json!([]);
+    write_graphify_document(&repo, &empty);
+    let empty_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(empty_result["status"], json!("no_path"));
+    assert!(empty_result["edges"]
+        .as_array()
+        .expect("edge list")
+        .is_empty());
+    assert_eq!(
+        read_graphify_snapshot(&data_dir, project_id)["status"],
+        json!("available")
+    );
+
+    let mut invalid_location = graphify_document(&head);
+    invalid_location["nodes"][0]["source_location"] = json!("L99");
+    write_graphify_document(&repo, &invalid_location);
+    let location_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(location_result["status"], json!("unavailable"));
+    assert_eq!(
+        location_result["reason"],
+        json!("source_location_out_of_range")
+    );
+
+    let mut outside_source = graphify_document(&head);
+    outside_source["nodes"][0]["source_file"] = json!("../README.md");
+    write_graphify_document(&repo, &outside_source);
+    let outside_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(outside_result["status"], json!("unavailable"));
+    assert_eq!(outside_result["reason"], json!("source_outside_repository"));
+
+    write_graphify_document(&repo, &graphify_document(&head));
+    assert_eq!(
+        trace_graphify_path(&data_dir, project_id)["status"],
+        json!("found")
+    );
+    fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn caller() {}\npub fn middle() {}\npub fn callee() {}\n",
+    )
+    .expect("change indexed source");
+    let changed_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(changed_result["status"], json!("unavailable"));
+    assert_eq!(changed_result["reason"], json!("source_files_changed"));
+    assert!(changed_result["edges"]
+        .as_array()
+        .expect("edge list")
+        .is_empty());
+    assert_eq!(
+        read_graphify_snapshot(&data_dir, project_id)["status"],
+        json!("stale")
+    );
+
+    run_git(&repo, &["checkout", "--", "src/lib.rs"]);
+    assert_eq!(
+        trace_graphify_path(&data_dir, project_id)["status"],
+        json!("found")
+    );
+    fs::remove_file(repo.join("src/lib.rs")).expect("remove indexed source");
+    let removed_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(removed_result["status"], json!("unavailable"));
+    assert_eq!(removed_result["reason"], json!("source_files_changed"));
+    assert!(removed_result["edges"]
+        .as_array()
+        .expect("edge list")
+        .is_empty());
+
+    fs::remove_file(repo.join("graphify-out/graph.json")).expect("remove Graphify snapshot");
+    let missing_result = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(missing_result["status"], json!("unavailable"));
+    assert_eq!(missing_result["reason"], json!("snapshot_missing"));
+
+    fs::remove_dir_all(root).expect("remove Graphify freshness fixture");
+}
+
+#[test]
+fn graphify_snapshot_changes_invalidate_only_explicitly_dependent_memory() {
+    let root = unique_temp_dir("graphify-memory-freshness");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    let head = make_graphify_repo(&repo);
+    write_graphify_document(&repo, &graphify_document(&head));
+    let project_id = register_repo(&data_dir, &repo);
+    let first_trace = trace_graphify_path(&data_dir, project_id);
+    let old_snapshot_id = first_trace["snapshotId"]
+        .as_str()
+        .expect("initial Graphify snapshot ID");
+
+    let dependent = create_memory(
+        &data_dir,
+        project_id,
+        "Graph contract durability depends on source relationship evidence.",
+        "lesson",
+        "warm",
+        vec![json!({ "source_type": "human_instruction", "source_id": "graphify-memory-test" })],
+        json!({
+            "repo_id": project_id,
+            "git_commit": head,
+            "graph_snapshot": old_snapshot_id
+        }),
+        0.9,
+        false,
+        None,
+    );
+    let dependent_id = dependent["id"]
+        .as_i64()
+        .expect("Graphify-dependent memory ID");
+    let unchanged = create_memory(
+        &data_dir,
+        project_id,
+        "Rollback procedure keeps database state recoverable.",
+        "procedure",
+        "warm",
+        vec![json!({ "source_type": "human_instruction", "source_id": "non-graph-memory-test" })],
+        json!({ "repo_id": project_id, "git_commit": head }),
+        0.8,
+        false,
+        None,
+    );
+    let unchanged_id = unchanged["id"].as_i64().expect("non-Graphify memory ID");
+    for memory_id in [dependent_id, unchanged_id] {
+        tool_text(&call_tool(
+            &data_dir,
+            "review_memory_candidate",
+            json!({ "memory_id": memory_id, "decision": "accepted" }),
+        ));
+    }
+
+    let mut updated_snapshot = graphify_document(&head);
+    updated_snapshot["pilot_revision"] = json!(2);
+    write_graphify_document(&repo, &updated_snapshot);
+    let second_trace = trace_graphify_path(&data_dir, project_id);
+    assert_eq!(second_trace["status"], json!("found"));
+    assert_ne!(second_trace["snapshotId"], json!(old_snapshot_id));
+
+    let historical = read_memory(&data_dir, dependent_id);
+    assert_eq!(
+        historical["invalidationReason"],
+        json!("graph_snapshot_changed")
+    );
+    assert!(historical["invalidatedAt"].as_i64().is_some());
+    let unaffected = read_memory(&data_dir, unchanged_id);
+    assert!(unaffected["invalidatedAt"].is_null());
+
+    let old_search = tool_text(&call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project",
+            "scope_id": project_id.to_string(),
+            "query": "graph contract",
+            "receiver_scope_type": "scope",
+            "receiver_scope_id": "graphify-review",
+            "limit": 10
+        }),
+    ));
+    assert!(!old_search["warm"]
+        .as_array()
+        .expect("WARM candidates")
+        .iter()
+        .any(|candidate| candidate["memoryId"] == json!(dependent_id)));
+    let current_search = tool_text(&call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project",
+            "scope_id": project_id.to_string(),
+            "query": "rollback procedure",
+            "receiver_scope_type": "scope",
+            "receiver_scope_id": "graphify-review",
+            "limit": 10
+        }),
+    ));
+    assert!(current_search["warm"]
+        .as_array()
+        .expect("WARM candidates")
+        .iter()
+        .any(|candidate| candidate["memoryId"] == json!(unchanged_id)));
+
+    fs::remove_dir_all(root).expect("remove Graphify memory fixture");
+}
+
+#[test]
 fn m1_project_rows_survive_additive_migrations_and_restart() {
     let root = unique_temp_dir("migration-preserves-project");
     let data_dir = root.join("data");
@@ -312,7 +670,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 8);
+    assert_eq!(schema_version, 9);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");

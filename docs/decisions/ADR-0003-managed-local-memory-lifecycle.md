@@ -40,7 +40,7 @@ The memory foundation is implemented before automatic lifecycle maintenance. A l
 - M4 adds a deterministic, manually invoked Gardener that records explainable proposals. Reviewed changes preserve stable memory IDs; consolidation creates a canonical review candidate with source links. Pending duplicate proposals are suppressed.
 - Evidence retention remains disabled until configured. M4 requires valid extraction receipts when policy requests them, preserves protected/referenced/held/QA evidence, and uses a local exact-ID confirmation before archiving Cathulu URI metadata. The artifact row, ID, hashes, and external file remain intact. Legacy immutable events containing a raw URI block collection.
 - M4 records immutable memory-policy versions and run-linked evaluations, plus SQLite/WAL storage snapshots and compact dashboard health metrics, including HOT scope count and largest per-scope HOT size. Archived URI byte counts are logical metadata bytes, not a claim that external files or SQLite pages were physically deleted.
-- A semantic index or Graphify integration is added only when evidence shows it improves retrieval and a real snapshot source is available. SQLite remains authoritative and local.
+- A semantic index remains deferred until real usage shows a retrieval gap. M11 adds an optional local Graphify code-only snapshot adapter after the measured evidence gate; SQLite remains authoritative and Graphify returns bounded candidates only. The source/version contract is recorded in [ADR-0006](ADR-0006-local-graphify-snapshot-contract.md).
 - The read-only dashboard may show compact actionable memory health but does not become a memory mutation surface.
 
 ## M2 implementation mapping
@@ -50,7 +50,7 @@ The memory foundation is implemented before automatic lifecycle maintenance. A l
 - The memory row stores stable ID, normalized content hash, class, temperature, review state, importance/confidence, reuse data, validity interval, supersession links, and a structured freshness basis. Class and temperature can change independently without replacing the ID.
 - Canonical memories require a source reference. Artifact references and protection metadata are local; M2 does not copy or delete artifact contents. Event/projection changes are transactional, and event, decision, and workflow-version history is immutable through the exposed API.
 - Known-by records key a receiver scope to a content hash. Context-transfer rows store size/token estimates, retrieval method, and reuse metadata, while explicit transfer calls return content only for a requested full or delta transfer.
-- M2 produces Git commit freshness and selectively invalidates affected project memories. Graphify, contract, and dependency freshness inputs can be represented but do not become active invalidation sources until those snapshots exist.
+- M2 produces Git commit freshness and selectively invalidates affected project memories. M11 activates Graphify snapshot freshness for explicitly graph-dependent memories; contract and dependency freshness remain inactive until their snapshot sources are implemented.
 - M4 validates SQL/FTS retrieval, proposal-first maintenance, evidence-reference archival, policy comparison, and storage accounting. It does not create a vector index, delete external files, compact raw telemetry, or automatically tune policies.
 
 ## Reconsider if

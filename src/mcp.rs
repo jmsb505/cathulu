@@ -40,6 +40,19 @@ struct ReconcileProjectArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TraceCodePathArgs {
+    project_id: i64,
+    source_symbol: String,
+    target_symbol: String,
+    #[serde(default)]
+    source_file: Option<String>,
+    #[serde(default)]
+    target_file: Option<String>,
+    #[serde(default)]
+    max_hops: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ProjectDependencyArgs {
     from_project_id: i64,
     to_project_id: i64,
@@ -369,6 +382,28 @@ impl CathuluServer {
             Ok(project) => success(project),
             Err(error) => tool_error(error),
         }
+    }
+
+    #[tool(
+        description = "Trace a bounded directed path between code symbols in an optional local Graphify snapshot. Results include current source locations; unavailable snapshots return no candidates and leave SQLite/FTS as authority."
+    )]
+    fn trace_code_path(
+        &self,
+        Parameters(arguments): Parameters<TraceCodePathArgs>,
+    ) -> CallToolResult {
+        self.store
+            .trace_code_path(
+                arguments.project_id,
+                &arguments.source_symbol,
+                &arguments.target_symbol,
+                arguments.source_file.as_deref(),
+                arguments.target_file.as_deref(),
+                arguments
+                    .max_hops
+                    .unwrap_or(crate::graphify::DEFAULT_MAX_HOPS),
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
     }
 
     #[tool(description = "Record a directed relationship between two registered local projects.")]
@@ -901,6 +936,12 @@ impl ServerHandler for CathuluServer {
             ResourceTemplate::new("cathulu://projects/{id}", "Cathulu project")
                 .with_description("One registered repository and its latest Git snapshot.")
                 .with_mime_type("application/json"),
+            ResourceTemplate::new(
+                "cathulu://projects/{id}/graphify-snapshot",
+                "Cathulu Graphify snapshot",
+            )
+            .with_description("Current local Graphify snapshot identity and freshness state, if available.")
+            .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://runs/{id}", "Cathulu run")
                 .with_description("One run and its quality check results.")
                 .with_mime_type("application/json"),
@@ -1072,6 +1113,23 @@ impl ServerHandler for CathuluServer {
                 .list_events("run", &run_id.to_string())
                 .map_err(internal_error)?;
             serde_json::to_string(&events).map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/graphify-snapshot"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            let snapshot = self
+                .store
+                .get_graphify_snapshot(project_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "graphify_snapshot_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&snapshot).map_err(internal_error)?
         } else if let Some(project_id) = request.uri.strip_prefix("cathulu://projects/") {
             let project_id = parse_resource_id(project_id, &request.uri)?;
             let project = self

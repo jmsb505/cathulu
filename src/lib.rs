@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod delegation;
 mod events;
 pub mod gardener;
+pub mod graphify;
 mod hash;
 pub mod mcp;
 pub mod memory;
@@ -319,6 +320,14 @@ impl Store {
             .map_err(|error| format!("cannot read registered project id: {error}"))?;
         let invalidated =
             Self::invalidate_project_memories(&transaction, id, git.head.as_deref(), now)?;
+        Self::invalidate_graphify_if_stale(
+            &transaction,
+            id,
+            Path::new(&git.path),
+            git.head.as_deref(),
+            &git.changed_paths,
+            now,
+        )?;
         crate::events::append_event(
             &transaction,
             "project",
@@ -384,6 +393,14 @@ impl Store {
             .map_err(|error| format!("cannot update reconciled project: {error}"))?;
         let invalidated =
             Self::invalidate_project_memories(&transaction, id, git.head.as_deref(), now)?;
+        Self::invalidate_graphify_if_stale(
+            &transaction,
+            id,
+            Path::new(&git.path),
+            git.head.as_deref(),
+            &git.changed_paths,
+            now,
+        )?;
         crate::events::append_event(
             &transaction,
             "project",
@@ -476,7 +493,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 8 {
+        if version > 9 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -555,6 +572,14 @@ impl Store {
         if version < 8 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_8) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 9 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_9) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }
