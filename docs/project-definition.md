@@ -15,7 +15,7 @@ The product question is whether durable, selectively disclosed state improves ve
 - **Sub-Overseers and workers:** future Codex-native agents for scoped context ownership or narrow execution. They report structured evidence upward; Cathulu does not run their model/tool loops.
 - **Cathulu local services:** own durable state, Git reconciliation, telemetry normalization, workflow/quality state, and compact context resources.
 - **Read-only dashboard:** presents current local state and evidence; it does not issue commands or mutate project state.
-- **Future selector surface:** Cathulu will host model and effort selectors for the Main Overseer and sub-agents in a later milestone. Current official Codex documentation supports main-session settings and distinct per-role custom-agent settings. The owner's configuration target, apply/preview interaction, and available option catalog remain to be decided; Cathulu must not imply a live-session change from a stored selection.
+- **Selector surface:** Cathulu hosts model and effort selectors for the Main Overseer, default subagents, and named custom-agent roles in a settings surface separate from the read-only dashboard. Each preview offers project config, user base config, a named user profile, or export-only. Every file write requires an exact diff review and explicit Apply; stored or written values do not imply account availability or live-session effectiveness.
 
 ## Core workflows
 
@@ -52,7 +52,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - Graphify integration, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, cloud services, and reinforcement learning.
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
 - Advanced convergence and adaptive routing before trustworthy run evidence exists.
-- Model/reasoning selectors in the first increment. Cathulu will host selectors in a later milestone, separate from the read-only dashboard. Current official docs establish model/effort configuration for the main session and custom sub-agent roles. The selector surface still needs an owner-approved apply/preview workflow and a supported option catalog; it must not silently mutate user-level Codex configuration.
+- Model/reasoning selectors in the first increment. M9 implements the later settings surface outside the read-only dashboard. Project/user/profile writes require a per-preview target choice and explicit apply; export-only remains available. Cathulu uses only the local CLI's whitelisted model/effort options, does not infer account availability, and does not claim runtime effectiveness.
 
 ## Domain terms and invariants
 
@@ -72,7 +72,7 @@ Invariants:
 1. Codex remains the execution and conversation surface; Cathulu stores state and evidence and does not run agents.
 2. Events are append-only. Decisions and workflow versions are immutable; supersession creates a new record. Mutable current state is a transactional projection of events and domain operations.
 3. No agent report, timeout, or budget limit can bypass mandatory quality gates.
-4. The portfolio dashboard has no write actions. Project and run state changes come from Codex-facing semantic operations; future selector settings are a separate, explicitly controlled Cathulu configuration boundary.
+4. The portfolio dashboard has no write actions. Project and run state changes come from Codex-facing semantic operations; selector settings are a separate Cathulu configuration boundary and can write only after a reviewed diff and explicit user apply.
 5. Cathulu's database, MCP server, and local artifacts remain local. Raw transcripts, secrets, and prompt text are not retained by default.
 6. Context moves progressively from portfolio to project/scope to task and finally to exact evidence; raw transcripts are not propagated upward.
 7. Additional layers must earn their cost through measured improvement in verified outcomes.

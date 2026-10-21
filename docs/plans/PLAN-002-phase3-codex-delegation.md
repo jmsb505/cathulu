@@ -55,7 +55,7 @@ The first two phases now provide local project/workflow state, quality gates, me
 ## Existing decisions and constraints
 
 - ADR-0001: Codex owns conversations and execution; Cathulu owns durable evidence and state.
-- ADR-0002: Cathulu hosts later selectors in a separate settings surface. The supported config structure is now documented; owner apply behavior and available account-specific options remain open.
+- ADR-0002: Cathulu hosts selectors in a separate settings surface. The user chooses a target for each preview: registered project config, user base config, a named user profile, or export-only. Account availability and effective runtime settings remain unverified.
 - ADR-0003: SQLite is authoritative; context stays bounded and provenance-preserving.
 - ADR-0004: telemetry is allowlisted, normalized, and cannot prove work succeeded.
 - User selected Windows first; cross-platform compatibility remains later work.
@@ -69,14 +69,14 @@ The first two phases now provide local project/workflow state, quality gates, me
 - `tdd` for migration, MCP contract, lifecycle, and IPC tests.
 - `openai-docs` for Codex configuration, subagents, hooks, and telemetry; official documentation was checked on 2026-10-21.
 - `ui-ux-research` and `impeccable` before M7/M9 dashboard or selector UI changes.
-- Context7 for library-specific API work; the last request for Tauri docs returned monthly quota exhausted, so retry before using new framework APIs.
+- Context7 for library-specific API work; the 2026-10-21 `toml_edit` resolution request again returned monthly quota exhausted. The locally cached 0.25.17 source and official docs.rs reference were used; no new Tauri or React API was introduced.
 
 ## Dependencies
 
 - M5 shared-store integration validation.
 - Existing SQLite migration, event journal, run quality gates, artifact records, context transfer, and read-only dashboard.
 - Current local Codex configuration remains owner-controlled; synthetic MCP tests do not require global settings changes.
-- No new third-party dependency is expected for M6-M8.
+- M6-M8 added no dependency. M9 adds `toml_edit` to preserve existing TOML comments and unrelated settings during targeted edits.
 
 ## Risks and unknowns
 
@@ -198,32 +198,32 @@ Expected Git checkpoint: separate validated milestone branch and coherent commit
 
 ### M9 — Model and effort selector application path
 
-Goal: provide the owner-approved Cathulu settings surface for model and effort preferences without claiming unsupported runtime control.
+Goal: provide a user-controlled Cathulu settings surface for model and effort preferences without claiming unsupported runtime control.
 
 Subtasks:
 
-- [ ] Confirm the owner-approved target layer: project-scoped, user/profile-scoped, or export-only.
-- [ ] Discover and validate available model/effort options without hardcoding account access or unsupported combinations.
-- [ ] Preview exact Codex configuration changes and require explicit owner application; preserve backups and unrelated config keys.
-- [ ] Represent global Main Overseer choices and distinct named-agent choices using supported Codex config/custom-agent files.
-- [ ] State when a selection is merely stored, written to config, loaded by a new session, or observed effective.
+- [x] Offer explicit project-scoped, user base, named profile, and export-only target choices per preview; no target is changed automatically.
+- [x] Discover model/effort candidates from the bundled local Codex CLI catalog, whitelist the fields Cathulu exposes, and validate each effort against its model. The catalog is not treated as proof of account availability.
+- [x] Preview exact Codex configuration changes and require a separate Apply action; create backups, preserve comments and unrelated keys, and reject stale previews.
+- [x] Represent Main Overseer, default subagent, and named-agent choices independently using supported Codex config/custom-agent files. Missing or malformed named-agent files are shown as skipped and are never created as partial definitions.
+- [x] Distinguish Cathulu-stored preferences from settings written to a selected config target; runtime effectiveness remains explicitly unverified.
 
 Affected areas: settings-only UI, typed config parser/serializer, local state, docs, acceptance tests; dashboard remains read-only.
 
-Dependencies: M8; current OpenAI docs; explicit owner decision on configuration target/apply behavior.
+Dependencies: M8; current OpenAI docs; explicit per-preview target selection and a separate Apply action, with no implicit default target.
 
 Acceptance criteria:
 
-- [ ] A user can review a precise diff before any config write and cancel without side effects.
-- [ ] Existing unknown/unrelated config keys and comments are preserved or the UI offers safe export instead of destructive rewriting.
-- [ ] Main and custom-role settings are represented independently and validated against the current Codex schema.
-- [ ] No selection is labeled effective until the supported Codex runtime confirms it.
+- [x] A user can review a precise field-level diff before any config write and discard it; preparing or discarding a preview does not write config files.
+- [x] Existing unknown/unrelated config keys and comments are preserved by a TOML-aware patch; export-only returns targeted snippets without reading config contents.
+- [x] Main, default subagent, and existing custom-role settings are represented independently and validated against the current local CLI catalog; account availability is not inferred.
+- [x] No selection is labeled effective; every settings surface reports runtime effectiveness as unverified.
 
 Validation:
 
-- [ ] Parser/serializer round-trip fixtures for user/project/custom-role configuration and malformed files.
-- [ ] Tests for cancel, apply, backup/restore, unsupported values, config precedence, and role overrides.
-- [ ] Owner-controlled Codex smoke only after the preview/apply workflow is reviewable; no unattended global config edits.
+- [x] TOML fixtures cover preserving comments and unrelated keys, malformed files, project-target preview/apply, user base/profile target resolution, export-only, and existing custom-role overrides.
+- [x] Tests cover cancel/no-write preview, backup creation, stale-preview refusal, unsupported model/effort pairs, target isolation, and role-specific configuration.
+- [x] The Tauri command test applies only to a disposable registered repository. No owner Codex config file was changed; no live runtime-effectiveness claim is made.
 
 Documentation updates: ADR-0002, architecture, project definition, setup docs, roadmap, plan.
 
@@ -233,7 +233,7 @@ Expected Git checkpoint: separate validated milestone branch and coherent commit
 
 ## Final integration validation
 
-After M6-M9, run the delegation workflow through local MCP using a disposable Git repository and native Codex subagent handoff: prepare a packet, record dispatch, submit a structured worker report, reconcile its worktree, review evidence, and verify parent QA gates. Confirm requested/effective model and effort distinction, read-only dashboard reporting, persistence across restarts, no agent-spawn/config-write operation in Cathulu MCP, and no raw transcript or secret persistence. The live owner-config selector smoke depends on the owner-approved M9 apply target.
+After M6-M9, run the delegation workflow through local MCP using a disposable Git repository and native Codex subagent handoff: prepare a packet, record dispatch, submit a structured worker report, reconcile its worktree, review evidence, and verify parent QA gates. Confirm requested/effective model and effort distinction, read-only dashboard reporting, persistence across restarts, no agent-spawn/config-write operation in Cathulu MCP, and no raw transcript or secret persistence. The settings surface is validated against disposable files; live runtime-effectiveness remains unverified because Codex exposes no supported control/verification API to Cathulu.
 
 ## Rollback / recovery
 
@@ -247,7 +247,8 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
 - [x] Implement, validate, and publish M7 to `main` at `6251515`.
 - [x] Implement, validate, and publish M8 to `main` at `aecac57`.
-- [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
+- [x] Implement the M9 settings surface with explicit per-preview project, user-base, user-profile, and export-only choices.
+- [x] Implement safe configuration preview/apply/export behavior and validate with local, disposable fixtures.
 
 ## Implementation discoveries / decisions
 
@@ -262,6 +263,10 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: Current official OpenAI Hooks documentation lists `agent_id`, `agent_type`, and the active `model` on `SubagentStart`/`SubagentStop`; subagent hooks use the parent `session_id`. It documents no reasoning-effort field. M8 correlates through an explicit stored SubagentStart event reference and parent-run match, hashes session/agent identifiers, stores only coarse role/model metadata, and leaves effective effort unknown. Transcript paths and last assistant messages remain excluded. See [ADR-0005](../decisions/ADR-0005-codex-worker-telemetry-and-worktree-verification.md) and the [Hooks guide](https://learn.chatgpt.com/docs/hooks).
 - 2026-10-21: Git documentation confirms `git worktree list --porcelain` provides machine-readable worktree paths/HEAD/branch state, `rev-parse --show-toplevel` identifies the real worktree root, and `--git-common-dir` identifies shared repository metadata. M8 requires an exact canonical linked worktree, distinct from the registered root, and matching common directory before storing state; worker worktrees remain Codex-owned. New delegations capture the actual registered project HEAD at preparation; legacy rows remain baseline-unknown.
 - 2026-10-21: Current official OpenAI docs direct users to the local `/model` picker and say available models depend on account/workspace. The installed `codex-cli 0.146.1` exposes five visible model entries and per-model effort values through `codex debug models`, but the debug output is not documented as a stable application API and includes non-catalog instructions. M9 must whitelist any consumed catalog fields, never expose raw output, and label a model as effective only after the runtime verifies it. No account entitlement is inferred from the bundled catalog.
+- 2026-10-21: M9 reads only `codex debug models --bundled`, keeps `slug`, `display_name`, `supported_reasoning_levels[].effort`, and `default_reasoning_level`, and discards all other catalog fields including instruction text. SQLite schema v8 stores independently keyed Main Overseer, default subagent, and named-agent preferences with the CLI version, applied-target metadata, and append-only events. The catalog explicitly reports `accountAvailabilityVerified: false`.
+- 2026-10-21: M9 adds a separate desktop settings page. The dashboard remains read-only. Each preview chooses registered project config, user base config, a named profile, or export-only. Project paths come only from the registered-project table; user paths come from `CODEX_HOME` or `%USERPROFILE%\\.codex`; caller-supplied filesystem paths are not accepted. Project config displays the Codex trust requirement.
+- 2026-10-21: `toml_edit` patches only the supported model/effort keys and preserves comments and unrelated keys. Apply requires the in-memory reviewed preview ID, rechecks original content hashes and path boundaries, creates per-file backups, then records a `written_to_config` event. Named-agent files must already exist and match their declared name; incompatible agents are reported as skipped. Export-only emits only selected TOML snippets and does not read config contents.
+- 2026-10-21: Cathulu reports preferences as `stored_in_cathulu` or `written_to_config`; runtime effectiveness always remains unverified. The local model bundle is not treated as account availability. Cathulu MCP has no configuration-write command, and the owner-controlled Codex config was not changed during implementation or tests.
 
 ## Completion evidence
 
@@ -270,3 +275,5 @@ M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passe
 M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Commit `6251515` is published to `main`; GitHub returned no status checks. Each milestone must record source-of-truth documentation and its Git checkpoint.
 
 M8 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --target-dir target\m8-integration-smoke --workspace` passed 23 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that integration path with an actual linked worker worktree, report verification through MCP and Tauri, Windows desktop startup, and persisted MCP reads after restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Commit `aecac57777fdf31c021553bce8a30164a9444e07` was pushed as a fast-forward to `main`. GitHub returned no status checks and no workflow runs. The live owner Codex hook trust/configuration path remains unmodified and unverified.
+
+M9 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 33 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the ignored MCP/Tauri shared-state and restart test, the no-bundle Windows desktop build/startup, persisted MCP reads after restart, and a verified Git refresh; `npm test -- --run` passed 5 tests; `npm run build` passed; and `git diff --check` passed. Rust tests exercised bundled catalog allowlisting, preference persistence, separate project/user/profile/export target resolution, TOML preservation, backup creation, stale-preview refusal, malformed/missing named-agent handling, and explicit Tauri preview/apply. All config writes used disposable files; the owner's Codex config was not changed. The live browser could not reach the Windows loopback preview, so no viewport visual pass is claimed; React semantics, responsive rules, and the prior clean design-detector result were checked, and small settings text colors were darkened after a manual contrast calculation. Runtime effectiveness and account availability remain unverified.

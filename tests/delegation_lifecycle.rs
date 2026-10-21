@@ -921,7 +921,7 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
 }
 
 #[test]
-fn version_seven_migration_preserves_existing_version_five_delegations() {
+fn version_eight_migration_preserves_existing_version_five_delegations() {
     let root = unique_temp_dir("delegation-v5-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -982,7 +982,8 @@ fn version_seven_migration_preserves_existing_version_five_delegations() {
              DROP TABLE worker_report_quality_check_refs;
              DROP TABLE worker_report_artifact_refs;
              DROP TABLE worker_reports;
-             DELETE FROM schema_migrations WHERE version IN (6, 7);",
+             DROP TABLE codex_selector_preferences;
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8);",
         )
         .expect("restore the populated version-five schema");
     drop(database);
@@ -1006,7 +1007,7 @@ fn version_seven_migration_preserves_existing_version_five_delegations() {
     );
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open upgraded v7 database");
+        .expect("open upgraded v8 database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1015,7 +1016,7 @@ fn version_seven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     assert_eq!(delegation_count, 1);
 
     drop(database);
@@ -1023,7 +1024,7 @@ fn version_seven_migration_preserves_existing_version_five_delegations() {
 }
 
 #[test]
-fn version_five_six_and_seven_migrations_preserve_version_four_project_run_and_memory_state() {
+fn version_five_through_eight_migrations_preserve_version_four_project_run_and_memory_state() {
     let root = unique_temp_dir("delegation-v4-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1096,7 +1097,8 @@ fn version_five_six_and_seven_migrations_preserve_version_four_project_run_and_m
              DROP TABLE worker_report_quality_check_refs;
              DROP TABLE worker_report_artifact_refs;
              DROP TABLE worker_reports;
-             DELETE FROM schema_migrations WHERE version IN (6, 7);
+             DROP TABLE codex_selector_preferences;
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8);
              DROP TRIGGER delegation_memory_refs_no_update;
              DROP TRIGGER delegation_memory_refs_no_delete;
              DROP TRIGGER delegation_artifact_refs_no_update;
@@ -1140,7 +1142,7 @@ fn version_five_six_and_seven_migrations_preserve_version_four_project_run_and_m
         json!("Preserve this version-four memory")
     );
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open migrated version-five database");
+        .expect("open migrated version-eight database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1149,7 +1151,7 @@ fn version_five_six_and_seven_migrations_preserve_version_four_project_run_and_m
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

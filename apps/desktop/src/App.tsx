@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import CodexSettings from "./CodexSettings";
 
 type ProjectSnapshot = {
   id: number;
@@ -125,6 +126,8 @@ export default function App() {
   const projects = snapshot?.projects ?? [];
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const dashboardTitleRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,15 +178,22 @@ export default function App() {
         </a>
         <div className="topbar-meta">
           <span className="local-indicator"><span /> Local workspace</span>
-          <span className="read-only-label">Read only</span>
+          <button className="settings-nav-button" type="button" onClick={() => setSettingsOpen(true)}>Codex settings</button>
+          <span className="read-only-label">Dashboard · read only</span>
         </div>
       </header>
 
+      {settingsOpen ? (
+        <CodexSettings projects={projects} onBack={() => {
+          setSettingsOpen(false);
+          window.requestAnimationFrame(() => dashboardTitleRef.current?.focus());
+        }} />
+      ) : (
       <main id="main" className="main-content">
         <section className="intro" aria-labelledby="page-title">
           <div className="intro-copy">
             <p className="eyebrow">PROJECT OVERVIEW <span> / </span> PHASE 01</p>
-            <h1 id="page-title">Your work,<br /><em>in clear view.</em></h1>
+            <h1 ref={dashboardTitleRef} id="page-title" tabIndex={-1}>Your work,<br /><em>in clear view.</em></h1>
             <p className="intro-description">
               A grounded snapshot of your repositories. Codex drives the work;
               Cathulu keeps the project state close at hand.
@@ -536,6 +546,7 @@ export default function App() {
           </section>
         )}
       </main>
+      )}
 
       <footer className="footer">
         <span><span className="footer-mark">C</span> Cathulu local evidence layer</span>

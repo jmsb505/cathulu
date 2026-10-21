@@ -312,7 +312,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 7);
+    assert_eq!(schema_version, 8);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");

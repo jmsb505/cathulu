@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
@@ -7,8 +7,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const invokeMock = vi.mocked(invoke);
 
-describe("read-only project dashboard", () => {
-  beforeEach(() => invokeMock.mockReset());
+describe("dashboard and local Codex settings", () => {
+  beforeEach(() => { cleanup(); invokeMock.mockReset(); });
 
   it("renders the snapshot returned by the Tauri command", async () => {
     invokeMock.mockResolvedValueOnce({
@@ -170,7 +170,8 @@ describe("read-only project dashboard", () => {
     expect(screen.getByText("Resolve CI gate")).toBeTruthy();
     expect(invokeMock).toHaveBeenCalledWith("dashboard_snapshot");
     expect(screen.getByRole("link", { name: "Cathulu home" })).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Codex settings" })).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(1);
   });
 
   it("shows the empty state when no projects are registered", async () => {
@@ -184,6 +185,109 @@ describe("read-only project dashboard", () => {
     expect(await screen.findByText("A quiet starting point.")).toBeTruthy();
     expect(screen.getByText("Register a repository through Codex to see its Git snapshot here.")).toBeTruthy();
     expect(screen.getByText(/No worker handoffs yet\./)).toBeTruthy();
+  });
+
+  it("opens the separate local Codex settings surface and labels catalog availability as unverified", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
+        memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
+      } as never)
+      .mockResolvedValueOnce({
+        catalog: {
+          source: "bundled_local_codex_cli",
+          cliVersion: "codex-cli test",
+          accountAvailabilityVerified: false,
+          models: [{ modelSlug: "model-a", displayName: "Model A", reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low" }],
+        },
+        preferences: [],
+        preferenceState: "stored_in_cathulu",
+        runtimeEffectivenessVerified: false,
+      } as never);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Codex settings" }));
+
+    expect(await screen.findByRole("heading", { name: "Codex settings" })).toBeTruthy();
+    expect(await screen.findByText(/does not verify account or workspace availability/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Main Overseer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Default sub-agents" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Named agent" })).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("codex_selector_snapshot");
+  });
+
+  it("requires an explicit reviewed apply after saving preferences locally", async () => {
+    const preference = {
+      roleId: "main_overseer",
+      roleKind: "main_overseer",
+      agentName: null,
+      modelSlug: "model-a",
+      reasoningEffort: "low",
+      catalogVersion: "codex-cli test",
+      lastAppliedTarget: null,
+      lastAppliedAt: null,
+      lastAppliedConfigHash: null,
+      updatedAt: 1_800_000_000,
+    };
+    const selectorSnapshot = (written = false) => ({
+      catalog: {
+        source: "bundled_local_codex_cli",
+        cliVersion: "codex-cli test",
+        accountAvailabilityVerified: false,
+        models: [{ modelSlug: "model-a", displayName: "Model A", reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low" }],
+      },
+      preferences: [written ? { ...preference, lastAppliedTarget: "user_base", lastAppliedAt: 1_800_000_001, lastAppliedConfigHash: "a".repeat(64) } : preference],
+      preferenceState: written ? "written_to_config" : "stored_in_cathulu",
+      runtimeEffectivenessVerified: false,
+    });
+    invokeMock
+      .mockResolvedValueOnce({
+        projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
+        memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
+      } as never)
+      .mockResolvedValueOnce(selectorSnapshot() as never)
+      .mockResolvedValueOnce(preference as never)
+      .mockResolvedValueOnce(selectorSnapshot() as never)
+      .mockResolvedValueOnce({
+        previewId: "preview-1",
+        target: "User · config.toml",
+        changes: [
+          { file: "config.toml", key: "model", currentValue: null, selectedValue: "model-a" },
+          { file: "config.toml", key: "model_reasoning_effort", currentValue: null, selectedValue: "low" },
+        ],
+        skippedRoles: [],
+        exportText: "model = \"model-a\"",
+        canApply: true,
+        exportOnly: false,
+      } as never)
+      .mockResolvedValueOnce({
+        target: "User · config.toml",
+        preferenceState: "written_to_config",
+        backupCount: 1,
+        configHash: "a".repeat(64),
+        runtimeEffectivenessVerified: false,
+      } as never)
+      .mockResolvedValueOnce(selectorSnapshot(true) as never);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Codex settings" }));
+    await screen.findByRole("heading", { name: "Main Overseer" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Save preference" })[0]);
+    expect(await screen.findByText(/saved in Cathulu/)).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("save_codex_selector_preference", {
+      input: { roleKind: "main_overseer", agentName: null, modelSlug: "model-a", reasoningEffort: "low" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Review configuration changes" }));
+    expect(await screen.findByRole("heading", { name: "Review before applying" })).toBeTruthy();
+    expect(screen.getAllByText("not set")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Apply reviewed config" })).toBeTruthy();
+    expect(invokeMock).not.toHaveBeenCalledWith("apply_codex_config_preview", expect.anything());
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply reviewed config" }));
+    expect(await screen.findByText(/Cathulu created 1 backup/)).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("apply_codex_config_preview", { previewId: "preview-1" });
+    expect(screen.getByText("Runtime effectiveness unverified")).toBeTruthy();
   });
 
   it("shows command failures as a visible local-state error", async () => {

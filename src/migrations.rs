@@ -639,3 +639,31 @@ BEGIN SELECT RAISE(ABORT, 'delegation worker event references are retained for a
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (7, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_8: &str = r#"
+CREATE TABLE codex_selector_preferences (
+  role_id TEXT PRIMARY KEY,
+  role_kind TEXT NOT NULL CHECK(role_kind IN ('main_overseer', 'subagent_default', 'named_agent')),
+  agent_name TEXT,
+  model_slug TEXT NOT NULL,
+  reasoning_effort TEXT NOT NULL,
+  catalog_version TEXT NOT NULL,
+  last_applied_target TEXT,
+  last_applied_at INTEGER,
+  last_applied_config_hash TEXT,
+  updated_at INTEGER NOT NULL,
+  CHECK(
+    (role_kind IN ('main_overseer', 'subagent_default') AND agent_name IS NULL)
+    OR (role_kind = 'named_agent' AND agent_name IS NOT NULL AND length(agent_name) BETWEEN 1 AND 80)
+  ),
+  CHECK(
+    (last_applied_target IS NULL AND last_applied_at IS NULL AND last_applied_config_hash IS NULL)
+    OR (last_applied_target IS NOT NULL AND last_applied_at IS NOT NULL AND last_applied_config_hash IS NOT NULL)
+  )
+);
+
+CREATE INDEX codex_selector_preferences_role_idx ON codex_selector_preferences(role_kind, role_id);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (8, CAST(strftime('%s','now') AS INTEGER));
+"#;

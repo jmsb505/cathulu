@@ -1,6 +1,6 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: Planned after Phase 3. M8 is published; M9 remains in progress under PLAN-002. M10-M14 are conditional on the evidence gates below.
+Status: Planned after Phase 3. M9 validation is complete on its milestone branch; M10-M14 remain conditional on the evidence gates below.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -14,8 +14,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 ## Current state
 
-- M1-M8 are validated and published to `main`; M8 implementation is `aecac57777fdf31c021553bce8a30164a9444e07` and its documentation closeout is on `main`.
-- M9 is specified in [PLAN-002](PLAN-002-phase3-codex-delegation.md) and awaits the owner's selector target-layer choice.
+- M1-M8 are validated and published to `main`; M9 validation is complete on its milestone branch, with publication pending the final checkpoint.
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
 - The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No repository `graphify-out/graph.json` snapshot exists, and the Graphify CLI is not installed.
 - No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
@@ -291,16 +290,18 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
 - [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, no Graphify snapshot, and no Graphify CLI were found on 2026-10-21.
-- [ ] Validate M9 and record the owner-approved selector target before beginning Phase 4.
+- [x] Validate M9 with explicit per-preview target selection and no implicit target.
+- [ ] Publish the validated M9 checkpoint and record its revision.
+- [x] Re-evaluate the M10-M14 entry gates after M9; the live local run-data gate remains unmet.
 - [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
 
 ## Implementation discoveries / decisions
 
-- 2026-10-21: M10's gate is unmet in the current local Codex profile: no Cathulu MCP entry or database was found, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction.
+- 2026-10-21: M10's gate is unmet in the current local Codex profile: no durable Cathulu MCP entry or database was found, so the existing M4 real-world measurements cannot currently demonstrate repeated cross-project reconstruction. M9's disposable integration database was removed by the smoke script and is not product-use evidence.
 - 2026-10-21: M11's gate is unmet: there is no `graphify-out/graph.json` in this checkout and no installed Graphify CLI. No extraction was run because that tool may involve model-backed processing and no local Graphify/privacy contract is approved.
 - 2026-10-21: M12-M14 cannot be evaluated from this checkout without real completed and comparable run evidence. Synthetic fixtures will validate mechanics only and will not satisfy these gates.
 - 2026-10-21: Context7 resolution is currently unavailable because its monthly quota is exhausted; current official OpenAI docs were fetched for M9. Resolve the app-specific account catalog through a supported local Codex source and do not infer account entitlement from public docs.
 
 ## Completion evidence
 
-No M10-M14 implementation is claimed. The entry-gate audit above is the current evidence. Continue after M9 with local Cathulu use and fresh gate evaluation; implement each capability only after its own preconditions pass.
+No M10-M14 implementation is claimed. The entry-gate audit above is the current evidence. Continue with normal local Cathulu use and fresh gate evaluation; implement each capability only after its own preconditions pass.

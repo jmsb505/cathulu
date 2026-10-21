@@ -16,6 +16,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
 rmcp = { version = "3.6.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+toml_edit = "0.25.17"
 
 [[bin]]
 name = "cathulu-mcp"

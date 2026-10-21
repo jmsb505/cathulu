@@ -1,5 +1,14 @@
-use super::{dashboard_snapshot, project_snapshot, DesktopState};
-use cathulu_core::Store;
+use super::{
+    codex_selector_snapshot, dashboard_snapshot, project_snapshot, save_codex_selector_preference,
+    DesktopState,
+};
+use cathulu_core::{
+    codex_config::{
+        load_bundled_codex_catalog, CodexAgentPreference, CodexAgentPreferenceInput, CodexRoleKind,
+        CodexSelectorSnapshot,
+    },
+    Store,
+};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
@@ -109,9 +118,9 @@ fn run_git(repo: &Path, arguments: &[&str]) {
 
 fn invoke_dashboard(data_dir: &Path) -> cathulu_core::dashboard::DashboardSnapshot {
     let app = mock_builder()
-        .manage(DesktopState {
-            store: Store::open(data_dir).expect("open the MCP database from the Tauri boundary"),
-        })
+        .manage(DesktopState::new(
+            Store::open(data_dir).expect("open the MCP database from the Tauri boundary"),
+        ))
         .invoke_handler(tauri::generate_handler![
             project_snapshot,
             dashboard_snapshot
@@ -137,6 +146,85 @@ fn invoke_dashboard(data_dir: &Path) -> cathulu_core::dashboard::DashboardSnapsh
     response
         .deserialize::<cathulu_core::dashboard::DashboardSnapshot>()
         .expect("decode dashboard snapshot")
+}
+
+fn invoke_selector_save_and_read(data_dir: &Path) -> (CodexAgentPreference, CodexSelectorSnapshot) {
+    let catalog = load_bundled_codex_catalog().expect("read the bundled local Codex catalog");
+    let first_model = catalog
+        .models
+        .first()
+        .expect("catalog includes a model option");
+    let effort = first_model
+        .default_reasoning_effort
+        .as_deref()
+        .or_else(|| first_model.reasoning_efforts.first().map(String::as_str))
+        .expect("catalog model includes at least one effort")
+        .to_string();
+    let input = CodexAgentPreferenceInput {
+        role_kind: CodexRoleKind::MainOverseer,
+        agent_name: None,
+        model_slug: first_model.model_slug.clone(),
+        reasoning_effort: effort,
+    };
+
+    let app = mock_builder()
+        .manage(DesktopState::new(
+            Store::open(data_dir).expect("open the shared M9 selector store"),
+        ))
+        .invoke_handler(tauri::generate_handler![
+            codex_selector_snapshot,
+            save_codex_selector_preference
+        ])
+        .build(mock_context(noop_assets()))
+        .expect("build mock Tauri app with selector commands");
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("build mock Tauri settings window");
+
+    let saved = tauri::test::get_ipc_response(
+        &window,
+        InvokeRequest {
+            cmd: "save_codex_selector_preference".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "http://tauri.localhost".parse().unwrap(),
+            body: InvokeBody::Json(json!({ "input": input })),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("invoke the owner-scoped local preference command")
+    .deserialize::<CodexAgentPreference>()
+    .expect("decode saved local preference");
+    assert_eq!(saved.role_id, "main_overseer");
+    assert_eq!(saved.model_slug, first_model.model_slug);
+
+    let snapshot = tauri::test::get_ipc_response(
+        &window,
+        InvokeRequest {
+            cmd: "codex_selector_snapshot".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "http://tauri.localhost".parse().unwrap(),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("invoke the local selector snapshot command")
+    .deserialize::<CodexSelectorSnapshot>()
+    .expect("decode selector settings snapshot");
+    assert_eq!(snapshot.preference_state, "stored_in_cathulu");
+    assert!(!snapshot.runtime_effectiveness_verified);
+    assert!(!snapshot.catalog.account_availability_verified);
+    assert_eq!(snapshot.preferences, vec![saved.clone()]);
+
+    let reopened = Store::open(data_dir).expect("reopen the selector database");
+    assert_eq!(
+        reopened.codex_selector_preferences().unwrap(),
+        vec![saved.clone()]
+    );
+    (saved, snapshot)
 }
 
 #[test]
@@ -474,6 +562,17 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     assert_eq!(dashboard.memory_health.canonical_count, 1);
     assert!(dashboard.memory_health.context_transfer_bytes > 0);
 
+    let (selector_preference, selector_snapshot) = invoke_selector_save_and_read(&data_dir);
+    assert_eq!(
+        selector_preference.catalog_version,
+        selector_snapshot.catalog.cli_version
+    );
+    assert_eq!(selector_snapshot.preferences.len(), 1);
+    assert_eq!(
+        selector_snapshot.preferences[0].role_kind,
+        CodexRoleKind::MainOverseer
+    );
+
     let project_after_restart =
         mcp_resource(&data_dir, &format!("cathulu://projects/{project_id}"));
     assert_eq!(project_after_restart["branch"], json!("main"));
@@ -515,5 +614,5 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     assert_eq!(transfer_after_restart["firstTimeForReceiver"], json!(true));
     assert!(transfer_after_restart.get("body").is_none());
 
-    println!("MCP registered project {project_id}, verified run {run_id}, reviewed delegation report {delegation_id}, verified its worker worktree at {worker_head}, and persisted memory {memory_id} and transfer {transfer_id}; the read-only Tauri dashboard returned the same SQLite state.");
+    println!("MCP registered project {project_id}, verified run {run_id}, reviewed delegation report {delegation_id}, verified its worker worktree at {worker_head}, and persisted memory {memory_id}, transfer {transfer_id}, and stored Codex selector preference {}; the read-only Tauri dashboard and selector commands returned the shared SQLite state.", selector_preference.role_id);
 }

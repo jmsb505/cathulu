@@ -1,6 +1,6 @@
 # Cathulu
 
-Cathulu is a local project evidence layer around Codex. Codex remains the place where work and agent execution happen; Cathulu stores durable project state and presents it in a read-only desktop dashboard.
+Cathulu is a local project evidence layer around Codex. Codex remains the place where work and agent execution happen; Cathulu stores durable project state and presents it in a read-only dashboard with a separate explicit settings surface.
 
 Cathulu is progressing through Windows-first milestones. M1 registers Git repositories through local MCP and shows their snapshots. M2 adds durable objectives, decisions, workflow runs, quality evidence, and a provenance-preserving memory foundation with bounded HOT context. M3 adds optional, sanitized local Codex hook telemetry and restart reconciliation; it does not store prompts, transcripts, tool inputs, or tool outputs. Cathulu does not run workers or change Codex settings automatically.
 
@@ -8,10 +8,10 @@ Cathulu is progressing through Windows-first milestones. M1 registers Git reposi
 
 - `cathulu-core`: Rust domain validation, additive SQLite migrations, workflow and memory persistence, and Git reconciliation.
 - `cathulu-mcp`: official RMCP stdio server with named domain tools and JSON resources; it does not expose SQL or table CRUD.
-- `apps/desktop`: Tauri 2 and React/TypeScript read-only dashboard for projects, objectives, runs, quality, and compact memory health.
+- `apps/desktop`: Tauri 2 and React/TypeScript read-only dashboard plus separate model/effort settings for projects, objectives, runs, quality, and compact memory health.
 - `docs/`: product definition, architecture, decisions, roadmap, and implementation plans.
 
-Cathulu will host model and reasoning-effort selectors for the Main Overseer and future sub-agents in a later milestone, in a settings surface separate from the dashboard. M1 has no such controls, and the dashboard remains read-only. How selections will be applied to Codex and whether separate values per role are supported remain to be verified.
+The settings surface stores choices locally, offers a reviewed TOML diff before any project/user/profile config write, creates backups, and supports export-only. Named-agent settings update only matching existing custom-agent files. Cathulu does not infer account availability or claim that a config was loaded by Codex; those states remain unverified. MCP remains unable to edit Codex configuration.
 
 ## Windows development setup
 
@@ -51,7 +51,7 @@ npm test
 npm run build
 ```
 
-The local database defaults to `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you override `CATHULU_DATA_DIR`, give the same absolute directory to both the MCP server and desktop app so they open the same database.
+The local database defaults to `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you override `CATHULU_DATA_DIR`, give the same absolute directory to both the MCP server and desktop app so they open the same database. User Codex settings resolve from `CODEX_HOME` or `%USERPROFILE%\.codex`; project settings can be written only for a repository registered in Cathulu and are read by Codex only when that repository is trusted.
 
 ## Connect Codex
 
@@ -59,4 +59,4 @@ Follow [docs/local-mcp.md](docs/local-mcp.md) to register the built MCP executab
 
 ## Current milestone
 
-M1, M2, and M3 telemetry foundations are published to `main` (M3 checkpoint `1d445f6`). M3 passes 11 Rust tests, three React tests, formatting, frontend and Windows release builds, restart/privacy/rollback checks, and an isolated startup/database smoke. The live owner-controlled Codex hook trust/configuration smoke remains unverified. Run native Rust commands from an x64 Visual Studio developer shell with the MSVC linker and Windows SDK available. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md) for current milestone status, commands, evidence, and the owner-controlled Codex connection follow-up.
+M1-M8 are published to `main`; M9's separate model/effort settings and safe configuration preview/apply workflow passed local validation on the current milestone branch. The live owner Codex config and runtime-effective model remain untouched/unverified. Run native Rust commands from an x64 Visual Studio developer shell with the MSVC linker and Windows SDK available. See [the Phase 1 first-slice plan](docs/plans/PLAN-001-phase1-first-slice.md) and [the Phase 3 delegation plan](docs/plans/PLAN-002-phase3-codex-delegation.md) for status and evidence.

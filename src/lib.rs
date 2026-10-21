@@ -1,3 +1,5 @@
+pub mod codex_config;
+pub mod codex_config_files;
 pub mod dashboard;
 pub mod delegation;
 mod events;
@@ -100,6 +102,180 @@ impl Store {
              FROM projects WHERE id = {id}"
         ))?;
         rows.first().map(project_from_row).transpose()
+    }
+
+    pub fn codex_selector_preferences(
+        &self,
+    ) -> Result<Vec<codex_config::CodexAgentPreference>, String> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .raw()
+            .prepare(
+                "SELECT role_id, role_kind, agent_name, model_slug, reasoning_effort,
+                        catalog_version, last_applied_target, last_applied_at,
+                        last_applied_config_hash, updated_at
+                 FROM codex_selector_preferences ORDER BY role_kind, role_id",
+            )
+            .map_err(|error| format!("cannot read Codex selector preferences: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })
+            .map_err(|error| format!("cannot query Codex selector preferences: {error}"))?;
+        let mut preferences = Vec::new();
+        for row in rows {
+            let (
+                role_id,
+                role_kind,
+                agent_name,
+                model_slug,
+                reasoning_effort,
+                catalog_version,
+                last_applied_target,
+                last_applied_at,
+                last_applied_config_hash,
+                updated_at,
+            ) = row.map_err(|error| format!("cannot read Codex selector preference: {error}"))?;
+            let role_kind = match role_kind.as_str() {
+                "main_overseer" => codex_config::CodexRoleKind::MainOverseer,
+                "subagent_default" => codex_config::CodexRoleKind::SubagentDefault,
+                "named_agent" => codex_config::CodexRoleKind::NamedAgent,
+                _ => return Err("database contains an unknown Codex selector role".to_string()),
+            };
+            preferences.push(codex_config::CodexAgentPreference {
+                role_id,
+                role_kind,
+                agent_name,
+                model_slug,
+                reasoning_effort,
+                catalog_version,
+                last_applied_target,
+                last_applied_at,
+                last_applied_config_hash,
+                updated_at,
+            });
+        }
+        Ok(preferences)
+    }
+
+    pub fn save_codex_selector_preference(
+        &self,
+        input: &codex_config::CodexAgentPreferenceInput,
+        catalog: &codex_config::CodexModelCatalog,
+    ) -> Result<codex_config::CodexAgentPreference, String> {
+        let (role_id, agent_name) = input.validate(catalog)?;
+        let updated_at = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction()
+            .map_err(|error| format!("cannot begin Codex preference update: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO codex_selector_preferences
+                 (role_id, role_kind, agent_name, model_slug, reasoning_effort, catalog_version, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(role_id) DO UPDATE SET
+                   role_kind = excluded.role_kind, agent_name = excluded.agent_name,
+                   model_slug = excluded.model_slug, reasoning_effort = excluded.reasoning_effort,
+                   catalog_version = excluded.catalog_version,
+                   last_applied_target = NULL, last_applied_at = NULL,
+                   last_applied_config_hash = NULL, updated_at = excluded.updated_at",
+                params![
+                    role_id,
+                    input.role_kind.as_str(),
+                    agent_name,
+                    input.model_slug,
+                    input.reasoning_effort,
+                    catalog.cli_version,
+                    updated_at,
+                ],
+            )
+            .map_err(|error| format!("cannot save Codex selector preference: {error}"))?;
+        crate::events::append_event(
+            &transaction,
+            "codex_selector_preference",
+            &role_id,
+            "preference_stored",
+            &serde_json::json!({
+                "roleKind": input.role_kind.as_str(),
+                "agentName": agent_name,
+                "modelSlug": input.model_slug,
+                "reasoningEffort": input.reasoning_effort,
+                "catalogVersion": catalog.cli_version,
+                "configurationState": "stored_in_cathulu"
+            }),
+            updated_at,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("cannot commit Codex selector preference: {error}"))?;
+        self.codex_selector_preferences()?
+            .into_iter()
+            .find(|preference| preference.role_id == role_id)
+            .ok_or_else(|| "saved Codex selector preference could not be read back".to_string())
+    }
+
+    pub fn mark_codex_selector_preferences_applied(
+        &self,
+        role_ids: &[String],
+        target: &str,
+        config_hash: &str,
+    ) -> Result<(), String> {
+        if role_ids.is_empty()
+            || target.is_empty()
+            || target.len() > 256
+            || config_hash.len() != 64
+            || !config_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("applied Codex selector status has invalid metadata".to_string());
+        }
+        let applied_at = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction()
+            .map_err(|error| format!("cannot begin Codex applied-status update: {error}"))?;
+        for role_id in role_ids {
+            let updated = transaction
+                .execute(
+                    "UPDATE codex_selector_preferences
+                     SET last_applied_target = ?1, last_applied_at = ?2,
+                         last_applied_config_hash = ?3
+                     WHERE role_id = ?4",
+                    params![target, applied_at, config_hash, role_id],
+                )
+                .map_err(|error| format!("cannot record applied Codex selector: {error}"))?;
+            if updated != 1 {
+                return Err("applied Codex selector preference no longer exists".to_string());
+            }
+            crate::events::append_event(
+                &transaction,
+                "codex_selector_preference",
+                role_id,
+                "preference_written_to_config",
+                &serde_json::json!({
+                    "target": target,
+                    "configHash": config_hash,
+                    "runtimeEffectivenessVerified": false
+                }),
+                applied_at,
+            )?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("cannot commit Codex applied-status update: {error}"))
     }
 
     pub fn register_project(&self, input_path: &Path) -> Result<ProjectSnapshot, String> {
@@ -300,7 +476,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 7 {
+        if version > 8 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -371,6 +547,14 @@ impl Store {
         if version < 7 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_7) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 8 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_8) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }
