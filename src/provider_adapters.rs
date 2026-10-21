@@ -328,11 +328,24 @@ fn scaledown_extract_request(model: &str, selected_text: &str) -> Value {
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "test_failure": { "type": "string", "description": "Exact text span that identifies a failed test or failed test result." },
-                        "error": { "type": "string", "description": "Exact text span that reports an error, exception, or failed assertion." },
-                        "panic": { "type": "string", "description": "Exact text span that reports a panic or fatal runtime failure." },
-                        "location": { "type": "string", "description": "Exact source file and line location tied directly to a reported failure." }
-                    }
+                        "entities": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "text": { "type": "string", "description": "The exact quoted text from the selected output." },
+                                    "type": { "type": "string", "enum": ["test_failure", "error", "panic", "location"], "description": "The kind of failure evidence represented by this exact span." },
+                                    "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Model confidence for selecting this span." },
+                                    "start": { "type": "integer", "minimum": 0, "description": "Zero-based Unicode character offset of the first character in text within the selected input." },
+                                    "end": { "type": "integer", "minimum": 0, "description": "Exclusive Unicode character offset immediately after text within the selected input." }
+                                },
+                                "required": ["text", "type", "confidence", "start", "end"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["entities"],
+                    "additionalProperties": false
                 }
             }
         },
@@ -748,7 +761,6 @@ struct ScaleDownUsage {
 
 #[derive(Debug, Deserialize)]
 struct ScaleDownExtraction {
-    #[serde(default)]
     entities: Vec<ScaleDownEntity>,
 }
 
@@ -765,13 +777,42 @@ struct ScaleDownEntity {
 #[cfg(test)]
 mod tests {
     use super::{
-        char_range_to_byte_range, combine_selected_sources, map_extractions, ScaleDownEntity,
-        ScaleDownExtraction,
+        char_range_to_byte_range, combine_selected_sources, map_extractions,
+        scaledown_extract_request, ScaleDownEntity, ScaleDownExtraction,
     };
     use crate::optimization::{
         ContextCapability, ContextRequest, ContextSource, ContextSourceSpan,
     };
     use serde_json::json;
+
+    #[test]
+    fn scaledown_request_schema_matches_the_response_shape_required_by_parser() {
+        let body = scaledown_extract_request("extract-1", "error: failed test");
+        let schema = &body["response_format"]["json_schema"]["schema"];
+        let entities_schema = &schema["properties"]["entities"];
+        let entity_schema = &schema["properties"]["entities"]["items"];
+
+        assert_eq!(schema["required"], json!(["entities"]));
+        assert_eq!(entities_schema["type"], json!("array"));
+        assert_eq!(
+            entity_schema["required"],
+            json!(["text", "type", "confidence", "start", "end"])
+        );
+        let properties = entity_schema["properties"]
+            .as_object()
+            .expect("entity schema properties");
+        for field in ["text", "type", "confidence", "start", "end"] {
+            assert!(properties.contains_key(field), "schema must define {field}");
+        }
+        assert_eq!(
+            entity_schema["properties"]["type"]["enum"],
+            json!(["test_failure", "error", "panic", "location"])
+        );
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(entity_schema["additionalProperties"], json!(false));
+        assert!(serde_json::from_value::<ScaleDownExtraction>(json!({})).is_err());
+        assert!(serde_json::from_value::<ScaleDownExtraction>(json!({ "entities": [] })).is_ok());
+    }
 
     #[test]
     fn maps_multibyte_scale_down_offsets_back_to_exact_artifact_spans() {
