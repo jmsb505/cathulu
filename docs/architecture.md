@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M7 are validated and published on Windows; M8 is locally validated on `codex/phase3-worktree-telemetry` and ready to publish.
+Status: product boundaries are NORMATIVE. M1-M8 are validated and published on Windows; M8 checkpoint `aecac57777fdf31c021553bce8a30164a9444e07` is on `main`.
 
 ## System boundary
 

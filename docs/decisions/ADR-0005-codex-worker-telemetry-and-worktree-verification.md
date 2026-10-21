@@ -1,6 +1,6 @@
 # ADR-0005 — Codex worker correlation and worktree verification
 
-Status: Accepted for Phase 3 M8 implementation
+Status: Accepted; implemented and validated in Phase 3 M8
 Date: 2026-10-21
 
 ## Context
@@ -26,4 +26,4 @@ The M8 MCP boundary adds read-only worktree reconciliation and explicit worker-e
 
 ## Validation
 
-Disposable Git fixtures must cover valid linked worktrees, dirty state, additional commits, missing and unregistered paths, escaped paths, and foreign repositories. Hook tests must cover explicit correlation, duplicate delivery, privacy minimization, and unsupported fields. The existing parent mandatory-check gate remains authoritative.
+Windows validation passed on 2026-10-21: disposable Git fixtures cover valid and dirty linked worktrees, additional commits, missing and unregistered paths, escaped paths, and foreign repositories; hook tests cover explicit correlation, duplicate delivery, privacy minimization, and unsupported fields. The full workspace suite passed 23 tests with one dedicated Tauri integration test ignored by default, and the Windows MCP/Tauri/restart smoke exercised that integration path. GitHub reported no status checks or workflow runs for published checkpoint `aecac57777fdf31c021553bce8a30164a9444e07`. The live owner Codex hook trust/configuration path remains unmodified and unverified.

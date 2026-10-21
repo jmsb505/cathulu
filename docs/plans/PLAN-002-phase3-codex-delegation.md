@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: M1-M7 are validated and published to `main`; M7 is published at `6251515`. M8 is locally validated on `codex/phase3-worktree-telemetry` and ready to publish.
+Status: M1-M8 are validated and published to `main`; M8 is published at `aecac57`.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -246,7 +246,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
 - [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
 - [x] Implement, validate, and publish M7 to `main` at `6251515`.
-- [x] Implement and validate M8.
+- [x] Implement, validate, and publish M8 to `main` at `aecac57`.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
 
 ## Implementation discoveries / decisions
@@ -268,4 +268,4 @@ M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passe
 
 M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Commit `6251515` is published to `main`; GitHub returned no status checks. Each milestone must record source-of-truth documentation and its Git checkpoint.
 
-M8 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --target-dir target\m8-integration-smoke --workspace` passed 23 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that integration path with an actual linked worker worktree, report verification through MCP and Tauri, Windows desktop startup, and persisted MCP reads after restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. GitHub status checks and the Git checkpoint will be recorded after publication. The live owner Codex hook trust/configuration path remains unmodified and unverified.
+M8 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --target-dir target\m8-integration-smoke --workspace` passed 23 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that integration path with an actual linked worker worktree, report verification through MCP and Tauri, Windows desktop startup, and persisted MCP reads after restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Commit `aecac57777fdf31c021553bce8a30164a9444e07` was pushed as a fast-forward to `main`. GitHub returned no status checks and no workflow runs. The live owner Codex hook trust/configuration path remains unmodified and unverified.
