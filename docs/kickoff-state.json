@@ -54,6 +54,18 @@
       "date": "2026-10-21",
       "revision": "185741d9cb2d3a223cf0ba5603e1961042a1d608",
       "scope": "17 Rust tests, 3 React tests, formatting, frontend and Windows release builds, maintenance CLI and isolated desktop smoke passed; GitHub main advanced by fast-forward with no status checks or workflow runs"
+    },
+    {
+      "type": "CANONICAL_DOC",
+      "locator": "https://learn.chatgpt.com/docs/config-file/config-reference; https://learn.chatgpt.com/docs/agent-configuration/subagents; https://learn.chatgpt.com/docs/developer-settings",
+      "date": "2026-10-21",
+      "scope": "Codex main-session model/effort settings, subagent defaults and overrides, and per-role custom-agent model/effort support; no live-turn control API established"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "scripts/phase1-m4-integration-smoke.ps1 and isolated M5 test run",
+      "date": "2026-10-21",
+      "scope": "Disposable Git/SQLite integration passed through MCP, Tauri dashboard IPC, Windows desktop startup, process restarts, QA and Git freshness reconciliation"
     }
   ],
   "claims": [
@@ -117,18 +129,19 @@
       "id": "C-005",
       "dimension": "INTENT",
       "scope": "agent configuration",
-      "claim": "Cathulu will host future model and effort selectors for the Main Overseer and sub-agents; the Codex configuration pathway and per-role support remain unresolved.",
+      "claim": "Cathulu will host future model and effort selectors for the Main Overseer and sub-agents. Official Codex documentation supports main-session model/effort settings and distinct per-role custom-agent values; the owner-approved apply target, account-specific catalog, and live-session behavior remain to be defined.",
       "status": "KNOWN",
       "sources": [
         {"type": "USER_DECISION", "locator": "User parenthetical on future orchestrator/sub-agent model and effort selectors", "date": "2026-10-20"},
-        {"type": "USER_DECISION", "locator": "User clarification: Cathulu selectors later", "date": "2026-10-20"}
+        {"type": "USER_DECISION", "locator": "User clarification: Cathulu selectors later", "date": "2026-10-20"},
+        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/config-file/config-reference; https://learn.chatgpt.com/docs/agent-configuration/subagents; https://learn.chatgpt.com/docs/developer-settings", "date": "2026-10-21"}
       ],
       "decision_status": "ACCEPTED",
-      "rationale": "The owner chose Cathulu as the future selector surface. The mechanism for applying values to Codex and distinct role support must be verified before implementation.",
+      "rationale": "The owner chose Cathulu as the future selector surface. Official docs confirm main-session and per-role configuration fields; the owner's preview/apply target and available option catalog remain to be decided.",
       "related_question": "Q-005",
       "blocking": false,
       "owner": "project owner",
-      "next_action": "Verify the Codex configuration pathway and separate role-level support before Phase 3."
+      "next_action": "In Phase 3 M9, agree with the owner on the preview/apply target and available option catalog; do not claim stored choices changed a running session."
     },
     {
       "id": "C-006",
@@ -211,11 +224,12 @@
     },
     {
       "id": "Q-005",
-      "text": "How can Cathulu apply selected model and effort values to Codex, and can distinct values be applied per role?",
+      "text": "Which owner-approved Codex configuration target and preview/apply workflow should Cathulu's selectors use?",
       "status": "OPEN_NONBLOCKING",
       "blocking": false,
       "owner": "project owner",
-      "next_action": "Verify supported configuration and per-role behavior against the target Codex runtime before implementing the selector surface."
+      "evidence": "Official Codex docs checked 2026-10-21 confirm main model/reasoning settings, global subagent defaults, explicit spawn overrides, and custom-agent per-role model/reasoning settings.",
+      "next_action": "Resolve the owner-controlled config target and account-specific option catalog before M9 selector application."
     },
     {
       "id": "Q-003",
@@ -249,5 +263,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M1-M4 are implemented, validated, and published to main; M4 code is at 185741d9cb2d3a223cf0ba5603e1961042a1d608. Complete the combined M1-M4 integration validation before Phase 3 worker delegation. The live Codex hook smoke remains owner-controlled; verify selector integration before the delegation milestone."
+  "next_action": "M5 combined integration validation passed locally and is ready for publication. Start Phase 3 M6 delegation contracts using docs/plans/PLAN-002-phase3-codex-delegation.md. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
 }

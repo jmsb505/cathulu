@@ -15,7 +15,7 @@ The product question is whether durable, selectively disclosed state improves ve
 - **Sub-Overseers and workers:** future Codex-native agents for scoped context ownership or narrow execution. They report structured evidence upward; Cathulu does not run their model/tool loops.
 - **Cathulu local services:** own durable state, Git reconciliation, telemetry normalization, workflow/quality state, and compact context resources.
 - **Read-only dashboard:** presents current local state and evidence; it does not issue commands or mutate project state.
-- **Future selector surface:** Cathulu will host model and effort selectors for the Main Overseer and sub-agents in a later milestone. How those settings reach Codex and whether separate role values are supported remain to be verified.
+- **Future selector surface:** Cathulu will host model and effort selectors for the Main Overseer and sub-agents in a later milestone. Current official Codex documentation supports main-session settings and distinct per-role custom-agent settings. The owner's configuration target, apply/preview interaction, and available option catalog remain to be decided; Cathulu must not imply a live-session change from a stored selection.
 
 ## Core workflows
 
@@ -51,7 +51,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - Graphify integration, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, cloud services, and reinforcement learning.
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
 - Advanced convergence and adaptive routing before trustworthy run evidence exists.
-- Model/reasoning selectors in the first increment. Cathulu will host selectors in a later milestone; the Codex configuration pathway and per-role support must be verified before implementation. The portfolio dashboard remains read-only; selector controls belong in a separate settings surface.
+- Model/reasoning selectors in the first increment. Cathulu will host selectors in a later milestone, separate from the read-only dashboard. Current official docs establish model/effort configuration for the main session and custom sub-agent roles. The selector surface still needs an owner-approved apply/preview workflow and a supported option catalog; it must not silently mutate user-level Codex configuration.
 
 ## Domain terms and invariants
 

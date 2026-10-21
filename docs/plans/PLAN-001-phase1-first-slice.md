@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1-M4 IMPLEMENTED, VALIDATED, AND PUBLISHED; M4 checkpoint `185741d` is on `main`.
+Status: M1-M5 IMPLEMENTED/VALIDATED; M1-M4 are published to `main`; M5 combined integration closeout is validated locally and pending publication.
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -298,7 +298,13 @@ Expected Git checkpoint: separate validated milestone commit/branch following re
 
 ## Final integration validation
 
-After M1-M4, install/start the Windows desktop build from a clean local state, register a disposable repository, record and retrieve project/run/QA and memory provenance/transfer state through MCP, verify bounded current context and that the dashboard remains read-only, restart Cathulu, and confirm durable state and Git/freshness reconciliation. Run workspace checks and review privacy, security, and integration limits. Milestone-local M4 validation is complete; this combined Phase 1 integration pass remains outstanding and is not public release approval.
+M5 — Combined Windows integration and Phase 1-2 closeout (validated 2026-10-21): build and start the Windows desktop, register a disposable repository through the real MCP executable, record a verified run and QA checks, persist a provenance-linked canonical memory and artifact, transfer it once and confirm known-by omission, then read the same SQLite state through the actual Tauri dashboard IPC command. Restart desktop and MCP against the isolated database and verify the run, memory/transfer provenance, and Git/freshness reconciliation. Run workspace checks and review privacy, security, and integration limits. This is milestone evidence, not public release approval.
+
+Repeat the full disposable Windows check with:
+
+```powershell
+.\scripts\phase1-m4-integration-smoke.ps1
+```
 
 ## Rollback / recovery
 
@@ -327,7 +333,7 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] The M3 base commit has no GitHub status checks or associated workflow runs. The repository owner account has push/admin permission; local M4 checks are the available validation gate.
 - [x] Published M4 checkpoint `185741d9cb2d3a223cf0ba5603e1961042a1d608` to `origin/main` with a normal fast-forward push; verified the resulting remote SHA.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
-- [ ] Combined M1-M4 end-to-end integration validation remains outstanding; it is separate from M4's acceptance checks.
+- [x] M5 combined M1-M4 validation passed: actual MCP writes, one shared SQLite database, Tauri dashboard IPC read, Windows desktop start, restart persistence, verified QA run, canonical memory/provenance/transfer, known-by omission, and Git refresh were exercised using disposable data.
 
 ## Implementation discoveries / decisions
 
@@ -344,7 +350,9 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - 2026-10-21: OTel is not enabled. The official catalog includes tool-result output snippets, while the first M3 metrics need only lifecycle identity and tool category. Startup Git reconciliation is best-effort per project; a missing repository does not block other refreshes or app startup.
 - 2026-10-21: M4 keeps SQLite authoritative and adds FTS5 candidate retrieval, manual Gardener proposals, explicit source-linked consolidation candidates, reference-aware URI metadata collection, immutable policy experiments, run-linked storage snapshots, and aggregate HOT scope health. No semantic index is added without measured retrieval gaps; Graphify/contract/dependency invalidation waits for usable snapshots. Raw telemetry compaction and automatic summary/aggregate maintenance remain later work until real run data can test those policies.
 - 2026-10-21: M4 collection is opt-in through an owner-configured age policy, confirms the exact previewed artifact ID set, revalidates eligibility transactionally, and only tombstones Cathulu's local URI metadata. External files and stable artifact records remain intact. Legacy URI-bearing immutable events, active QA, holds, protection, references, or missing extraction receipts prevent collection.
+- 2026-10-21: The M5 combined smoke exposed and corrected a fixture issue where the evidence file was initially inside the disposable Git repository; the passing test keeps evidence outside the repo and asserts only the intended post-registration Git change.
+- 2026-10-21: Current official Codex documentation confirms model/reasoning settings for the main session, subagent defaults/overrides, and per-role custom-agent files. Cathulu still needs an owner-approved settings preview/apply target and must not imply that a stored setting changed a running session.
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke passed before checkpoint `185741d` was fast-forwarded to `main`. GitHub reported no status checks or workflow runs for M4; local validation was the available gate. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The live Codex MCP/hook trust smoke and combined M1-M4 integration validation remain outstanding.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke passed before checkpoint `185741d` was fast-forwarded to `main`. M5 now passes the combined MCP→SQLite→Tauri IPC path, Windows desktop start, MCP restart reads, verified run/QA, memory provenance and transfer, known-by omission, and Git reconciliation using disposable fixtures. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The owner-controlled live Codex MCP/hook trust smoke remains optional and unverified. M5's integration harness and documentation are pending publication.

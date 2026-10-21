@@ -41,6 +41,9 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod phase1_m4_integration_test;
+
+#[cfg(test)]
 mod tests {
     use super::{dashboard_snapshot, project_snapshot, DesktopState};
     use cathulu_core::{
