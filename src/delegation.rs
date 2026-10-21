@@ -1,7 +1,10 @@
 use crate::worktree::DelegationWorktreeState;
 use crate::{
-    events::append_event, hash::content_hash, telemetry::DelegationWorkerBinding,
-    workflow::EventRecord, Store,
+    events::{append_event, append_external_event},
+    hash::content_hash,
+    telemetry::DelegationWorkerBinding,
+    workflow::EventRecord,
+    Store,
 };
 use rmcp::schemars;
 use rmcp::schemars::JsonSchema;
@@ -123,6 +126,8 @@ pub struct DashboardDelegationSummary {
     pub run_id: i64,
     pub role: String,
     pub status: String,
+    pub parent_delegation_id: Option<i64>,
+    pub project_manager_assignment_status: Option<String>,
     pub parent_run_status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -140,6 +145,8 @@ pub struct DelegationRecord {
     pub run_id: i64,
     pub role: String,
     pub status: String,
+    pub parent_delegation_id: Option<i64>,
+    pub project_manager_assignment_status: Option<String>,
     pub task_packet: DelegationTaskPacket,
     pub packet_hash: String,
     pub requested_model: Option<String>,
@@ -153,6 +160,18 @@ pub struct DelegationRecord {
     pub worker_telemetry: Option<DelegationWorkerBinding>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectManagerAssignmentRecord {
+    pub manager_delegation_id: i64,
+    pub project_id: i64,
+    pub task_id: i64,
+    pub run_id: i64,
+    pub status: String,
+    pub created_at: i64,
+    pub closed_at: Option<i64>,
+}
+
 impl Store {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_delegation(
@@ -161,6 +180,7 @@ impl Store {
         task_id: i64,
         run_id: i64,
         role: &str,
+        parent_delegation_id: Option<i64>,
         task_packet: &DelegationTaskPacket,
         idempotency_key: &str,
         requested_model: Option<&str>,
@@ -187,6 +207,7 @@ impl Store {
             "taskId": task_id,
             "runId": run_id,
             "role": role,
+            "parentDelegationId": parent_delegation_id,
             "packetHash": packet_hash,
             "requestedModel": requested_model,
             "requestedEffort": requested_effort,
@@ -222,8 +243,49 @@ impl Store {
                 .get_delegation(existing_id)?
                 .ok_or_else(|| "idempotent delegation record disappeared".to_string());
         }
+        let rejection_event_id = format!("cathulu:m22-admission:{idempotency_key_hash}");
+        let prior_rejection = transaction
+            .query_row(
+                "SELECT event_type, payload_json FROM events WHERE external_event_id = ?1",
+                params![rejection_event_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some((event_type, payload_json)) = prior_rejection {
+            if event_type != "delegation_admission_rejected" {
+                return Err("idempotency key collides with another Cathulu event".to_string());
+            }
+            let payload: serde_json::Value = serde_json::from_str(&payload_json)
+                .map_err(|error| format!("stored delegation rejection is invalid: {error}"))?;
+            if payload
+                .get("requestHash")
+                .and_then(serde_json::Value::as_str)
+                != Some(request_hash.as_str())
+            {
+                return Err(
+                    "idempotency key was already used for a different delegation request"
+                        .to_string(),
+                );
+            }
+            let message = payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "stored delegation rejection has no message".to_string())?
+                .to_string();
+            transaction.commit().map_err(sqlite_error)?;
+            return Err(message);
+        }
 
         let objective_id = validate_parent_links(&transaction, project_id, task_id, run_id)?;
+        validate_delegation_parent(
+            &transaction,
+            project_id,
+            task_id,
+            run_id,
+            &role,
+            parent_delegation_id,
+        )?;
         validate_packet_references(
             &transaction,
             project_id,
@@ -234,18 +296,71 @@ impl Store {
             now,
         )?;
 
+        if role == "sub_overseer" {
+            let active_manager = transaction
+                .query_row(
+                    "SELECT manager_delegation_id FROM project_manager_assignments
+                     WHERE project_id = ?1 AND status = 'active'",
+                    params![project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            if let Some(active_manager_id) = active_manager {
+                let message = format!(
+                    "project {project_id} already has active Project Manager assignment {active_manager_id}"
+                );
+                record_admission_rejection(
+                    &transaction,
+                    run_id,
+                    Some(active_manager_id),
+                    "project_manager_slot_occupied",
+                    &message,
+                    now,
+                    Some((&rejection_event_id, &request_hash)),
+                )?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Err(message);
+            }
+        } else if let Some(parent_id) = parent_delegation_id {
+            let worker_count: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM delegations WHERE parent_delegation_id = ?1",
+                    params![parent_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if worker_count >= 2 {
+                let message = format!(
+                    "Project Manager assignment {parent_id} has reached its total limit of two workers"
+                );
+                record_admission_rejection(
+                    &transaction,
+                    run_id,
+                    Some(parent_id),
+                    "project_manager_worker_limit_reached",
+                    &message,
+                    now,
+                    Some((&rejection_event_id, &request_hash)),
+                )?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Err(message);
+            }
+        }
+
         transaction
             .execute(
                 "INSERT INTO delegations
-                 (project_id, task_id, run_id, role, status, packet_schema_version, packet_json,
+                 (project_id, task_id, run_id, role, parent_delegation_id, status, packet_schema_version, packet_json,
                   packet_hash, request_hash, idempotency_key_hash, requested_model, requested_effort,
                   external_correlation_hash, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'prepared', 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'prepared', 1, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
                 params![
                     project_id,
                     task_id,
                     run_id,
                     role,
+                    parent_delegation_id,
                     packet_json,
                     packet_hash,
                     request_hash,
@@ -258,6 +373,16 @@ impl Store {
             )
             .map_err(sqlite_error)?;
         let id = transaction.last_insert_rowid();
+        if role == "sub_overseer" {
+            transaction
+                .execute(
+                    "INSERT INTO project_manager_assignments
+                     (manager_delegation_id, project_id, task_id, run_id, status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+                    params![id, project_id, task_id, run_id, now],
+                )
+                .map_err(sqlite_error)?;
+        }
         transaction
             .execute(
                 "INSERT INTO delegation_worktree_states (delegation_id, base_commit, created_at)
@@ -308,6 +433,125 @@ impl Store {
 
     pub fn cancel_delegation(&self, id: i64) -> Result<DelegationRecord, String> {
         self.transition_delegation(id, "cancelled", "delegation_cancelled")
+    }
+
+    pub fn complete_project_manager_assignment(
+        &self,
+        manager_delegation_id: i64,
+    ) -> Result<ProjectManagerAssignmentRecord, String> {
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let manager = transaction
+            .query_row(
+                "SELECT d.role, d.status, d.run_id, a.status
+                 FROM delegations d
+                 JOIN project_manager_assignments a
+                   ON a.manager_delegation_id = d.id
+                 WHERE d.id = ?1",
+                params![manager_delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| {
+                format!(
+                    "delegation {manager_delegation_id} is not a hierarchy-aware Project Manager assignment"
+                )
+            })?;
+        if manager.0 != "sub_overseer" {
+            return Err("only Project Manager delegations can be completed".to_string());
+        }
+        if manager.3 == "completed" {
+            transaction.commit().map_err(sqlite_error)?;
+            return self
+                .get_project_manager_assignment(manager_delegation_id)?
+                .ok_or_else(|| "completed Project Manager assignment disappeared".to_string());
+        }
+        if manager.3 != "active" {
+            return Err(format!(
+                "Project Manager assignment {manager_delegation_id} is {}",
+                manager.3
+            ));
+        }
+        if manager.1 != "dispatched" {
+            return Err(
+                "Project Manager must be dispatched before its assignment can complete".to_string(),
+            );
+        }
+        let unresolved_children = unresolved_worker_count(&transaction, manager_delegation_id)?;
+        if unresolved_children > 0 {
+            let message = format!(
+                "Project Manager assignment {manager_delegation_id} cannot complete while {unresolved_children} worker(s) are unfinished"
+            );
+            record_admission_rejection(
+                &transaction,
+                manager.2,
+                Some(manager_delegation_id),
+                "project_manager_has_unfinished_workers",
+                &message,
+                now,
+                None,
+            )?;
+            transaction.commit().map_err(sqlite_error)?;
+            return Err(message);
+        }
+        transaction
+            .execute(
+                "UPDATE project_manager_assignments
+                 SET status = 'completed', closed_at = ?1
+                 WHERE manager_delegation_id = ?2 AND status = 'active'",
+                params![now, manager_delegation_id],
+            )
+            .map_err(sqlite_error)?;
+        append_event(
+            &transaction,
+            "delegation",
+            manager_delegation_id,
+            "project_manager_assignment_completed",
+            &json!({ "status": "completed" }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.get_project_manager_assignment(manager_delegation_id)?
+            .ok_or_else(|| "completed Project Manager assignment disappeared".to_string())
+    }
+
+    fn get_project_manager_assignment(
+        &self,
+        manager_delegation_id: i64,
+    ) -> Result<Option<ProjectManagerAssignmentRecord>, String> {
+        let connection = self.connection()?;
+        connection
+            .raw()
+            .query_row(
+                "SELECT manager_delegation_id, project_id, task_id, run_id, status, created_at, closed_at
+                 FROM project_manager_assignments WHERE manager_delegation_id = ?1",
+                params![manager_delegation_id],
+                |row| {
+                    Ok(ProjectManagerAssignmentRecord {
+                        manager_delegation_id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        task_id: row.get(2)?,
+                        run_id: row.get(3)?,
+                        status: row.get(4)?,
+                        created_at: row.get(5)?,
+                        closed_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)
     }
 
     pub fn submit_delegation_report(
@@ -635,7 +879,9 @@ impl Store {
                 "SELECT d.id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
                         MAX(d.updated_at, COALESCE(wr.reported_at, 0),
                             COALESCE((SELECT MAX(review.created_at) FROM worker_report_reviews review
-                                      WHERE review.report_id = wr.id), 0))
+                                      WHERE review.report_id = wr.id), 0)), d.parent_delegation_id,
+                        (SELECT assignment.status FROM project_manager_assignments assignment
+                         WHERE assignment.manager_delegation_id = d.id)
                  FROM delegations d
                  JOIN projects p ON p.id = d.project_id
                  JOIN tasks t ON t.id = d.task_id
@@ -655,6 +901,8 @@ impl Store {
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })
             .map_err(sqlite_error)?
@@ -672,6 +920,8 @@ impl Store {
                     parent_run_status,
                     created_at,
                     updated_at,
+                    parent_delegation_id,
+                    project_manager_assignment_status,
                 )| {
                     Ok(DashboardDelegationSummary {
                         id,
@@ -680,6 +930,8 @@ impl Store {
                         run_id,
                         role,
                         status,
+                        parent_delegation_id,
+                        project_manager_assignment_status,
                         parent_run_status,
                         created_at,
                         updated_at,
@@ -698,7 +950,10 @@ impl Store {
             .raw()
             .query_row(
                 "SELECT id, project_id, task_id, run_id, role, status, packet_json, packet_hash,
-                        requested_model, requested_effort, external_correlation_hash, created_at, updated_at
+                        requested_model, requested_effort, external_correlation_hash, created_at, updated_at,
+                        parent_delegation_id,
+                        (SELECT assignment.status FROM project_manager_assignments assignment
+                         WHERE assignment.manager_delegation_id = delegations.id)
                  FROM delegations WHERE id = ?1",
                 params![id],
                 |row| {
@@ -716,6 +971,8 @@ impl Store {
                         row.get::<_, Option<String>>(10)?,
                         row.get::<_, i64>(11)?,
                         row.get::<_, i64>(12)?,
+                        row.get::<_, Option<i64>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
                     ))
                 },
             )
@@ -735,6 +992,8 @@ impl Store {
             external_correlation_hash,
             created_at,
             updated_at,
+            parent_delegation_id,
+            project_manager_assignment_status,
         )) = row
         else {
             return Ok(None);
@@ -749,6 +1008,8 @@ impl Store {
             run_id,
             role,
             status,
+            parent_delegation_id,
+            project_manager_assignment_status,
             task_packet,
             packet_hash,
             requested_model,
@@ -858,15 +1119,27 @@ impl Store {
             .raw_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_error)?;
-        let from_status = transaction
+        let delegation_state = transaction
             .query_row(
-                "SELECT status FROM delegations WHERE id = ?1",
+                "SELECT status, role, parent_delegation_id, run_id,
+                        (SELECT assignment.status FROM project_manager_assignments assignment
+                         WHERE assignment.manager_delegation_id = delegations.id)
+                 FROM delegations WHERE id = ?1",
                 params![id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("delegation {id} was not found"))?;
+        let (from_status, role, parent_delegation_id, run_id, assignment_status) = delegation_state;
         if from_status == to_status {
             transaction.commit().map_err(sqlite_error)?;
             return self
@@ -882,12 +1155,92 @@ impl Store {
                 "delegation cannot transition from {from_status} to {to_status}"
             ));
         }
+        if to_status == "dispatched" && role == "worker" {
+            if let Some(parent_id) = parent_delegation_id {
+                let parent = transaction
+                    .query_row(
+                        "SELECT d.status, a.status
+                         FROM delegations d
+                         LEFT JOIN project_manager_assignments a
+                           ON a.manager_delegation_id = d.id
+                         WHERE d.id = ?1 AND d.role = 'sub_overseer'",
+                        params![parent_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    )
+                    .optional()
+                    .map_err(sqlite_error)?;
+                if !parent.is_some_and(|(status, assignment_status)| {
+                    status == "dispatched" && assignment_status.as_deref() == Some("active")
+                }) {
+                    let message = format!(
+                        "Project Manager must be dispatched and its assignment active before child worker {id} can dispatch"
+                    );
+                    record_admission_rejection(
+                        &transaction,
+                        run_id,
+                        Some(parent_id),
+                        "worker_parent_not_active_at_dispatch",
+                        &message,
+                        now,
+                        None,
+                    )?;
+                    transaction.commit().map_err(sqlite_error)?;
+                    return Err(message);
+                }
+            }
+        }
+        if to_status == "cancelled" && role == "sub_overseer" {
+            if assignment_status
+                .as_deref()
+                .is_some_and(|status| status != "active")
+            {
+                return Err(format!(
+                    "Project Manager assignment {id} is already {}",
+                    assignment_status.as_deref().unwrap_or("closed")
+                ));
+            }
+            let unresolved_children = unresolved_worker_count(&transaction, id)?;
+            if unresolved_children > 0 {
+                let message = format!(
+                    "Project Manager assignment {id} cannot be cancelled while {unresolved_children} worker(s) are unfinished"
+                );
+                record_admission_rejection(
+                    &transaction,
+                    run_id,
+                    Some(id),
+                    "project_manager_has_unfinished_workers",
+                    &message,
+                    now,
+                    None,
+                )?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Err(message);
+            }
+        }
         transaction
             .execute(
                 "UPDATE delegations SET status = ?1, updated_at = ?2 WHERE id = ?3",
                 params![to_status, now, id],
             )
             .map_err(sqlite_error)?;
+        if to_status == "cancelled" && role == "sub_overseer" {
+            transaction
+                .execute(
+                    "UPDATE project_manager_assignments
+                     SET status = 'cancelled', closed_at = ?1
+                     WHERE manager_delegation_id = ?2 AND status = 'active'",
+                    params![now, id],
+                )
+                .map_err(sqlite_error)?;
+            append_event(
+                &transaction,
+                "delegation",
+                id,
+                "project_manager_assignment_cancelled",
+                &json!({ "status": "cancelled" }),
+                now,
+            )?;
+        }
         append_event(
             &transaction,
             "delegation",
@@ -1253,6 +1606,119 @@ fn validate_parent_links(
         return Err("delegation requires a running or blocked parent run".to_string());
     }
     Ok(task_parent.0)
+}
+
+fn validate_delegation_parent(
+    transaction: &Transaction<'_>,
+    project_id: i64,
+    task_id: i64,
+    run_id: i64,
+    role: &str,
+    parent_delegation_id: Option<i64>,
+) -> Result<(), String> {
+    let Some(parent_id) = parent_delegation_id else {
+        return Ok(());
+    };
+    if role != "worker" {
+        return Err("only worker delegations may reference a Project Manager parent".to_string());
+    }
+    if parent_id <= 0 {
+        return Err("parent delegation ID must be a positive integer".to_string());
+    }
+    let parent = transaction
+        .query_row(
+            "SELECT d.role, d.project_id, d.task_id, d.run_id, d.status, a.status
+             FROM delegations d
+             LEFT JOIN project_manager_assignments a ON a.manager_delegation_id = d.id
+             WHERE d.id = ?1",
+            params![parent_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| format!("parent delegation {parent_id} was not found"))?;
+    if parent.0 != "sub_overseer" {
+        return Err("worker parent delegation must have the sub_overseer role".to_string());
+    }
+    if (parent.1, parent.2, parent.3) != (project_id, task_id, run_id) {
+        return Err("worker parent delegation must match project, task, and run".to_string());
+    }
+    if parent.4 == "cancelled" {
+        return Err("worker parent delegation is no longer active".to_string());
+    }
+    if parent.5.as_deref() != Some("active") {
+        return Err(
+            "worker parent must be a hierarchy-aware active Project Manager assignment".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn record_admission_rejection(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    related_delegation_id: Option<i64>,
+    reason: &str,
+    message: &str,
+    now: i64,
+    idempotency: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let mut payload = json!({
+        "relatedDelegationId": related_delegation_id,
+        "reason": reason,
+        "message": message
+    });
+    if let Some((_, request_hash)) = idempotency {
+        payload["requestHash"] = json!(request_hash);
+    }
+    if let Some((external_event_id, _)) = idempotency {
+        append_external_event(
+            transaction,
+            "run",
+            run_id,
+            "delegation_admission_rejected",
+            external_event_id,
+            &payload,
+            now,
+        )?;
+    } else {
+        append_event(
+            transaction,
+            "run",
+            run_id,
+            "delegation_admission_rejected",
+            &payload,
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+fn unresolved_worker_count(
+    transaction: &Transaction<'_>,
+    manager_delegation_id: i64,
+) -> Result<i64, String> {
+    transaction
+        .query_row(
+            "SELECT COUNT(*)
+             FROM delegations d
+             LEFT JOIN worker_reports wr ON wr.delegation_id = d.id
+             WHERE d.parent_delegation_id = ?1
+               AND d.status <> 'cancelled'
+               AND wr.id IS NULL",
+            params![manager_delegation_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
 }
 
 fn validate_packet_references(

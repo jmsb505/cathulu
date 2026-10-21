@@ -51,11 +51,11 @@ The authoritative records and tools are in SQLite through the local Cathulu MCP 
 
 For every agent activation:
 
-1. Main Overseer starts or selects the project's auditable Cathulu run and prepares one `sub_overseer` delegation with the objective, allowed scope, acceptance criteria, constraints, relevant memory/artifact IDs, and report fields.
-2. Main Overseer records dispatch and sends the exact task packet and context transfer to the Project Manager.
-3. Project Manager may prepare up to two `worker` delegations under its own assignment, transfer only the required project memory to each worker, and record each native Codex dispatch.
+1. Main Overseer starts or selects the project's auditable Cathulu run and prepares one `sub_overseer` delegation with the objective, allowed scope, acceptance criteria, constraints, relevant memory/artifact IDs, and report fields. This reserves the project's active Project Manager slot.
+2. Main Overseer performs the native Codex spawn, then records it with `mark_delegation_dispatched` before the Project Manager starts workers.
+3. Project Manager prepares up to two `worker` delegations with `parent_delegation_id` set to its delegation ID, transfers only the required project memory to each worker, performs each native Codex spawn, and records each dispatch. The limit includes cancelled or replaced worker delegations.
 4. Workers submit structured reports and evidence references. Project Manager reviews those reports and passes a concise, source-linked result to Main Overseer.
-5. Main Overseer checks the Cathulu run, required QA gates, blockers, and project status, then reports the result to the owner.
+5. After every child has reported or been cancelled, Project Manager records `complete_project_manager_assignment`; cancelling a PM is allowed only after no child remains unfinished. Main Overseer checks the Cathulu run, required QA gates, blockers, and project status, then reports the result to the owner.
 
 Cathulu records and validates this evidence; it does not itself spawn, steer, or terminate Codex agents. Native nested spawning and per-agent MCP availability must be verified in the current Codex client before a workflow is described as running. Hook events are observations, not a complete authorization boundary. If the required manager-to-worker spawn path is unavailable, do not flatten the hierarchy by having Main spawn implementation workers directly.
 

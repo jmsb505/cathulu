@@ -1,6 +1,6 @@
 # PLAN-006 — Bounded per-project agent hierarchy
 
-Status: M20 role contract and M21 nested-spawn capability probe complete; M22-M25 pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with memory-tool parity and hook correlation still open.
+Status: M20 role contract, M21 nested-spawn capability probe, and M22 deterministic hierarchy admission are complete and validated on Windows. M23-M25 remain pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with memory-tool parity and hook correlation still open.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -18,7 +18,7 @@ The new hierarchy applies to independent project work. PULSO, Mecanografica prop
 
 - M6-M9 in [PLAN-002](PLAN-002-phase3-codex-delegation.md) provide typed delegation packets, explicit dispatch records, structured reports, worktree verification, and optional subagent hook correlation.
 - `prepare_delegation` records a request only; `mark_delegation_dispatched` records a native Codex handoff. Cathulu has no agent-spawn API.
-- Delegations have a `worker` or `sub_overseer` role but do not yet record a parent delegation. No deterministic one-manager-per-project or two-worker-per-assignment admission limit exists.
+- Delegations use the existing `worker` or `sub_overseer` roles. Migration 10 adds an optional parent link and a separate Project Manager assignment table, leaving legacy records unparented. SQLite admission now reserves one active PM slot per project and limits each PM assignment to two worker delegations total.
 - Memory records, search, known-by filtering, HOT budgets, explicit context transfers, and artifact references already exist. Current delegation packets can reference memory, but memory activation is not yet an enforced prerequisite for every agent.
 - The desktop surface shows actual runs, delegations, and observed subagent hooks; it does not infer missing hierarchy or display live Codex internals.
 - The M21 probe demonstrated nested PM-to-Worker spawning in the current client and Cathulu MCP reachability from Main, PM, and Worker. Memory tool availability differed by role, and no hook events surfaced; see the M21 evidence below.
@@ -178,12 +178,12 @@ Goal: represent project-manager parentage and enforce one PM plus at most two wo
 
 Subtasks:
 
-- [ ] Add an additive migration linking child worker delegations to a parent Project Manager delegation without changing legacy rows.
-- [ ] Validate the parent has `sub_overseer` role, same project/task/run, and is dispatched before a worker child can be dispatched.
-- [ ] Preserve `sub_overseer` compatibility for existing PM delegations while defining the hierarchy-facing Project Manager role representation; never reinterpret old records silently.
-- [ ] Enforce at most one active Project Manager assignment per project and at most two total worker delegations per manager assignment, including replacements.
-- [ ] Make caps transactional and idempotent under concurrent MCP requests; cancelled/finished assignments release only the project slot, not the two-worker historical count for that assignment.
-- [ ] Keep existing role/status records and old resources readable; append lifecycle evidence for rejected over-cap attempts without partial delegation state.
+- [x] Add migration 10 with an optional self-referencing parent link and a Project Manager assignment table; legacy delegation rows remain unparented and are not backfilled as assignments.
+- [x] Validate that a worker parent is a hierarchy-aware `sub_overseer` PM with the same project/task/run and an active assignment. A worker may be prepared before its PM dispatch, but its dispatch is rejected until the PM is dispatched.
+- [x] Preserve `sub_overseer` as the stored PM role. The explicit assignment row represents the hierarchy-facing Project Manager concept; existing records are not silently reinterpreted.
+- [x] Enforce one active PM assignment per project and at most two child worker delegation records per PM assignment, including prepared, cancelled, and replaced workers.
+- [x] Make checks transactional under concurrent MCP requests. PM completion releases the project slot only after each child has reported or been cancelled; cancellation also releases it after the same unfinished-child guard. The worker lifetime count remains attached to the closed assignment.
+- [x] Keep existing role/status records and resources readable; write `delegation_admission_rejected` run events for cap and parent-dispatch rejections without inserting partial delegation state.
 
 Affected areas: `src/migrations.rs`, `src/delegation.rs`, `src/mcp.rs`, delegation resources, and schema migration tests.
 
@@ -191,23 +191,32 @@ Dependencies: M21 nested-spawn capability proof; schema compatibility review. Ho
 
 Acceptance criteria:
 
-- [ ] Old delegation records migrate without inferred parents.
-- [ ] A second PM for the same occupied project is rejected deterministically.
-- [ ] A third worker under one PM assignment is rejected, whether workers are active or completed.
-- [ ] Cross-project parent links, wrong role, stale parent, or mismatched run/task are rejected transactionally.
-- [ ] Existing M6-M9 prepare/report/review/worktree flows remain compatible.
+- [x] Old delegation records migrate without inferred parents or Project Manager assignments.
+- [x] A second PM for the same occupied project is rejected deterministically and the rejection is audited.
+- [x] A third worker under one PM assignment is rejected, including when earlier workers are cancelled/replaced; concurrent final-slot requests admit only one worker.
+- [x] Cross-project parent links, a worker supplied as the parent, and worker dispatch before parent dispatch are rejected transactionally. Completed/cancelled PM assignments cannot accept workers.
+- [x] Existing M6-M9 prepare/report/review/worktree flows remain compatible; optional null parentage preserves legacy Worker behavior.
 
 Validation:
 
-- [ ] Migration/reopen validation on a disposable SQLite database.
-- [ ] Domain and public MCP checks cover caps, races, lifecycle, backward compatibility, and parent integrity.
-- [ ] `cargo fmt --all -- --check`, focused Rust/MCP tests, workspace checks, and `git diff --check`.
+- [x] Migration/reopen validation on disposable SQLite databases confirms version-ten upgrade and legacy parentless records.
+- [x] Public MCP checks cover project slot reservation/release, concurrent PM and Worker admission, cancelled replacement accounting, parent dispatch order, completion guards, backward compatibility, and parent integrity.
+- [x] `cargo fmt --all -- --check`, focused Rust/MCP tests, workspace checks, and `git diff --check` pass. The final offline workspace run passed 71 tests across the core, context extraction, delegation, MCP, memory, optimization, and desktop suites; one existing desktop integration test is ignored by design.
 
-Documentation updates: architecture, local MCP, roadmap, this plan, and migration/compatibility notes.
+Documentation updates: architecture, local MCP, roadmap, ADR-0009, this plan, and migration/compatibility notes.
 
 Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `tdd`, `openai-docs`.
 
-Expected Git checkpoint: validated additive-schema milestone branch and coherent commit.
+Expected Git checkpoint: validated additive-schema milestone branch and coherent commit; publish only after required checks pass.
+
+#### M22 validation evidence
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --test delegation_lifecycle` — 9 passed, including two concurrent cap-admission tests.
+- `cargo test --offline --workspace` — 71 passed, 1 existing desktop integration test ignored by design; no failures.
+- `git diff --check` — passed.
+- The initial full-workspace attempt hit Windows `Access is denied` in the `aws-lc-sys` build script under the default sandbox. The same offline command passed when rerun with the build permission required by that script.
+- Test fixtures were isolated; no PULSO, Mecanografica proposals, Cathulu, or other registered project repository was accessed.
 
 ### M23 — Memory-gated agent activation and handoff
 

@@ -27,7 +27,7 @@ The product question is whether durable, selectively disclosed state improves ve
 5. Main checks current Cathulu state, blockers, worker reports, and required QA gates, then reports status or asks the owner for a decision. The read-only dashboard presents only persisted runs, delegations, events, and quality evidence.
 6. A run becomes `verified_success` only after its acceptance criteria and all mandatory deterministic gates pass. A timeout or missing evidence is `blocked` or `inconclusive`, never success.
 
-See the normative [agent operating contract](agent-operating-contract.md) and [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md). The native Codex runtime must support nested Project Manager-to-Worker spawning and inherited Cathulu MCP access before the hierarchy is described as operational.
+See the normative [agent operating contract](agent-operating-contract.md) and [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md). Nested Project Manager-to-Worker spawning and Cathulu MCP reachability have been observed in the current Codex client session, and Cathulu now validates parentage and capacity in SQLite. Memory-tool parity across roles and hook-backed live activity still need verification before the full hierarchy is described as operational.
 
 The dashboard's first views are Overview, Activity, Project/Scope, and Evidence. The first increment needs only the project registry and Git state path, with the other views introduced as their supporting state exists.
 

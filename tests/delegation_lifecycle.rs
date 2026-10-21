@@ -131,6 +131,20 @@ fn tool_error(data_dir: &Path, name: &str, arguments: Value) -> Value {
     }
 }
 
+fn hierarchy_packet() -> Value {
+    json!({
+        "schema_version": 1,
+        "title": "Coordinate scoped project work",
+        "objective": "Exercise hierarchy admission and lifecycle rules.",
+        "acceptance_criteria": ["Persist auditable manager and worker relationships"],
+        "constraints": [],
+        "allowed_scope": ["src/**"],
+        "referenced_memory_ids": [],
+        "referenced_artifact_ids": [],
+        "requested_report_fields": ["summary", "changed_paths", "checks", "blockers"]
+    })
+}
+
 fn create_task_and_run(data_dir: &Path, project_id: i64, label: &str) -> (i64, i64, i64) {
     let objective = call_tool(
         data_dir,
@@ -548,6 +562,636 @@ fn worker_reports_are_bounded_idempotent_reviewable_and_do_not_bypass_parent_qua
 }
 
 #[test]
+fn worker_parent_delegation_is_stored_and_returned_through_public_mcp() {
+    let root = unique_temp_dir("hierarchy-parent");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-fixture', 'C:/fixture/hierarchy', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-other-fixture', 'C:/fixture/hierarchy-other', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed second project");
+    drop(database);
+
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "hierarchy");
+    let task_packet = json!({
+        "schema_version": 1,
+        "title": "Coordinate project work",
+        "objective": "Record a hierarchy-aware delegation through the public MCP boundary.",
+        "acceptance_criteria": ["Persist the manager relationship"],
+        "constraints": [],
+        "allowed_scope": ["src/**"],
+        "referenced_memory_ids": [],
+        "referenced_artifact_ids": [],
+        "requested_report_fields": ["summary", "changed_paths", "checks", "blockers"]
+    });
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1,
+            "task_id": task_id,
+            "run_id": run_id,
+            "role": "sub_overseer",
+            "task_packet": task_packet,
+            "idempotency_key": "hierarchy-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager delegation ID");
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+
+    let worker = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1,
+            "task_id": task_id,
+            "run_id": run_id,
+            "role": "worker",
+            "task_packet": task_packet,
+            "idempotency_key": "hierarchy-worker",
+            "parent_delegation_id": manager_id
+        }),
+    );
+    let worker_id = worker["id"].as_i64().expect("worker delegation ID");
+    assert_eq!(worker["parentDelegationId"], json!(manager_id));
+
+    let read = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{worker_id}") }),
+        )],
+    );
+    let persisted = resource_text(response(&read, 2));
+    assert_eq!(persisted["parentDelegationId"], json!(manager_id));
+    assert_eq!(persisted["role"], json!("worker"));
+
+    let wrong_role = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "task_packet": task_packet,
+            "idempotency_key": "hierarchy-worker-as-parent", "parent_delegation_id": worker_id
+        }),
+    );
+    let wrong_role_text = wrong_role
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        wrong_role_text.contains("sub_overseer"),
+        "unexpected wrong-parent rejection: {wrong_role}"
+    );
+
+    let (_, foreign_task_id, foreign_run_id) =
+        create_task_and_run(&data_dir, 2, "foreign-hierarchy");
+    let cross_project = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 2, "task_id": foreign_task_id, "run_id": foreign_run_id,
+            "role": "worker", "task_packet": task_packet,
+            "idempotency_key": "hierarchy-cross-project-child", "parent_delegation_id": manager_id
+        }),
+    );
+    let cross_project_text = cross_project
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        cross_project_text.contains("match project, task, and run"),
+        "unexpected cross-project rejection: {cross_project}"
+    );
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn project_manager_slot_is_unique_auditable_and_released_on_completion() {
+    let root = unique_temp_dir("hierarchy-manager-slot");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-slot-fixture', 'C:/fixture/hierarchy-slot', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+
+    let (_, first_task, first_run) = create_task_and_run(&data_dir, 1, "first-manager");
+    let (_, second_task, second_run) = create_task_and_run(&data_dir, 1, "second-manager");
+    let first = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": first_task, "run_id": first_run,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-slot-first-manager"
+        }),
+    );
+    let first_id = first["id"].as_i64().expect("first manager ID");
+    assert_eq!(first["projectManagerAssignmentStatus"], json!("active"));
+
+    let rejected = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": second_task, "run_id": second_run,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-slot-second-manager"
+        }),
+    );
+    let rejected_again = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": second_task, "run_id": second_run,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-slot-second-manager"
+        }),
+    );
+    let rejection_text = rejected
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        rejection_text.contains("active Project Manager"),
+        "unexpected rejection: {rejected}"
+    );
+    assert_eq!(
+        rejected_again.pointer("/result/isError"),
+        Some(&json!(true)),
+        "a rejected idempotency key returns its original rejection"
+    );
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open hierarchy database");
+    let manager_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM project_manager_assignments WHERE project_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count manager assignments");
+    let rejection_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE aggregate_type = 'run' AND aggregate_id = ?1 AND event_type = 'delegation_admission_rejected'",
+            [second_run.to_string()],
+            |row| row.get(0),
+        )
+        .expect("count admission rejection events");
+    assert_eq!(
+        manager_count, 1,
+        "rejection leaves no partial manager assignment"
+    );
+    assert_eq!(rejection_count, 1, "rejection is auditable on its run");
+    drop(database);
+
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": first_id }),
+    );
+    let completed = call_tool(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": first_id }),
+    );
+    assert_eq!(completed["status"], json!("completed"));
+    let stale_parent = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": first_task, "run_id": first_run,
+            "role": "worker", "parent_delegation_id": first_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-slot-stale-parent"
+        }),
+    );
+    let stale_parent_text = stale_parent
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        stale_parent_text.contains("active Project Manager assignment"),
+        "unexpected stale-parent rejection: {stale_parent}"
+    );
+    let second = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": second_task, "run_id": second_run,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-slot-second-manager-after-release"
+        }),
+    );
+    assert!(
+        second["id"].as_i64().is_some(),
+        "released project slot accepts next manager"
+    );
+    let third_task_run = create_task_and_run(&data_dir, 1, "third-manager");
+    let third_task = third_task_run.1;
+    let third_run = third_task_run.2;
+    let second_id = second["id"].as_i64().expect("second manager ID");
+    call_tool(
+        &data_dir,
+        "cancel_delegation",
+        json!({ "delegation_id": second_id }),
+    );
+    let third = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": third_task, "run_id": third_run,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-slot-third-manager-after-cancel"
+        }),
+    );
+    assert!(
+        third["id"].as_i64().is_some(),
+        "cancelled assignment releases its project slot"
+    );
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn concurrent_project_manager_admissions_reserve_only_one_project_slot() {
+    let root = unique_temp_dir("hierarchy-manager-race");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-race-fixture', 'C:/fixture/hierarchy-race', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "manager-race");
+    let first_dir = data_dir.clone();
+    let second_dir = data_dir.clone();
+    let first = std::thread::spawn(move || {
+        let output = run_initialized_server(
+            &first_dir,
+            &[tool_call(
+                2,
+                "prepare_delegation",
+                json!({
+                    "project_id": 1, "task_id": task_id, "run_id": run_id,
+                    "role": "sub_overseer", "task_packet": hierarchy_packet(),
+                    "idempotency_key": "hierarchy-manager-race-first"
+                }),
+            )],
+        );
+        response(&output, 2).clone()
+    });
+    let second = std::thread::spawn(move || {
+        let output = run_initialized_server(
+            &second_dir,
+            &[tool_call(
+                2,
+                "prepare_delegation",
+                json!({
+                    "project_id": 1, "task_id": task_id, "run_id": run_id,
+                    "role": "sub_overseer", "task_packet": hierarchy_packet(),
+                    "idempotency_key": "hierarchy-manager-race-second"
+                }),
+            )],
+        );
+        response(&output, 2).clone()
+    });
+    let first_result = first.join().expect("first MCP admission completes");
+    let second_result = second.join().expect("second MCP admission completes");
+    let success_count = [&first_result, &second_result]
+        .into_iter()
+        .filter(|result| result.pointer("/result/isError") != Some(&json!(true)))
+        .count();
+    assert_eq!(
+        success_count, 1,
+        "exactly one concurrent manager admission succeeds"
+    );
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open hierarchy database");
+    let manager_count: i64 = database
+        .query_row("SELECT COUNT(*) FROM project_manager_assignments WHERE project_id = 1 AND status = 'active'", [], |row| row.get(0))
+        .expect("count active manager assignments");
+    let rejection_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE aggregate_type = 'run' AND aggregate_id = ?1 AND event_type = 'delegation_admission_rejected'",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("count admission rejection events");
+    assert_eq!(
+        manager_count, 1,
+        "SQLite admits only one active Project Manager"
+    );
+    assert_eq!(
+        rejection_count, 1,
+        "the losing concurrent admission is auditable"
+    );
+    drop(database);
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
+    let root = unique_temp_dir("hierarchy-worker-cap");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-worker-fixture', 'C:/fixture/hierarchy-worker', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "worker-cap");
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-worker-cap-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager ID");
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+
+    let make_worker = |key: &str| {
+        call_tool(
+            &data_dir,
+            "prepare_delegation",
+            json!({
+                "project_id": 1, "task_id": task_id, "run_id": run_id,
+                "role": "worker", "parent_delegation_id": manager_id,
+                "task_packet": hierarchy_packet(), "idempotency_key": key
+            }),
+        )
+    };
+    let first = make_worker("hierarchy-worker-cap-first");
+    let first_id = first["id"].as_i64().expect("first worker ID");
+    call_tool(
+        &data_dir,
+        "cancel_delegation",
+        json!({ "delegation_id": first_id }),
+    );
+    let first_dir = data_dir.clone();
+    let second_dir = data_dir.clone();
+    let first_args = tool_call(
+        2,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-worker-cap-second"
+        }),
+    );
+    let second_args = tool_call(
+        2,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-worker-cap-third"
+        }),
+    );
+    let first = std::thread::spawn(move || {
+        let output = run_initialized_server(&first_dir, &[first_args]);
+        response(&output, 2).clone()
+    });
+    let second = std::thread::spawn(move || {
+        let output = run_initialized_server(&second_dir, &[second_args]);
+        response(&output, 2).clone()
+    });
+    let first_result = first.join().expect("first worker admission completes");
+    let second_result = second.join().expect("second worker admission completes");
+    let success_count = [&first_result, &second_result]
+        .into_iter()
+        .filter(|result| result.pointer("/result/isError") != Some(&json!(true)))
+        .count();
+    assert_eq!(
+        success_count, 1,
+        "exactly one worker can consume the final assignment slot"
+    );
+    let (accepted, rejected) = if first_result.pointer("/result/isError") == Some(&json!(true)) {
+        (&second_result, &first_result)
+    } else {
+        (&first_result, &second_result)
+    };
+    let rejected = rejected.clone();
+    let rejection_text = rejected
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        rejection_text.contains("two workers"),
+        "unexpected rejection: {rejected}"
+    );
+    let rejected_key = if first_result.pointer("/result/isError") == Some(&json!(true)) {
+        "hierarchy-worker-cap-second"
+    } else {
+        "hierarchy-worker-cap-third"
+    };
+    let rejected_again = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": rejected_key
+        }),
+    );
+    assert_eq!(
+        rejected_again.pointer("/result/isError"),
+        Some(&json!(true)),
+        "retrying the losing idempotency key preserves its rejected outcome"
+    );
+    let accepted_text = accepted
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .expect("accepted worker result has JSON text");
+    let second =
+        serde_json::from_str::<Value>(accepted_text).expect("accepted worker result parses");
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open hierarchy database");
+    let worker_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM delegations WHERE parent_delegation_id = ?1",
+            [manager_id],
+            |row| row.get(0),
+        )
+        .expect("count worker assignments");
+    let rejection_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE aggregate_type = 'run' AND aggregate_id = ?1 AND event_type = 'delegation_admission_rejected'",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("count admission rejection events");
+    assert_eq!(
+        worker_count, 2,
+        "cancelled worker still consumes the assignment's lifetime cap"
+    );
+    assert_eq!(
+        rejection_count, 1,
+        "concurrent third worker rejection is auditable"
+    );
+    drop(database);
+
+    let unfinished = tool_error(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": manager_id }),
+    );
+    let unfinished_text = unfinished
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        unfinished_text.contains("unfinished"),
+        "unexpected close rejection: {unfinished}"
+    );
+    let cancellation_blocked = tool_error(
+        &data_dir,
+        "cancel_delegation",
+        json!({ "delegation_id": manager_id }),
+    );
+    let cancellation_text = cancellation_blocked
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        cancellation_text.contains("unfinished"),
+        "PM cancellation must also preserve unfinished workers: {cancellation_blocked}"
+    );
+    let second_id = second["id"].as_i64().expect("second worker ID");
+    call_tool(
+        &data_dir,
+        "cancel_delegation",
+        json!({ "delegation_id": second_id }),
+    );
+    let completed = call_tool(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": manager_id }),
+    );
+    assert_eq!(completed["status"], json!("completed"));
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
+    let root = unique_temp_dir("hierarchy-parent-dispatch");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('hierarchy-dispatch-fixture', 'C:/fixture/hierarchy-dispatch', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let (_, task_id, run_id) = create_task_and_run(&data_dir, 1, "parent-dispatch");
+    let manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "hierarchy-parent-dispatch-manager"
+        }),
+    );
+    let manager_id = manager["id"].as_i64().expect("manager ID");
+    let worker = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-parent-dispatch-worker"
+        }),
+    );
+    let worker_id = worker["id"].as_i64().expect("worker ID");
+    let rejected = tool_error(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": worker_id }),
+    );
+    let rejection_text = rejected
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        rejection_text.contains("Project Manager must be dispatched"),
+        "unexpected rejection: {rejected}"
+    );
+    let worker_read = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{worker_id}") }),
+        )],
+    );
+    assert_eq!(
+        resource_text(response(&worker_read, 2))["status"],
+        json!("prepared")
+    );
+
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    let dispatched = call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": worker_id }),
+    );
+    assert_eq!(dispatched["status"], json!("dispatched"));
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
 fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
     let root = unique_temp_dir("delegation-lifecycle");
     let data_dir = root.join("data");
@@ -921,7 +1565,7 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
 }
 
 #[test]
-fn version_nine_migration_preserves_existing_version_five_delegations() {
+fn version_ten_migration_preserves_existing_version_five_delegations() {
     let root = unique_temp_dir("delegation-v5-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -984,7 +1628,12 @@ fn version_nine_migration_preserves_existing_version_five_delegations() {
              DROP TABLE worker_reports;
              DROP TABLE codex_selector_preferences;
              DROP TABLE project_graphify_snapshots;
-             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9);",
+             DROP TRIGGER project_manager_assignment_identity_immutable;
+             DROP TABLE project_manager_assignments;
+             DROP TRIGGER delegations_parent_immutable;
+             DROP INDEX delegations_parent_idx;
+             ALTER TABLE delegations DROP COLUMN parent_delegation_id;
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10);",
         )
         .expect("restore the populated version-five schema");
     drop(database);
@@ -1002,13 +1651,15 @@ fn version_nine_migration_preserves_existing_version_five_delegations() {
     assert_eq!(delegation["status"], json!("dispatched"));
     assert_eq!(delegation["report"], Value::Null);
     assert_eq!(delegation["worktree"], Value::Null);
+    assert_eq!(delegation["parentDelegationId"], Value::Null);
+    assert_eq!(delegation["projectManagerAssignmentStatus"], Value::Null);
     assert_eq!(
         delegation["lifecycleEvents"].as_array().map(Vec::len),
         Some(2)
     );
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open upgraded v9 database");
+        .expect("open upgraded version-ten database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1017,15 +1668,26 @@ fn version_nine_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     assert_eq!(delegation_count, 1);
+    let assigned_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM project_manager_assignments",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count hierarchy-aware assignments");
+    assert_eq!(
+        assigned_count, 0,
+        "migration does not infer legacy manager assignments"
+    );
 
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
 
 #[test]
-fn version_five_through_nine_migrations_preserve_version_four_project_run_and_memory_state() {
+fn version_five_through_ten_migrations_preserve_version_four_project_run_and_memory_state() {
     let root = unique_temp_dir("delegation-v4-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1100,7 +1762,11 @@ fn version_five_through_nine_migrations_preserve_version_four_project_run_and_me
              DROP TABLE worker_reports;
              DROP TABLE codex_selector_preferences;
              DROP TABLE project_graphify_snapshots;
-             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9);
+             DROP TRIGGER project_manager_assignment_identity_immutable;
+             DROP TABLE project_manager_assignments;
+             DROP TRIGGER delegations_parent_immutable;
+             DROP INDEX delegations_parent_idx;
+             DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10);
              DROP TRIGGER delegation_memory_refs_no_update;
              DROP TRIGGER delegation_memory_refs_no_delete;
              DROP TRIGGER delegation_artifact_refs_no_update;
@@ -1144,7 +1810,7 @@ fn version_five_through_nine_migrations_preserve_version_four_project_run_and_me
         json!("Preserve this version-four memory")
     );
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
-        .expect("open migrated version-nine database");
+        .expect("open migrated version-ten database");
     let version: i64 = database
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -1153,7 +1819,7 @@ fn version_five_through_nine_migrations_preserve_version_four_project_run_and_me
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");
