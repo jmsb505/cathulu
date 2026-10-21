@@ -690,3 +690,45 @@ CREATE INDEX project_graphify_snapshots_status_idx
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (9, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_10: &str = r#"
+ALTER TABLE delegations
+  ADD COLUMN parent_delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT;
+
+CREATE INDEX delegations_parent_idx
+  ON delegations(parent_delegation_id, created_at DESC)
+  WHERE parent_delegation_id IS NOT NULL;
+
+CREATE TRIGGER delegations_parent_immutable BEFORE UPDATE OF parent_delegation_id ON delegations
+WHEN NEW.parent_delegation_id IS NOT OLD.parent_delegation_id
+BEGIN SELECT RAISE(ABORT, 'delegation parent is immutable'); END;
+
+CREATE TABLE project_manager_assignments (
+  manager_delegation_id INTEGER PRIMARY KEY REFERENCES delegations(id) ON DELETE RESTRICT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'cancelled')),
+  created_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  CHECK((status = 'active' AND closed_at IS NULL)
+     OR (status IN ('completed', 'cancelled') AND closed_at IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX project_manager_one_active_per_project
+  ON project_manager_assignments(project_id) WHERE status = 'active';
+
+CREATE INDEX project_manager_assignments_run_idx
+  ON project_manager_assignments(run_id, status, manager_delegation_id);
+
+CREATE TRIGGER project_manager_assignment_identity_immutable
+BEFORE UPDATE OF manager_delegation_id, project_id, task_id, run_id ON project_manager_assignments
+WHEN NEW.manager_delegation_id IS NOT OLD.manager_delegation_id
+  OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.task_id IS NOT OLD.task_id
+  OR NEW.run_id IS NOT OLD.run_id
+BEGIN SELECT RAISE(ABORT, 'Project Manager assignment identity is immutable'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (10, CAST(strftime('%s','now') AS INTEGER));
+"#;

@@ -286,6 +286,7 @@ fn routing_state_is_derived_from_sqlite_and_excludes_free_form_or_repository_con
             task_id,
             run_id,
             "worker",
+            None,
             &packet,
             "m16-worker-idempotency",
             None,

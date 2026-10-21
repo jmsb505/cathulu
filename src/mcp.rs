@@ -132,6 +132,8 @@ struct PrepareDelegationArgs {
     task_id: i64,
     run_id: i64,
     role: String,
+    #[serde(default)]
+    parent_delegation_id: Option<i64>,
     task_packet: DelegationTaskPacket,
     idempotency_key: String,
     #[serde(default)]
@@ -621,6 +623,7 @@ impl CathuluServer {
                 a.task_id,
                 a.run_id,
                 &a.role,
+                a.parent_delegation_id,
                 &a.task_packet,
                 &a.idempotency_key,
                 a.requested_model.as_deref(),
@@ -650,6 +653,19 @@ impl CathuluServer {
     fn cancel_delegation(&self, Parameters(a): Parameters<DelegationIdArgs>) -> CallToolResult {
         self.store
             .cancel_delegation(a.delegation_id)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Complete a dispatched Project Manager assignment after every child worker has reported or been cancelled. This releases the project's active-manager slot and records an audit event."
+    )]
+    fn complete_project_manager_assignment(
+        &self,
+        Parameters(a): Parameters<DelegationIdArgs>,
+    ) -> CallToolResult {
+        self.store
+            .complete_project_manager_assignment(a.delegation_id)
             .map(success)
             .unwrap_or_else(tool_error)
     }
