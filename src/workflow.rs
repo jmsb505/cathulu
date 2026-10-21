@@ -1,4 +1,12 @@
-use crate::{events::append_event, hash::content_hash, Store};
+use crate::{
+    events::append_event,
+    hash::content_hash,
+    optimization::{
+        treatment_from_run_started, OptimizationConfig, OptimizationRunTreatment,
+        WorkflowOptimizationOverrides,
+    },
+    Store,
+};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -548,9 +556,73 @@ impl Store {
         task_id: Option<i64>,
         workflow_version_id: Option<i64>,
     ) -> Result<RunRecord, String> {
+        self.start_run_with_optimization(
+            project_id,
+            objective_id,
+            task_id,
+            workflow_version_id,
+            &OptimizationConfig::default(),
+        )
+    }
+
+    pub fn start_run_with_optimization(
+        &self,
+        project_id: i64,
+        objective_id: Option<i64>,
+        task_id: Option<i64>,
+        workflow_version_id: Option<i64>,
+        optimization_config: &OptimizationConfig,
+    ) -> Result<RunRecord, String> {
         let now = now();
         let mut connection = self.connection()?;
         let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        let (workflow_content_hash, overrides_result) =
+            if let Some(workflow_version_id) = workflow_version_id {
+                let (definition_json, content_hash): (String, String) = transaction
+                    .query_row(
+                        "SELECT definition_json, content_hash FROM workflow_versions WHERE id = ?1",
+                        params![workflow_version_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(sqlite_error)?;
+                let definition: Value = serde_json::from_str(&definition_json)
+                    .map_err(|error| format!("stored workflow definition is invalid: {error}"))?;
+                let overrides = definition
+                    .get("optimization")
+                    .cloned()
+                    .map(serde_json::from_value::<WorkflowOptimizationOverrides>)
+                    .transpose()
+                    .map(|overrides| overrides.unwrap_or_default());
+                (Some(content_hash), overrides)
+            } else {
+                (None, Ok(WorkflowOptimizationOverrides::default()))
+            };
+        let (effective_config, configuration_state) = match overrides_result {
+            Ok(overrides) => {
+                let effective_config = optimization_config.with_workflow_overrides(&overrides);
+                if effective_config.validate().is_ok() {
+                    (
+                        effective_config,
+                        crate::optimization::TreatmentConfigurationState::Valid,
+                    )
+                } else {
+                    (
+                        OptimizationConfig::default(),
+                        crate::optimization::TreatmentConfigurationState::InvalidDisabledFallback,
+                    )
+                }
+            }
+            Err(_) => (
+                OptimizationConfig::default(),
+                crate::optimization::TreatmentConfigurationState::InvalidDisabledFallback,
+            ),
+        };
+        let treatment = OptimizationRunTreatment::new(
+            effective_config,
+            workflow_version_id,
+            workflow_content_hash,
+            configuration_state,
+        )?;
         if let Some(objective_id) = objective_id {
             let belongs_to_project: bool = transaction
                 .query_row(
@@ -595,13 +667,28 @@ impl Store {
                 "projectId": project_id,
                 "objectiveId": objective_id,
                 "taskId": task_id,
-                "workflowVersionId": workflow_version_id
+                "workflowVersionId": workflow_version_id,
+                "optimizationTreatment": treatment
             }),
             now,
         )?;
         transaction.commit().map_err(sqlite_error)?;
         self.get_run(id)?
             .ok_or_else(|| "started run disappeared from the database".to_string())
+    }
+
+    pub fn get_run_optimization_treatment(
+        &self,
+        run_id: i64,
+    ) -> Result<Option<OptimizationRunTreatment>, String> {
+        let events = self.list_events("run", &run_id.to_string())?;
+        let Some(started) = events
+            .iter()
+            .find(|event| event.event_type == "run_started")
+        else {
+            return Ok(None);
+        };
+        treatment_from_run_started(started)
     }
 
     pub fn record_quality_check(
@@ -1136,7 +1223,7 @@ fn artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceArtifa
     })
 }
 
-fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
+pub(crate) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     let payload_json: String = row.get(4)?;
     Ok(EventRecord {
         id: row.get(0)?,
@@ -1154,11 +1241,11 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     })
 }
 
-fn sqlite_error(error: rusqlite::Error) -> String {
+pub(crate) fn sqlite_error(error: rusqlite::Error) -> String {
     format!("SQLite operation failed: {error}")
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
