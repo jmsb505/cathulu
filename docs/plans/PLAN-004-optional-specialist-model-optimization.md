@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M18a MERGED; ScaleDown response-schema correction validated locally, PR pending; public MCP missing-key fallback coverage locally validated; live provider trials pending owner-set keys and MCP reload; comparative scoring not eligible; M19 not started. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
+Status: M15-M18a and M18b MERGED; public MCP missing-key fallback coverage locally validated; live provider trials pending owner-set keys and MCP reload; comparative scoring not eligible; M19 not started. Jev remains shadow-only. Active treatments still require separate explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -382,7 +382,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
 - [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated, with live calls and provider quality still unmeasured.
 - [x] M18a public MCP follow-up verifies missing-key skips, immutable run/QA state, and raw-artifact preservation without provider calls.
-- [ ] M18b ScaleDown response-schema correction; local validation passed, PR and CI pending.
+- [x] M18b ScaleDown response-schema correction; merged via [PR #12](https://github.com/jmsb505/cathulu/pull/12) at `6b609450d2fe71925cc5b5d7c571398d2622cd0f`.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -456,11 +456,11 @@ M18a public MCP fallback follow-up passed local Windows validation on 2026-10-21
 - The subprocess test explicitly removes both provider keys and sets `CATHULU_ENV_FILE` to a nonexistent path. No API key was read, and the test could not make a live provider call. Mocks and missing-key behavior validate contracts and fallback only; no quality or product-value result is claimed.
 - The currently connected Cathulu MCP tool schema in this Codex session still exposes the older `start_run` shape and does not list the M18a shadow tools. Before owner-initiated manual trials, rebuild the configured MCP executable using [the local MCP setup guide](../local-mcp.md) and reload/restart the MCP server. No user Codex MCP configuration was changed during this milestone.
 
-M18b ScaleDown response-schema correction passed local Windows validation on 2026-10-21:
+M18b ScaleDown response-schema correction was merged on 2026-10-21 via [PR #12](https://github.com/jmsb505/cathulu/pull/12), commit `6b609450d2fe71925cc5b5d7c571398d2622cd0f`. Local Windows validation:
 
 - `cargo fmt --all -- --check` — passed.
 - `cargo test --offline --workspace` — passed (66 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed).
 - `cargo check --locked --offline --workspace --all-targets` — passed.
 - `git diff --check` — passed.
 - The new focused regression checks that the requested JSON schema exactly defines the parser's required `entities` shape and rejects a response missing `entities`. No provider key was read and no live request or external transmission occurred.
-- Local validation confirms request/parser consistency only. Provider contract compatibility and extraction quality remain unverified; PR and required CI checks are pending.
+- GitHub reported no workflow runs or check contexts for the PR head; the `main` branch API reports protection disabled. No configured CI gate was available. No provider key was read and no live request or external transmission occurred. Provider contract compatibility and extraction quality remain unverified.
