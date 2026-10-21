@@ -197,4 +197,3 @@ The project brief's required tests are part of the project requirements. The exa
 | Codex may not support a bundled model for the owner's current account/workspace, and Cathulu cannot observe when a session loads configuration. | Official docs say availability depends on account/workspace and provide no supported Cathulu control API. | Phase 3 M9 | Show bundled-catalog provenance, require explicit preview/apply, and keep account availability and runtime effectiveness unverified. |
 | Evaluation thresholds lack a baseline. | The brief defines metrics and an experiment question but no measured baseline. | Context experiment | Collect comparable plain-Codex and Cathulu-assisted runs before setting numeric thresholds. |
 
-
