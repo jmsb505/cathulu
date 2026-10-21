@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M20's role and memory contract is documented in ADR-0009; M21-M25 runtime/implementation work is pending. M10 and M12-M14 remain evidence-gated. See PLAN-004 and PLAN-006 for current evidence.
+Status: product boundaries are NORMATIVE. M1-M9, M11, and M15-M18b are validated and published to `main` on Windows. Public MCP follow-up coverage verifies missing-key fallback for both optional shadow providers. One owner-approved Jev workflow-routing shadow integration run is now recorded after MCP reload; comparative scoring remains ineligible until representative comparable Cathulu runs exist. M19 remains proposed. M20's role and memory contract is documented in ADR-0009. M21's repository-free nested-spawn probe passed: run 4 is verified_success, with PM-to-Worker spawning and Cathulu MCP reachability observed. Memory-tool parity and hook correlation remain open; M22-M25 are pending. M10 and M12-M14 remain evidence-gated. See PLAN-004 and PLAN-006 for current evidence.
 
 ## System boundary
 
@@ -29,6 +29,8 @@ The optional specialist-model layer in ADR-0007 is an optimization boundary insi
 ADR-0009 defines the role boundary: Main Overseer coordinates only and never implements project changes. One Project Manager may own each active project assignment, and that manager may dispatch at most two implementation workers total for the assignment. Project Managers plan, delegate, monitor, and review evidence; workers perform scoped project work. Each role uses the existing Cathulu MCP memory and evidence operations. The portable normative instructions are in [agent-operating-contract.md](agent-operating-contract.md).
 
 This hierarchy is separate from Phase 4 M10's evidence-gated cross-project scope/Sub-Overseer work. The current focus is independent project tasks; no cross-repository edge or handoff is inferred. Existing M6-M9 records do not yet encode nested parentage or enforce the new limits. PLAN-006 stages runtime capability verification, additive hierarchy/cap enforcement, memory-transfer receipts, and a truthful activity graph. Native Codex child spawning and inherited Cathulu MCP access are verified at runtime before any implementation is described as active. Cathulu remains an evidence/control plane and does not spawn or steer agents.
+
+M21 observed one Project Manager spawning one Worker and confirmed that Main, PM, and Worker could reach Cathulu MCP. The available memory tools differed: the PM could read cathulu://dashboard but did not have read_memories, while the Worker did. HOT/WARM memory was empty, and the run recorded “no relevant memory”; prepare_context_transfer cannot encode an empty transfer because it requires a memory ID. No hook event or parent-child telemetry edge surfaced, so the dashboard must show hook coverage and relationships as unknown until observed. See PLAN-006 for M22-M24 follow-up criteria.
 
 ## Phase 1 starting stack
 

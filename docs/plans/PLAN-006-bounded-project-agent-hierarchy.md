@@ -1,6 +1,6 @@
 # PLAN-006 — Bounded per-project agent hierarchy
 
-Status: M20 role contract complete; runtime and implementation milestones pending
+Status: M20 role contract and M21 nested-spawn capability probe complete; M22-M25 pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with memory-tool parity and hook correlation still open.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -21,7 +21,7 @@ The new hierarchy applies to independent project work. PULSO, Mecanografica prop
 - Delegations have a `worker` or `sub_overseer` role but do not yet record a parent delegation. No deterministic one-manager-per-project or two-worker-per-assignment admission limit exists.
 - Memory records, search, known-by filtering, HOT budgets, explicit context transfers, and artifact references already exist. Current delegation packets can reference memory, but memory activation is not yet an enforced prerequisite for every agent.
 - The desktop surface shows actual runs, delegations, and observed subagent hooks; it does not infer missing hierarchy or display live Codex internals.
-- Official Codex docs say custom agents inherit parent MCP servers/tools, but nested spawn availability is not guaranteed for every client. The runtime capability remains to be tested.
+- The M21 probe demonstrated nested PM-to-Worker spawning in the current client and Cathulu MCP reachability from Main, PM, and Worker. Memory tool availability differed by role, and no hook events surfaced; see the M21 evidence below.
 
 ## Desired state
 
@@ -130,16 +130,16 @@ Applicable specialized skills: `implementation-plan`, `milestone-delivery`, `pon
 
 Expected Git checkpoint: documentation checkpoint on a dedicated milestone branch.
 
-### M21 — Native hierarchy runtime capability proof
+### M21 — Native hierarchy runtime capability proof — complete with recorded limitations
 
 Goal: establish which manager-to-worker spawning, MCP inheritance, and lifecycle correlation paths the current Codex client actually supports.
 
 Subtasks:
 
-- [ ] Verify a Project Manager can spawn up to two child workers in the current target Codex surface.
-- [ ] Verify child workers inherit the local Cathulu MCP server and can read/transfer project memory.
-- [ ] Verify the actual hook payloads/correlation available for Main → Project Manager → Worker without storing transcripts or prompt/tool bodies.
-- [ ] Record whether owner-controlled hooks need configuration; do not edit global config in this milestone.
+- [x] Verify a Project Manager can spawn child Workers in the current target Codex surface. The probe started one Worker; the two-worker ceiling itself remains to be enforced and tested in M22.
+- [x] Verify Main, Project Manager, and Worker can reach Cathulu MCP. The probe exposed role-specific differences in available memory tools; consistent memory-operation availability remains for M23.
+- [x] Check for hook events/correlation in the probe without storing transcripts or prompt/tool bodies. No hook metadata surfaced, so no hierarchy association was inferred; actual hook correlation remains unverified for M24.
+- [x] Record hook configuration as an open question; no global config was changed.
 
 Affected areas: Codex runtime probe, `docs/local-mcp.md`, PLAN-006 evidence.
 
@@ -147,15 +147,24 @@ Dependencies: M20; existing M6-M9 tools; configured local Cathulu MCP server.
 
 Acceptance criteria:
 
-- [ ] Main performs no implementation tool work in the probe.
-- [ ] One project has one Project Manager, and no more than two worker children are started.
-- [ ] Each role proves Cathulu MCP visibility by reading the same project snapshot and completing a memory-transfer or explicit no-relevant-memory path.
-- [ ] Results distinguish documented support from observed runtime support. No global settings are changed.
+- [x] Main performs no repository implementation work in the probe.
+- [x] One Project Manager spawned one Worker, within the two-worker maximum. This proves one nested child is available; enforcement and a second-child boundary test belong to M22.
+- [x] Each role reached Cathulu MCP. Main read dashboard/HOT/WARM; PM read `cathulu://dashboard`; Worker successfully called `read_memories`. HOT and WARM were empty. Main passed “no relevant memory” to PM and recorded it in the run. `prepare_context_transfer` could not encode this empty result because it requires a memory ID.
+- [x] Results distinguish observed support from gaps. No global settings were changed; no hook event or hierarchy edge was fabricated.
 
 Validation:
 
-- [ ] Manual, non-destructive Codex client probe with no repository edits.
-- [ ] Record resulting Cathulu event IDs and limitations; do not use synthetic cross-project handoffs.
+- [x] Manual, non-destructive Codex client probe with no repository edits; Cathulu run 4 is `verified_success`.
+- [x] Record Cathulu delegation IDs 1 (Main → PM, role accepted as `sub_overseer`) and 2 (PM → Worker), including the limitations below; no synthetic cross-project handoffs were used.
+
+#### M21 evidence and remaining gaps
+
+- Main spawned exactly one Project Manager (`/root/m21_project_manager`); that PM spawned exactly one Worker (`/root/m21_project_manager/m21_probe_worker`). Cathulu delegations 1 and 2 were marked dispatched, and the Worker report was recorded.
+- Main successfully read the dashboard and scoped HOT/WARM memory. The PM verified `cathulu://dashboard`, but `read_memories` was unavailable in its tool context. The Worker successfully called `mcp__cathulu__read_memories`.
+- HOT and WARM results were empty. “No relevant memory” was passed to the PM and recorded in run 4. `prepare_context_transfer` requires a memory ID, so it cannot represent an empty transfer; M23 must provide a structured no-relevant-memory activation receipt.
+- No hook events or actual hook metadata surfaced. No worker association or Main → PM → Worker edge was inferred from agent names alone. Hook setup/correlation remains an M24 evidence requirement, not a blocker for M22's schema and capacity work.
+- The current delegation role accepted `sub_overseer` for the PM; M22 must preserve this legacy role while deciding how to expose the Project Manager concept in hierarchy-aware records.
+- The run's `verified_success` classifies the Cathulu probe run only; it is not evidence of project repository work or QA.
 
 Documentation updates: update local MCP instructions and this plan with observed evidence.
 
@@ -171,13 +180,14 @@ Subtasks:
 
 - [ ] Add an additive migration linking child worker delegations to a parent Project Manager delegation without changing legacy rows.
 - [ ] Validate the parent has `sub_overseer` role, same project/task/run, and is dispatched before a worker child can be dispatched.
+- [ ] Preserve `sub_overseer` compatibility for existing PM delegations while defining the hierarchy-facing Project Manager role representation; never reinterpret old records silently.
 - [ ] Enforce at most one active Project Manager assignment per project and at most two total worker delegations per manager assignment, including replacements.
 - [ ] Make caps transactional and idempotent under concurrent MCP requests; cancelled/finished assignments release only the project slot, not the two-worker historical count for that assignment.
 - [ ] Keep existing role/status records and old resources readable; append lifecycle evidence for rejected over-cap attempts without partial delegation state.
 
 Affected areas: `src/migrations.rs`, `src/delegation.rs`, `src/mcp.rs`, delegation resources, and schema migration tests.
 
-Dependencies: M21 runtime capability proof; schema compatibility review.
+Dependencies: M21 nested-spawn capability proof; schema compatibility review. Hook correlation is not required for deterministic hierarchy admission, but remains required before M24 can claim observed live lifecycle telemetry.
 
 Acceptance criteria:
 
@@ -208,17 +218,19 @@ Subtasks:
 - [ ] Reuse current memories, known-by state, freshness, scope budgets, artifact links, and transfer ledger; add no duplicate memory authority.
 - [ ] Add a compact agent-activation receipt referencing transferred memory IDs/hashes or a structured no-relevant-memory disposition.
 - [ ] Require the receipt in a delegation packet before recording dispatch; enforce project scope and active HOT budget.
+- [ ] Verify required memory retrieval/transfer operations are actually available to each agent role before dispatch; record an explicit incomplete/blocked activation when they are not.
 - [ ] Record each receiver's logical scope so unchanged known content is omitted and changed knowledge is a delta.
 - [ ] Require worker discoveries to be submitted as provenance-linked evidence/candidates and reviewed before canonical promotion.
 - [ ] Reject attempts to use a model summary as authoritative state or to use specialist output to delete/overwrite memory.
 
 Affected areas: `src/memory.rs`, `src/delegation.rs`, migrations only if required, `src/mcp.rs`, context-transfer resources, and `docs/local-mcp.md`.
 
-Dependencies: M20; M21 runtime capability; M22 parent/child identity; existing Phase 1 memory schema.
+Dependencies: M20; M21 runtime capability; M22 parent/child identity; existing Phase 1 memory schema. The M21 probe showed PM/Worker tool-surface differences and that `prepare_context_transfer` cannot encode empty memory; M23 must resolve both without inventing memory IDs.
 
 Acceptance criteria:
 
 - [ ] Each dispatched PM/worker has a transfer receipt or explicit no-relevant-memory record.
+- [ ] A role with missing memory tools cannot be treated as having completed memory activation merely because it can read a generic Cathulu resource.
 - [ ] Stale, COLD, superseded, foreign-scope, or over-budget memory cannot be injected as current context.
 - [ ] Unchanged known content is not resent; changed content records a delta/replacement.
 - [ ] Canonical promotion preserves source evidence and does not delete unique provenance.
@@ -321,9 +333,9 @@ Use additive migrations only. Preserve legacy delegation records without guessed
 
 - [x] Reviewed current delegation, memory, telemetry, dashboard, Phase 3 plan, and roadmap.
 - [x] Recorded the user-approved Main/Project Manager/Worker role contract and memory workflow.
-- [x] Confirmed official docs describe MCP inheritance for configured Codex subagents; nested spawning remains a client runtime acceptance gate.
+- [x] Confirmed official docs describe MCP inheritance for configured Codex subagents; M21 later verified nested spawning in the tested client/session.
 - [x] M20 — role contract and memory protocol.
-- [ ] M21 — runtime capability proof.
+- [x] M21 — nested-spawn/MCP capability probe; role-specific memory tool parity and hook correlation remain open follow-ups.
 - [ ] M22 — hierarchy-aware delegation and caps.
 - [ ] M23 — memory-gated activation and handoff.
 - [ ] M24 — project activity graph.
@@ -333,12 +345,13 @@ Use additive migrations only. Preserve legacy delegation records without guessed
 
 - 2026-10-21: Current dashboard state has no running Cathulu run, saved delegation, or agent activity for the workflow the owner expected to see. The UI cannot display activity absent stored evidence.
 - 2026-10-21: Current M6-M9 deliberately prepare and record native Codex handoffs but do not spawn agents. Existing role fields do not encode parent-child delegation relationships.
-- 2026-10-21: Official Codex subagent docs state that custom agents inherit MCP servers from the parent configuration; the reviewed docs do not promise nested spawn support uniformly across clients. Validate the current desktop client before relying on it.
+- 2026-10-21: Official Codex subagent docs state that custom agents inherit MCP servers from the parent configuration; they do not promise nested spawn support uniformly across clients. M21 then demonstrated one PM-to-Worker spawn in the tested session, but PM/Worker memory tool availability differed and no hook metadata surfaced.
 - 2026-10-21: The limit is interpreted strictly as two worker agents total for a Project Manager assignment, including replacements. Revisit only if the owner changes the rule.
 - 2026-10-21: The current workflow uses independent project scopes; cross-project handoff testing remains deferred.
 
 ## Completion evidence
 
-M20 documentation delivery (2026-10-21): added the normative Main/Project Manager/Worker operating contract and Cathulu memory workflow; accepted ADR-0009; updated the project definition, architecture, roadmap, and local MCP guide. Documentation review confirms coordinator-only Main behavior, one manager per project assignment, a strict two-worker total per assignment, independent project scopes, and no invented runtime capability. Nested spawning, deterministic enforcement, memory receipts, dashboard hierarchy, and real-task evaluation remain pending under M21-M25.
+M20 documentation delivery (2026-10-21): added the normative Main/Project Manager/Worker operating contract and Cathulu memory workflow; accepted ADR-0009; updated the project definition, architecture, roadmap, and local MCP guide. Documentation review confirms coordinator-only Main behavior, one manager per project assignment, a strict two-worker total per assignment, independent project scopes, and no invented runtime capability. M21 subsequently verified nested spawning in the tested session; deterministic enforcement, complete memory activation, dashboard hierarchy, and real-task evaluation remain pending under M22-M25.
 
+M21 capability probe (2026-10-21): Cathulu run 4 is `verified_success`; the Main spawned one PM and the PM spawned one Worker, with delegations 1 and 2 recorded as dispatched and the Worker report submitted. No project repository was accessed. Main, PM, and Worker each reached Cathulu MCP, but the PM lacked `read_memories` while the Worker had it. HOT/WARM memory was empty; “no relevant memory” was recorded in the run, while `prepare_context_transfer` could not encode an empty transfer. No hooks surfaced, so no hierarchy edge was inferred. M21 closes the nested-spawn capability gate; M22 handles deterministic hierarchy, M23 addresses activation/tool parity, and M24 remains responsible for hook-backed graph evidence.
 
