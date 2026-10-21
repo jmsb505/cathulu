@@ -30,12 +30,18 @@ Owner
 - Codex remains responsible for agent execution, repository tools, approvals, Git, and worktrees. Cathulu remains the local evidence/control plane and read-only dashboard. This decision does not authorize changing user-level Codex configuration.
 - The PULSO, Mecanografica proposals, and Cathulu repositories are separate current project scopes. Do not create cross-project dependencies or handoffs without an explicit owner task. The previously deferred natural cross-repository handoff evaluation remains backlog and is not a prerequisite.
 
+## Runtime evidence — 2026-10-21
+
+The M21 repository-free probe completed as Cathulu run 4 with `verified_success`. Main spawned one Project Manager (`/root/m21_project_manager`), which spawned one Worker (`/root/m21_project_manager/m21_probe_worker`). Cathulu delegations 1 and 2 were marked dispatched, and the Worker report was recorded. No project repository was accessed. This proves nested spawning for the tested client/session and one child Worker; it does not prove deterministic enforcement of the two-worker cap.
+
+Main read the dashboard and HOT/WARM memory; the PM read `cathulu://dashboard`; the Worker successfully called `read_memories`. The PM did not have `read_memories` in its tool context, so role-specific memory-tool parity is unresolved. HOT/WARM results were empty. “No relevant memory” was passed to the PM and recorded in the run, but `prepare_context_transfer` cannot represent an empty transfer because it requires a memory ID. No hook events or hook metadata surfaced, so no hierarchy association was inferred. The `sub_overseer` role was accepted for the PM. These are runtime observations, not guarantees for every Codex client or future configuration; M22-M24 address deterministic hierarchy, memory activation, and truthful lifecycle evidence.
+
 ## Consequences
 
 - Existing M6-M9 delegation records remain valid but cannot yet express every parent/child relationship or enforce the new caps. Additive hierarchy state and deterministic admission checks are required before Cathulu can claim it enforces the limits.
 - Activity in the dashboard must be projected from actual runs, delegation relationships, and observed lifecycle events. Missing events stay visibly unknown; no progress or agent nodes are fabricated.
 - Memory transfer ledger entries are the auditable evidence that relevant Cathulu memory was supplied. Agent instructions alone are not a hard enforcement boundary; the implementation plan adds deterministic checks and reports missing receipts.
-- If the current Codex client cannot support Project Manager child spawning with inherited Cathulu tools, the implementation must expose that incompatibility and preserve the baseline workflow. It must not silently let Main do implementation or flatten the hierarchy.
+- The tested client/session supports nested spawning and Cathulu MCP reachability, but tool parity and lifecycle correlation remain incomplete. If a future target client/configuration lacks the required capabilities, expose that gap and preserve the baseline workflow. Never let Main silently take over implementation or flatten the hierarchy.
 
 ## Reconsider if
 
@@ -50,5 +56,4 @@ Owner
 - [Agent operating contract](../agent-operating-contract.md)
 - [Roadmap](../roadmap.md)
 - [PLAN-006](../plans/PLAN-006-bounded-project-agent-hierarchy.md)
-
 
