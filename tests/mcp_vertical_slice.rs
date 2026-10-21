@@ -152,6 +152,43 @@ fn run_server(data_dir: &Path, messages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+fn run_server_without_provider_credentials(data_dir: &Path, messages: &[Value]) -> Vec<Value> {
+    let env_file = data_dir.join("provider-credentials-disabled.env");
+    assert!(
+        !env_file.exists(),
+        "the isolated provider credential file must not exist"
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"))
+        .env("CATHULU_DATA_DIR", data_dir)
+        .env("CATHULU_ENV_FILE", env_file)
+        .env_remove("CATHULU_DECISION_PROVIDER_API_KEY")
+        .env_remove("CATHULU_CONTEXT_PROVIDER_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch Cathulu MCP server without provider credentials");
+    {
+        let stdin = child.stdin.as_mut().expect("child stdin");
+        for message in messages {
+            serde_json::to_writer(&mut *stdin, message).expect("serialize MCP request");
+            stdin.write_all(b"\n").expect("terminate MCP request line");
+        }
+    }
+    let output = child.wait_with_output().expect("wait for MCP server");
+    assert!(
+        output.status.success(),
+        "MCP server exited with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("MCP output is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("stdout contains only JSON-RPC lines"))
+        .collect()
+}
+
 fn run_initialized_server(data_dir: &Path, requests: &[Value]) -> Vec<Value> {
     let mut messages = vec![
         request(
@@ -167,6 +204,26 @@ fn run_initialized_server(data_dir: &Path, requests: &[Value]) -> Vec<Value> {
     ];
     messages.extend_from_slice(requests);
     run_server(data_dir, &messages)
+}
+
+fn run_initialized_server_without_provider_credentials(
+    data_dir: &Path,
+    requests: &[Value],
+) -> Vec<Value> {
+    let mut messages = vec![
+        request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "cathulu-test", "version": "0.1.0" }
+            }),
+        ),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    ];
+    messages.extend_from_slice(requests);
+    run_server_without_provider_credentials(data_dir, &messages)
 }
 
 fn response<'a>(responses: &'a [Value], id: u64) -> &'a Value {
@@ -327,6 +384,168 @@ fn register_reconcile_read_and_reopen_through_mcp() {
     assert_eq!(persisted.get("id"), Some(&json!(project_id)));
     assert_eq!(persisted.get("dirty"), Some(&json!(true)));
     assert_eq!(persisted.get("changedPaths"), Some(&json!(["work.txt"])));
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn public_mcp_specialist_shadow_trials_skip_without_keys_and_preserve_run_state() {
+    let root = unique_temp_dir("specialist-public-mcp");
+    let repo = root.join("repo");
+    let data_dir = root.join("data");
+    make_git_repo(&repo);
+
+    let project = tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "register_project",
+        json!({ "path": repo }),
+    ));
+    let project_id = project["id"].as_i64().expect("registered project ID");
+    let run = tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "start_run",
+        json!({
+            "project_id": project_id,
+            "optimization_config": {
+                "capabilities": {
+                    "workflow_routing": {
+                        "enabled": true,
+                        "mode": "shadow",
+                        "provider": "jev",
+                        "model": "jev-test-model",
+                        "providerLocality": "remote",
+                        "remoteDataAllowed": true
+                    },
+                    "context_extract": {
+                        "enabled": true,
+                        "mode": "shadow",
+                        "provider": "scaledown",
+                        "model": "extract-test-model",
+                        "providerLocality": "remote",
+                        "remoteDataAllowed": true
+                    }
+                }
+            }
+        }),
+    ));
+    let run_id = run["id"].as_i64().expect("run ID");
+
+    tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "record_quality_check",
+        json!({
+            "run_id": run_id,
+            "check_key": "deterministic-qa",
+            "mandatory": true,
+            "status": "pending"
+        }),
+    ));
+
+    let raw_log = "test harness output\nerror: fixture-only context extraction failure\n";
+    let log_path = root.join("test-output.log");
+    fs::write(&log_path, raw_log).expect("write local test artifact");
+    let artifact = tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "record_evidence_artifact",
+        json!({
+            "run_id": run_id,
+            "artifact_kind": "test_log",
+            "uri": log_path
+        }),
+    ));
+    let artifact_id = artifact["id"].as_i64().expect("artifact ID");
+
+    let before_response = run_initialized_server_without_provider_credentials(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://runs/{run_id}") }),
+        )],
+    );
+    let before = resource_text(response(&before_response, 2));
+    assert_eq!(before["status"], json!("running"));
+    assert_eq!(before["checks"][0]["status"], json!("pending"));
+
+    let decision = tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "run_decision_shadow_trial",
+        json!({
+            "run_id": run_id,
+            "invocation_id": "public-mcp-jev-missing-key",
+            "capability": "workflow_routing"
+        }),
+    ));
+    assert_eq!(decision["status"], json!("skipped"));
+
+    let extraction = tool_text(&call_tool_without_provider_credentials(
+        &data_dir,
+        "run_context_extraction_shadow_trial",
+        json!({
+            "run_id": run_id,
+            "invocation_id": "public-mcp-scaledown-missing-key",
+            "artifact_ids": [artifact_id]
+        }),
+    ));
+    assert_eq!(extraction["status"], json!("skipped"));
+
+    let after_response = run_initialized_server_without_provider_credentials(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://runs/{run_id}") }),
+            ),
+            request(
+                3,
+                "resources/read",
+                json!({ "uri": format!("cathulu://events/run/{run_id}") }),
+            ),
+        ],
+    );
+    let after = resource_text(response(&after_response, 2));
+    assert_eq!(
+        after, before,
+        "shadow calls must leave run and QA state unchanged"
+    );
+    assert_eq!(
+        fs::read(&log_path).expect("read original artifact"),
+        raw_log.as_bytes()
+    );
+
+    let events = resource_text(response(&after_response, 3));
+    let events = events.as_array().expect("run events are an array");
+    let run_started = events
+        .iter()
+        .find(|event| event["eventType"] == json!("run_started"))
+        .expect("run treatment is recorded");
+    assert_eq!(
+        run_started.pointer("/payload/optimizationTreatment/configuration/capabilities/workflow_routing/remoteDataAllowed"),
+        Some(&json!(true))
+    );
+    let invocations = events
+        .iter()
+        .filter(|event| event["eventType"] == json!("optimization_invocation_recorded"))
+        .collect::<Vec<_>>();
+    assert_eq!(invocations.len(), 2);
+    for (event, capability, provider) in [
+        (&invocations[0], "workflow_routing", "jev"),
+        (&invocations[1], "context_extract", "scaledown"),
+    ] {
+        assert_eq!(event["payload"]["capability"], json!(capability));
+        assert_eq!(event["payload"]["provider"], json!(provider));
+        assert_eq!(event["payload"]["providerLocality"], json!("remote"));
+        assert_eq!(event["payload"]["remoteDataAllowed"], json!(true));
+        assert_eq!(event["payload"]["mode"], json!("shadow"));
+        assert_eq!(event["payload"]["status"], json!("skipped"));
+        assert_eq!(event["payload"]["fallbackUsed"], json!(true));
+        assert_eq!(event["payload"]["influencedExecution"], json!(false));
+        assert_eq!(event["payload"]["payloadsPersisted"], json!(false));
+    }
+    assert!(!events
+        .iter()
+        .any(|event| event["eventType"] == json!("context_extraction_shadow_recorded")));
 
     fs::remove_dir_all(root).expect("remove temporary test data");
 }
@@ -1666,6 +1885,14 @@ fn prepare_and_dispatch_delegation(
 
 fn call_tool(data_dir: &Path, name: &str, arguments: Value) -> Value {
     let responses = run_initialized_server(data_dir, &[tool_call(2, name, arguments)]);
+    response(&responses, 2).clone()
+}
+
+fn call_tool_without_provider_credentials(data_dir: &Path, name: &str, arguments: Value) -> Value {
+    let responses = run_initialized_server_without_provider_credentials(
+        data_dir,
+        &[tool_call(2, name, arguments)],
+    );
     response(&responses, 2).clone()
 }
 
