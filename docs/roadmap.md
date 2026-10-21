@@ -20,7 +20,7 @@ Reuse native Codex subagents and worktrees. M6 adds bounded typed task packets, 
 
 ## Phase 4 — Durable scoped context (M10)
 
-Add scopes and Sub-Overseers only after telemetry shows repeated cross-project reconstruction whose measured cost exceeds context maintenance and coordination overhead. Detailed entry evidence and acceptance criteria are in [PLAN-003](plans/PLAN-003-evidence-gated-scaling.md). No qualifying recurring cross-project workflow is currently available, so M10 is not eligible for the current work pattern. Reconsider the gate only if naturally recurring cross-project work appears; do not invent dependencies or count unrelated repository tasks as M10 evidence.
+Add scopes and Sub-Overseers only after telemetry shows repeated cross-project reconstruction whose measured cost exceeds context maintenance and coordination overhead. Detailed entry evidence and acceptance criteria are in [PLAN-003](plans/PLAN-003-evidence-gated-scaling.md). No qualifying recurring cross-project workflow is currently available, so M10 is not eligible for the current work pattern. Backlog: exercise and evaluate a cross-repository handoff when real work naturally spans repositories; do not create a synthetic task for it. This deferred check does not block unrelated validation or maintenance, and M12-M14 retain their separate real-run evidence gates.
 
 ## Phase 5 — Graphify (M11; validated)
 
@@ -37,3 +37,4 @@ Aggregate comparable runs by task class and workflow version; propose, review, a
 ## Phase 8 — Adaptive policy research (M14)
 
 Consider learned routing or automatic scope/policy changes only after enough trustworthy repeated data exists. Reinforcement learning and automatic policy changes are outside the MVP.
+
