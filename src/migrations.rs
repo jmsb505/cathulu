@@ -667,3 +667,26 @@ CREATE INDEX codex_selector_preferences_role_idx ON codex_selector_preferences(r
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (8, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_9: &str = r#"
+CREATE TABLE project_graphify_snapshots (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  snapshot_id TEXT NOT NULL CHECK(length(snapshot_id) = 64),
+  content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+  source_commit TEXT NOT NULL,
+  schema_version INTEGER NOT NULL CHECK(schema_version > 0),
+  graphify_version TEXT NOT NULL,
+  source_files_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK(status IN ('available', 'stale', 'unavailable')),
+  status_reason TEXT,
+  validated_at INTEGER NOT NULL,
+  CHECK((status = 'available' AND status_reason IS NULL)
+     OR (status <> 'available' AND status_reason IS NOT NULL))
+);
+
+CREATE INDEX project_graphify_snapshots_status_idx
+  ON project_graphify_snapshots(status, validated_at DESC);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (9, CAST(strftime('%s','now') AS INTEGER));
+"#;

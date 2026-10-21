@@ -22,9 +22,9 @@ Reuse native Codex subagents and worktrees. M6 adds bounded typed task packets, 
 
 Add scopes and Sub-Overseers only after telemetry shows repeated cross-project reconstruction whose measured cost exceeds context maintenance and coordination overhead. Detailed entry evidence and acceptance criteria are in [PLAN-003](plans/PLAN-003-evidence-gated-scaling.md). The default Cathulu database was absent on 2026-10-21, so this gate is currently unmet.
 
-## Phase 5 — Graphify (M11)
+## Phase 5 — Graphify (M11; validated)
 
-Integrate structural retrieval read-only, record graph snapshot identities/deltas, invalidate only memories tied to changed graph bases, and benchmark selected neighborhoods against simpler file/FTS retrieval. Graphify is a retrieval/freshness source, not a second memory authority. PLAN-003 defines the local-source and benchmark gate; no Graphify snapshot is present yet.
+Integrate structural retrieval read-only, record graph snapshot identities/deltas, invalidate only memories tied to changed graph bases, and benchmark selected neighborhoods against simpler file/FTS retrieval. Graphify is a retrieval/freshness source, not a second memory authority. M11 completed on 2026-10-21: its local-only evidence gate passed using Graphify 0.9.82, schema 1, code-only extraction, and a pre-registered three-task comparison. Cathulu exposes bounded MCP path retrieval, SQLite snapshot identity/freshness, and selective graph-memory invalidation; the implementation passed Windows workspace tests and the local MCP release build. Validation evidence is in [PLAN-003](plans/PLAN-003-evidence-gated-scaling.md), with the source contract in [ADR-0006](decisions/ADR-0006-local-graphify-snapshot-contract.md).
 
 ## Phase 6 — Convergence (M12)
 
