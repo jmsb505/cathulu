@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M17 MERGED; M18 PRE-TRIAL READINESS REVIEW RECORDED; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. No live provider adapters or model calls are implemented. Active treatments still require explicit owner approval.
+Status: M15-M17 MERGED; M18a PROVIDER CONNECTIVITY LOCALLY VALIDATED; LIVE PROVIDER TRIALS PENDING OWNER-SET KEYS; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. Active treatments still require explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -23,7 +23,7 @@ Shadow predictions can establish schema safety, privacy behavior, fallback, late
 - SQLite is authoritative. Existing runs, workflow_versions, events, memory_policy_evaluations, and evidence_artifacts are the first sources to audit for treatment attribution and invocation telemetry.
 - M9's Codex model/effort preferences configure Codex and remain separate from specialist-provider settings.
 - M10 and M12-M14 retain their own evidence gates. The deferred cross-repository handoff check is not a prerequisite for this phase.
-- Jev/TypeSafe, ScaleDown, and GLiNER-family models remain candidate providers, not dependencies. Current primary TypeSafe API and data-handling documentation supports further evaluation of Jev for minimized bounded decisions. ScaleDown's official client documents remote prompt compression, but the reviewed sources do not establish the selected-span extraction contract or request-retention terms needed for M17.
+- Jev/TypeSafe and ScaleDown remain optional evaluation providers, not dependencies. Current primary TypeSafe documentation supports minimized bounded decisions; ScaleDown official Extract API documents selected-text extraction and response offsets. The reviewed ScaleDown API pages do not state a request-retention period. Local alternatives and real provider quality remain to be evaluated.
 - The current dashboard has no recorded runs or objectives and zero memory/transfer/storage measurements. There is no baseline cohort from which to set sample or quality thresholds, so M18 cannot score product impact yet.
 
 ## Scope
@@ -126,7 +126,7 @@ All Cathulu state, treatment records, evidence references, and telemetry remain 
 - M6-M9 delegation and available worker/run telemetry where relevant.
 - M11's local Graphify retrieval when structurally relevant; Graphify remains optional.
 - M15 can proceed without M10 or M12-M14 eligibility and does not require live specialist usage data.
-- M16/M17 provider adapters require review of current primary API, configuration, privacy, terms, licensing, availability, and fallback documentation. Follow the repository AGENTS instruction to resolve/query Context7 first for applicable current API/SDK/CLI documentation; if unavailable, record the quota/error and use current primary vendor documentation.
+- Before M18a adapters, current provider API, configuration, privacy, and fallback documentation was reviewed. Context7 lookup reached its monthly quota; official TypeSafe and ScaleDown API sources were used. ScaleDown request-retention terms remain unknown and are disclosed before any opt-in call.
 - M18 active treatment evaluation requires representative real runs and comparable tasks. Synthetic fixtures test mechanics only.
 - No UI dependency. A read-only impact view is considered only if actual data and user workflow justify it.
 
@@ -246,6 +246,35 @@ Validation includes seven integration tests and a locally generated failing Rust
 
 **Validation evidence:** `cargo test --offline --test context_extraction_m17` — 7 passed, 0 failed. Full-workspace validation is recorded under Completion evidence after the final gate.
 
+### M18a — Optional Jev and ScaleDown provider connectivity
+
+**Goal:** make the first provider shadow calls testable after local key setup while preserving the M16/M17 no-influence, provenance, and egress boundaries.
+
+**Subtasks**
+
+- Add typed Jev and ScaleDown HTTP adapters behind the existing DecisionModel and ContextModel interfaces. Use the TypeSafe System One endpoint for only the fixed workflow/delegation choice schemas; use the ScaleDown Extract endpoint for selected failure excerpts.
+- Read only the named provider keys from process environment or a simple .env.local file, with environment values taking precedence. Support CATHULU_ENV_FILE for an explicit local file. Do not evaluate shell syntax, log credentials, or store them in SQLite/events.
+- Expose the immutable per-run treatment input through MCP and async shadow-trial tools. A provider call requires the matching capability to be enabled in shadow mode, provider locality set to remote, remoteDataAllowed set to true, and its local key available.
+- Keep ScaleDown inputs to selected spans from registered local artifacts for the same run. Verify the raw artifact hash, omit task text/paths/artifact IDs from the provider request, best-effort mask credential labels and known token forms, and accept only exact returned quotes with validated source offsets. Preserve the original artifact.
+- Keep both providers disabled by default. Missing credentials or provider failure must record a skipped/failure invocation and leave run state, QA, context delivery, routing, and success unchanged. Active mode remains gated by M18.
+
+**Acceptance criteria**
+
+- The all-disabled baseline makes no provider call, and an API key alone does not enable a capability.
+- Each remote shadow call requires the immutable run treatment’s explicit remote opt-in and is attributed through the existing append-only run event ledger.
+- Jev receives only the bounded SQLite routing projection and fixed outcome choices; ScaleDown receives only selected sanitized spans.
+- Context artifacts from a different run are rejected before model invocation.
+- Raw evidence remains retrievable; provider output is a validated projection, never authority for QA, correctness, or success.
+- Provider failures and malformed responses do not block the underlying run. Credentials and raw provider request/response bodies are not persisted.
+- The provider setup guide discloses that ScaleDown request retention was not found in reviewed public API docs and that credential masking is best-effort.
+
+**Validation**
+
+- Use loopback-only HTTP mock servers to validate Jev bearer authentication, request minimization, bounded response parsing, provider usage metadata, ScaleDown x-api-key authentication, selected-span minimization, credential masking, exact quote/span mapping, and token/byte metadata. These tests must not contact external providers.
+- Run the context extraction suite, including same-run artifact ownership and unchanged raw evidence, plus decision-trial tests and the full Rust workspace suite.
+- Check formatting, dependency lock consistency, and Git whitespace. Do not claim live provider quality, retention terms, or workflow value from local mocks.
+
+**Expected checkpoint:** local connector readiness. Live shadow trials begin only after the owner adds the chosen keys locally and explicitly starts a consented remote shadow run. M18 comparative scoring and any active treatment remain separately gated.
 ### M18 — Controlled ablation and evidence review
 
 **Goal:** determine actual efficiency and quality impact under comparable conditions.
@@ -345,6 +374,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] M16 local shadow-trial mechanics, strict decision schemas, SQLite routing-state minimization, and evidence-linked human review; no provider or live call.
 - [x] M17 local ContextModel shadow extraction boundary and selected-span provenance; no provider or live call.
 - [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
+- [x] M18a optional Jev and ScaleDown provider connectivity; local mock protocol checks and egress/same-run safeguards validated, with live calls and provider quality still unmeasured.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -361,6 +391,10 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - 2026-10-21: M17 reuses the existing evidence-artifact registry and event ledger without a migration. The extraction request contains selected text and a stable Cathulu resource ID, never the local filesystem path; the output event stores hashes and validated spans while retaining the raw artifact by reference. Remote extraction remains unimplemented and is skipped regardless of configured remote opt-in.
 - 2026-10-21: `.env.example` documents empty reserved decision/context API-key placeholders and `.gitignore` excludes local `.env` files. The runtime currently has no dotenv loader, provider adapter, or secure credential path; adding key values to `.env.local` does not activate a provider.
 
+- 2026-10-21: M18a adds optional Jev and ScaleDown adapters without changing the all-disabled baseline. Jev calls TypeSafe’s official POST /v1/systemone endpoint with bearer auth and only the compact SQLite routing state. ScaleDown calls the official POST /v1/chat/completions Extract API with x-api-key auth and selected local excerpts only. The reviewed [TypeSafe OpenAPI](https://api.typesafe.ai/openapi.json), [TypeSafe data-handling FAQ](https://help.typesafe.ai/articles/5974925716-how-is-submitted-data-used-or-retained), [ScaleDown Extract API](https://docs.scaledown.ai/api-reference/extract), and [ScaleDown quickstart](https://docs.scaledown.ai/quickstart) establish request/response shape; the reviewed ScaleDown pages do not state request-retention terms.
+- 2026-10-21: Provider credentials are read from only CATHULU_DECISION_PROVIDER_API_KEY and CATHULU_CONTEXT_PROVIDER_API_KEY, from process environment or a local .env.local/CATHULU_ENV_FILE. They are never added to database, events, or provider telemetry. The MCP tools require a matching immutable shadow treatment with providerLocality remote and remoteDataAllowed true; active mode remains rejected.
+- 2026-10-21: ScaleDown extraction now checks that all selected artifacts belong to the trial run, masks common credential-labeled values/token formats, and discards candidate quotes overlapping masked source bytes. This is a best-effort filter, not a guarantee that every secret is recognized; the setup guide instructs the owner to review selected evidence before remote consent.
+- 2026-10-21: Reqwest is configured for JSON, Rustls TLS, and system proxy support with default features disabled; unused HTTP/2 is not enabled. The HTTP tests use loopback mock servers and fake test keys only. No external provider call, active treatment, or product-value claim is included.
 ## Completion evidence
 
 M15 passed local Windows validation on 2026-10-21. Commands and results:
@@ -395,3 +429,11 @@ M17 passed focused local Windows validation on 2026-10-21. Commands and results:
 
 M18 readiness audit (2026-10-21): the read-only `cathulu://dashboard` snapshot reports `recentRuns=[]`, `objectives=[]`, `blockers=[]`, and `failedChecks=[]`; memory, transfer, and storage counters are all zero. No comparable baseline cohort exists, so sample size, expected variation, and a quality guard cannot be responsibly selected yet. The TypeSafe API and data-handling sources were reviewed; no provider adapter, credential loader, live model call, remote transmission, active treatment, or product-value measurement is implemented or claimed. M18 remains ineligible for comparative scoring until representative real Cathulu runs exist; any active pilot additionally requires explicit owner approval.
 
+M18a provider-connectivity readiness passed local Windows validation on 2026-10-21. Commands and results:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --workspace` — passed: 64 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed.
+- `git diff --check` — passed before the final evidence-only plan update; rerun as the final repository check.
+- `cargo check --locked --offline --workspace --all-targets` — passed during M18a implementation.
+- Provider tests use loopback HTTP fixtures and fake keys only. They cover Jev bearer auth and bounded routing state, ScaleDown x-api-key auth and excerpt minimization, secret masking and exact source-span mapping, and credential parsing without shell evaluation. M17 tests also cover same-run artifact enforcement and non-blocking fallback.
+- No real API key was read, no live provider call or external data transmission was made, and no active optimization mode was enabled. Provider quality, retention behavior beyond the reviewed documentation, and workflow impact remain unmeasured. ScaleDown retention is unspecified in the reviewed API pages; credential masking is best-effort.

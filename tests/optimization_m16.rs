@@ -1,10 +1,10 @@
 use cathulu_core::{
     delegation::DelegationTaskPacket,
     optimization::{
-        parse_decision_result, CapabilitySettings, DecisionModel, DecisionRequest, DecisionResult,
-        InvocationStatus, ModelCallFailure, OptimizationCapability, OptimizationConfig,
-        OptimizationMode, OptimizationShadowReview, ProviderLocality, RoutingDecisionSchema,
-        ShadowOutcomeAssessment,
+        parse_decision_result, CapabilitySettings, DecisionModel, DecisionModelFuture,
+        DecisionRequest, DecisionResult, InvocationStatus, ModelCallFailure, ModelResponse,
+        OptimizationCapability, OptimizationConfig, OptimizationMode, OptimizationShadowReview,
+        ProviderLocality, RoutingDecisionSchema, ShadowOutcomeAssessment,
     },
     Store,
 };
@@ -135,15 +135,15 @@ impl TestDecisionModel {
 }
 
 impl DecisionModel for TestDecisionModel {
-    fn decide(
-        &self,
-        _request: &DecisionRequest,
-    ) -> Result<Option<DecisionResult>, ModelCallFailure> {
+    fn decide<'a>(&'a self, _request: &'a DecisionRequest) -> DecisionModelFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        match &self.reply {
-            ModelReply::Result(result) => Ok(result.clone()),
-            ModelReply::Error(error) => Err(*error),
-        }
+        let reply = self.reply.clone();
+        Box::pin(async move {
+            match reply {
+                ModelReply::Result(result) => Ok(result.map(ModelResponse::new)),
+                ModelReply::Error(error) => Err(error),
+            }
+        })
     }
 }
 
@@ -363,8 +363,8 @@ fn decision_response_parser_is_bounded_strict_and_normalizes_probabilities() {
     assert!(parse_decision_result(&vec![b' '; 16 * 1024 + 1], &request).is_err());
 }
 
-#[test]
-fn shadow_prediction_is_recorded_without_changing_run_or_delegation_state() {
+#[tokio::test]
+async fn shadow_prediction_is_recorded_without_changing_run_or_delegation_state() {
     let fixture = Fixture::new("shadow-no-influence");
     let config = local_shadow_config(OptimizationCapability::WorkflowRouting);
     let run_id = fixture.run(&config, None, None);
@@ -378,12 +378,14 @@ fn shadow_prediction_is_recorded_without_changing_run_or_delegation_state() {
     assert!(fixture
         .store
         .run_decision_shadow_trial(run_id, "m16-unminimized", &unsafe_request, &model)
+        .await
         .is_err());
     assert_eq!(model.call_count(), 0);
 
     let receipt = fixture
         .store
         .run_decision_shadow_trial(run_id, "m16-shadow-1", &request, &model)
+        .await
         .expect("run shadow trial")
         .expect("shadow invocation recorded");
 
@@ -411,8 +413,8 @@ fn shadow_prediction_is_recorded_without_changing_run_or_delegation_state() {
     assert_eq!(telemetry.payload["payloadsPersisted"], false);
 }
 
-#[test]
-fn post_run_shadow_review_links_prediction_to_qa_and_final_outcome_events() {
+#[tokio::test]
+async fn post_run_shadow_review_links_prediction_to_qa_and_final_outcome_events() {
     let fixture = Fixture::new("shadow-review");
     let config = local_shadow_config(OptimizationCapability::WorkflowRouting);
     let workflow_id = fixture.workflow(json!({ "mandatory_checks": ["test"] }));
@@ -429,6 +431,7 @@ fn post_run_shadow_review_links_prediction_to_qa_and_final_outcome_events() {
     fixture
         .store
         .run_decision_shadow_trial(run_id, "m16-review-1", &request, &model)
+        .await
         .expect("record shadow prediction");
     fixture
         .store
@@ -494,8 +497,8 @@ fn post_run_shadow_review_links_prediction_to_qa_and_final_outcome_events() {
         .is_err());
 }
 
-#[test]
-fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
+#[tokio::test]
+async fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
     let fixture = Fixture::new("safe-fallbacks");
     let state_config = OptimizationConfig::default();
     let disabled_run = fixture.run(&state_config, None, None);
@@ -515,6 +518,7 @@ fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
             &disabled_request,
             &disabled_model,
         )
+        .await
         .unwrap()
         .is_none());
     assert_eq!(disabled_model.call_count(), 0);
@@ -540,21 +544,22 @@ fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
     let remote_receipt = fixture
         .store
         .run_decision_shadow_trial(remote_run, "m16-remote", &remote_request, &remote_model)
-        .expect("unreviewed remote provider should skip, not run")
-        .expect("record remote skip");
-    assert_eq!(remote_receipt.status, InvocationStatus::Skipped);
-    assert_eq!(remote_model.call_count(), 0);
+        .await
+        .expect("remote shadow call is permitted by the immutable opt-in")
+        .expect("record remote invocation");
+    assert_eq!(remote_receipt.status, InvocationStatus::Completed);
+    assert_eq!(remote_model.call_count(), 1);
     let remote_event = fixture
         .store
         .list_events("run", &remote_run.to_string())
         .unwrap()
         .into_iter()
         .find(|event| event.event_type == "optimization_invocation_recorded")
-        .expect("record that the remote provider was skipped");
-    assert_eq!(remote_event.payload["status"], "skipped");
+        .expect("record the remote invocation metadata");
+    assert_eq!(remote_event.payload["status"], "completed");
     assert_eq!(remote_event.payload["providerLocality"], "remote");
     assert_eq!(remote_event.payload["remoteDataAllowed"], true);
-    assert_eq!(remote_event.payload["fallbackUsed"], true);
+    assert_eq!(remote_event.payload["fallbackUsed"], false);
     assert_eq!(remote_event.payload["payloadsPersisted"], false);
 
     for (suffix, failure, expected_status) in [
@@ -587,6 +592,7 @@ fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
         let receipt = fixture
             .store
             .run_decision_shadow_trial(run_id, &invocation_id, &request, &model)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(receipt.status, expected_status);
@@ -627,6 +633,7 @@ fn disabled_remote_and_failed_shadow_trials_never_block_the_baseline() {
             &invalid_request,
             &invalid_model,
         )
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(invalid_receipt.status, InvocationStatus::InvalidResponse);

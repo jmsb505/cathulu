@@ -1,6 +1,11 @@
 use crate::delegation::{DelegationTaskPacket, WorkerReport};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
+use crate::optimization::{
+    ContextModel, DecisionModel, DisabledContextModel, DisabledDecisionModel,
+    OptimizationCapability, OptimizationConfig, ProviderLocality, RoutingDecisionSchema,
+};
+use crate::provider_adapters::{JevProvider, ScaleDownContextProvider};
 use crate::telemetry::CodexHookEvent;
 use crate::workflow::EventRecord;
 use crate::{default_data_dir, Store};
@@ -103,6 +108,22 @@ struct StartRunArgs {
     task_id: Option<i64>,
     #[serde(default)]
     workflow_version_id: Option<i64>,
+    /// Optional per-run specialist treatment configuration. All capabilities
+    /// remain disabled unless explicitly enabled with shadow mode.
+    #[serde(default)]
+    optimization_config: Option<Value>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DecisionShadowTrialArgs {
+    run_id: i64,
+    invocation_id: String,
+    capability: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ContextExtractionShadowTrialArgs {
+    run_id: i64,
+    invocation_id: String,
+    artifact_ids: Vec<i64>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -480,15 +501,111 @@ impl CathuluServer {
         description = "Start an auditable run for a project, objective, task, and workflow version."
     )]
     fn start_run(&self, Parameters(a): Parameters<StartRunArgs>) -> CallToolResult {
+        let optimization_config = match a.optimization_config {
+            Some(value) => match serde_json::from_value::<OptimizationConfig>(value) {
+                Ok(config) => config,
+                Err(error) => return tool_error(format!("invalid optimization_config: {error}")),
+            },
+            None => OptimizationConfig::default(),
+        };
         self.store
-            .start_run(
+            .start_run_with_optimization(
                 a.project_id,
                 a.objective_id,
                 a.task_id,
                 a.workflow_version_id,
+                &optimization_config,
             )
             .map(success)
             .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Run a Jev workflow/delegation prediction in shadow mode. This makes a remote call only when the run's immutable treatment explicitly enables the Jev capability, sets providerLocality=remote and remoteDataAllowed=true, and a local API key is available. It never changes execution."
+    )]
+    async fn run_decision_shadow_trial(
+        &self,
+        Parameters(a): Parameters<DecisionShadowTrialArgs>,
+    ) -> CallToolResult {
+        let result = async {
+            let schema = match a.capability.as_str() {
+                "workflow_routing" => RoutingDecisionSchema::WorkflowClass,
+                "delegation_routing" => RoutingDecisionSchema::DelegationStrategy,
+                _ => {
+                    return Err(
+                        "capability must be workflow_routing or delegation_routing".to_string()
+                    )
+                }
+            };
+            let request = schema.request(&self.store.routing_decision_state(a.run_id)?)?;
+            let treatment = self
+                .store
+                .get_run_optimization_treatment(a.run_id)?
+                .ok_or_else(|| {
+                    format!("run {} has no optimization treatment snapshot", a.run_id)
+                })?;
+            let settings = treatment.configuration.settings(schema.capability());
+            let model: Box<dyn DecisionModel> = if settings.enabled
+                && settings.provider.as_deref() == Some("jev")
+                && settings.provider_locality == Some(ProviderLocality::Remote)
+                && settings.remote_data_allowed
+            {
+                JevProvider::from_environment(settings.model.as_deref())
+                    .map(|provider| Box::new(provider) as Box<dyn DecisionModel>)
+                    .unwrap_or_else(|| Box::new(DisabledDecisionModel))
+            } else {
+                Box::new(DisabledDecisionModel)
+            };
+            self.store
+                .run_decision_shadow_trial(a.run_id, &a.invocation_id, &request, model.as_ref())
+                .await
+        }
+        .await;
+        result.map(success).unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Run ScaleDown extraction over selected spans from registered test/compiler/CI/tool-output artifacts in shadow mode. This makes a remote call only when the run's immutable context_extract treatment explicitly enables provider=scaledown, providerLocality=remote and remoteDataAllowed=true, and a local API key is available. Cathulu sends selected excerpts only; raw evidence and workflow execution remain unchanged."
+    )]
+    async fn run_context_extraction_shadow_trial(
+        &self,
+        Parameters(a): Parameters<ContextExtractionShadowTrialArgs>,
+    ) -> CallToolResult {
+        let result = async {
+            let request = self
+                .store
+                .prepare_context_extraction_request(&a.artifact_ids)?;
+            let treatment = self
+                .store
+                .get_run_optimization_treatment(a.run_id)?
+                .ok_or_else(|| {
+                    format!("run {} has no optimization treatment snapshot", a.run_id)
+                })?;
+            let settings = treatment
+                .configuration
+                .settings(OptimizationCapability::ContextExtract);
+            let model: Box<dyn ContextModel> = if settings.enabled
+                && settings.provider.as_deref() == Some("scaledown")
+                && settings.provider_locality == Some(ProviderLocality::Remote)
+                && settings.remote_data_allowed
+            {
+                ScaleDownContextProvider::from_environment(settings.model.as_deref())
+                    .map(|provider| Box::new(provider) as Box<dyn ContextModel>)
+                    .unwrap_or_else(|| Box::new(DisabledContextModel))
+            } else {
+                Box::new(DisabledContextModel)
+            };
+            self.store
+                .run_context_extraction_shadow_trial(
+                    a.run_id,
+                    &a.invocation_id,
+                    &request,
+                    model.as_ref(),
+                )
+                .await
+        }
+        .await;
+        result.map(success).unwrap_or_else(tool_error)
     }
 
     #[tool(

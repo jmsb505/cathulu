@@ -11,6 +11,8 @@ pub mod mcp;
 pub mod memory;
 mod migrations;
 pub mod optimization;
+pub mod provider_adapters;
+mod provider_credentials;
 mod sqlite;
 pub mod telemetry;
 pub mod workflow;

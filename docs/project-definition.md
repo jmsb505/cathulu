@@ -53,7 +53,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
 - Advanced convergence and adaptive routing before trustworthy run evidence exists.
 - Model/reasoning selectors in the first increment. M9 implements the later settings surface outside the read-only dashboard. Project/user/profile writes require a per-preview target choice and explicit apply; export-only remains available. Cathulu uses only the local CLI's whitelisted model/effort options, does not infer account availability, and does not claim runtime effectiveness.
-- Optional specialist DecisionModel and ContextModel providers remain a proposed Phase 9 optimization only. They do not replace Codex, become required dependencies, or run by default. Shadow evaluation and an explicit, reversible approval precede any active workflow treatment. Their provider settings remain separate from the M9 Codex model/effort selectors.
+- Optional specialist DecisionModel and ContextModel providers are a Phase 9 optimization layer. Jev and ScaleDown adapters are available for explicitly consented shadow trials, while all capabilities remain disabled by default. They do not replace Codex or become required dependencies. Any active workflow treatment requires separate evidence and explicit, reversible approval. Provider settings remain separate from the M9 Codex model/effort selectors.
 
 ## Domain terms and invariants
 

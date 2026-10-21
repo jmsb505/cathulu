@@ -1,9 +1,9 @@
 use cathulu_core::{
     context_extraction::{ContextExtractionCandidate, ContextExtractionCandidateKind},
     optimization::{
-        CapabilitySettings, ContextModel, ContextRequest, ContextResult, InvocationStatus,
-        ModelCallFailure, OptimizationCapability, OptimizationConfig, OptimizationMode,
-        ProviderLocality,
+        CapabilitySettings, ContextModel, ContextModelFuture, ContextRequest, ContextResult,
+        InvocationStatus, ModelCallFailure, ModelResponse, OptimizationCapability,
+        OptimizationConfig, OptimizationMode, ProviderLocality,
     },
     Store,
 };
@@ -131,13 +131,16 @@ impl TestContextModel {
 }
 
 impl ContextModel for TestContextModel {
-    fn process(&self, request: &ContextRequest) -> Result<Option<ContextResult>, ModelCallFailure> {
+    fn process<'a>(&'a self, request: &'a ContextRequest) -> ContextModelFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         *self.last_request.lock().expect("request mutex") = Some(request.clone());
-        match &self.reply {
-            ModelReply::Result(result) => Ok(result.clone()),
-            ModelReply::Error(error) => Err(*error),
-        }
+        let reply = self.reply.clone();
+        Box::pin(async move {
+            match reply {
+                ModelReply::Result(result) => Ok(result.map(ModelResponse::new)),
+                ModelReply::Error(error) => Err(error),
+            }
+        })
     }
 }
 
@@ -273,8 +276,8 @@ fn request_selects_hash_verified_spans_and_keeps_raw_artifact_unchanged() {
     );
 }
 
-#[test]
-fn local_shadow_records_provenance_without_changing_run_qa_or_raw_evidence() {
+#[tokio::test]
+async fn local_shadow_records_provenance_without_changing_run_qa_or_raw_evidence() {
     let fixture = Fixture::new("local-shadow");
     let run_id = fixture.run(ProviderLocality::Local);
     let raw = representative_log();
@@ -293,6 +296,7 @@ fn local_shadow_records_provenance_without_changing_run_qa_or_raw_evidence() {
     let receipt = fixture
         .store
         .run_context_extraction_shadow_trial(run_id, "m17-local-1", &request, &model)
+        .await
         .expect("shadow trial should not block the run")
         .expect("enabled shadow invocation is recorded");
 
@@ -366,8 +370,8 @@ fn local_shadow_records_provenance_without_changing_run_qa_or_raw_evidence() {
     );
 }
 
-#[test]
-fn malformed_or_failed_context_models_are_recorded_as_non_blocking_fallbacks() {
+#[tokio::test]
+async fn malformed_or_failed_context_models_are_recorded_as_non_blocking_fallbacks() {
     let fixture = Fixture::new("fallbacks");
     for (label, reply, expected_status) in [
         (
@@ -395,6 +399,7 @@ fn malformed_or_failed_context_models_are_recorded_as_non_blocking_fallbacks() {
         let receipt = fixture
             .store
             .run_context_extraction_shadow_trial(run_id, &format!("m17-{label}"), &request, &model)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(receipt.status, expected_status);
@@ -430,6 +435,7 @@ fn malformed_or_failed_context_models_are_recorded_as_non_blocking_fallbacks() {
     let receipt = fixture
         .store
         .run_context_extraction_shadow_trial(run_id, "m17-invalid-span", &request, &model)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(receipt.status, InvocationStatus::InvalidResponse);
@@ -452,8 +458,8 @@ fn malformed_or_failed_context_models_are_recorded_as_non_blocking_fallbacks() {
         .any(|event| event.event_type == "context_extraction_shadow_recorded"));
 }
 
-#[test]
-fn remote_and_empty_inputs_skip_model_calls_without_changing_baseline() {
+#[tokio::test]
+async fn remote_opt_in_runs_shadow_and_empty_inputs_skip_without_changing_baseline() {
     let fixture = Fixture::new("skip");
     let remote_run = fixture.run(ProviderLocality::Remote);
     let (artifact_id, _) =
@@ -476,10 +482,11 @@ fn remote_and_empty_inputs_skip_model_calls_without_changing_baseline() {
             &remote_request,
             &remote_model,
         )
+        .await
         .unwrap()
         .unwrap();
-    assert_eq!(remote_receipt.status, InvocationStatus::Skipped);
-    assert_eq!(remote_model.call_count(), 0);
+    assert_eq!(remote_receipt.status, InvocationStatus::Completed);
+    assert_eq!(remote_model.call_count(), 1);
 
     let empty_run = fixture.run(ProviderLocality::Local);
     let (empty_artifact_id, _) =
@@ -499,12 +506,13 @@ fn remote_and_empty_inputs_skip_model_calls_without_changing_baseline() {
             &empty_request,
             &empty_model,
         )
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(empty_receipt.status, InvocationStatus::Skipped);
     assert_eq!(empty_model.call_count(), 0);
 
-    for run_id in [remote_run, empty_run] {
+    for (run_id, expected_status) in [(remote_run, "completed"), (empty_run, "skipped")] {
         assert_eq!(
             fixture.store.get_run(run_id).unwrap().unwrap().status,
             "running"
@@ -517,11 +525,14 @@ fn remote_and_empty_inputs_skip_model_calls_without_changing_baseline() {
             .iter()
             .find(|event| event.event_type == "optimization_invocation_recorded")
             .unwrap();
-        assert_eq!(telemetry.payload["status"], "skipped");
+        assert_eq!(telemetry.payload["status"], expected_status);
         assert_eq!(telemetry.payload["influencedExecution"], false);
-        assert!(!events
-            .iter()
-            .any(|event| event.event_type == "context_extraction_shadow_recorded"));
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| event.event_type == "context_extraction_shadow_recorded"),
+            run_id == remote_run
+        );
     }
 }
 
@@ -624,5 +635,40 @@ fn candidate_kinds_remain_closed_and_versioned() {
     assert_eq!(
         serde_json::to_value(ContextExtractionCandidateKind::Panic).unwrap(),
         Value::String("panic".to_string())
+    );
+}
+
+#[tokio::test]
+async fn shadow_extraction_rejects_artifacts_from_a_different_run_before_model_use() {
+    let fixture = Fixture::new("artifact-run-scope");
+    let trial_run_id = fixture.run(ProviderLocality::Local);
+    let evidence_run_id = fixture.run(ProviderLocality::Local);
+    let (artifact_id, _) = fixture.artifact(
+        evidence_run_id,
+        "other-run.log",
+        "error: evidence belongs to another run\n",
+    );
+    let request = fixture
+        .store
+        .prepare_context_extraction_request(&[artifact_id])
+        .expect("prepare registered artifact request");
+    let model = TestContextModel::error(ModelCallFailure::ProviderUnavailable);
+
+    let error = fixture
+        .store
+        .run_context_extraction_shadow_trial(
+            trial_run_id,
+            "m17-cross-run-artifact",
+            &request,
+            &model,
+        )
+        .await
+        .expect_err("cross-run evidence is rejected");
+
+    assert!(error.contains("same run"));
+    assert_eq!(model.call_count(), 0);
+    assert_eq!(
+        fixture.store.get_run(trial_run_id).unwrap().unwrap().status,
+        "running"
     );
 }

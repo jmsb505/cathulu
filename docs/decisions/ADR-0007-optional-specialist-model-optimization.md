@@ -46,7 +46,7 @@ The user requested that Codex remain the primary reasoning/coding system, that n
 - Shadow experiments establish schema, privacy, fallback, latency, and candidate quality; they do not prove reduced Codex context or workflow time.
 - Every invocation needs treatment attribution and bounded telemetry. Unobservable Codex turns, token use, downstream use, and provider usage remain unknown rather than guessed.
 - Context transformations must retain artifact identity/hash and verifiable source spans or locators. Compressed/extracted content cannot replace its source.
-- A remote adapter cannot be implemented until current primary API/terms/privacy/availability and secure local credential handling have been reviewed.
+- A remote adapter requires current primary API/privacy review, secure local credentials, minimized input, and explicit per-run egress consent. M18a implements only the Jev and ScaleDown shadow adapters under those controls; ScaleDown request-retention terms remain unknown and are disclosed.
 - Jev, ScaleDown, and GLiNER-family models remain evaluation candidates, not required providers or assumed supported APIs.
 - Any active pilot remains per-workflow and reversible. Human approval is required before active execution; no policy adaptation happens automatically.
 - Existing memory authority, provenance, temperature classes, Gardener constraints, and evidence-retention decisions remain unchanged. Candidate memory reranking occurs only after deterministic retrieval and never grants deletion authority.
@@ -59,13 +59,25 @@ M16 implements bounded workflow/delegation schemas, a compact SQLite-derived sta
 
 M17 reads only registered local test/compiler/CI/tool-output artifacts through their existing evidence references. It verifies a stored content hash when present, selects bounded error-adjacent byte spans, and gives a local ContextModel a stable `cathulu://artifacts/{id}` reference rather than a filesystem path. Candidate output is accepted only when its artifact IDs/hashes, schema, selected ranges, exact source quotes, and output size validate. The immutable source remains available for audit and recovery. Invocation metadata and result evidence use existing append-only run events; no migration or second artifact store is needed. Remote providers are skipped because no provider API/terms and local credential path have been approved. The implementation and tests establish the shadow boundary only; a deterministic test double does not establish provider quality or workflow benefit.
 
+## M18a provider connectivity decision
+
+The owner explicitly approved adding optional Jev and ScaleDown connections so local API keys can be configured and shadow testing can proceed. These adapters supplement M16/M17 and preserve the architecture decision above:
+
+- Jev uses TypeSafe’s official POST https://api.typesafe.ai/v1/systemone endpoint with bearer authentication. The request contains only Cathulu’s bounded SQLite routing projection and the predefined workflow/delegation choices. It cannot receive task descriptions, source text, or caller-supplied state.
+- ScaleDown uses its official POST https://api.scaledown.xyz/v1/chat/completions Extract API with x-api-key authentication. It receives only selected spans from registered local test/compiler/CI/tool-output artifacts. Cathulu omits task text, artifact IDs, source references, and local paths; it best-effort masks credential-labeled values and known token formats. Returned quotes must map to exact unmasked bytes in the registered source, and artifacts must belong to the same run.
+- Both providers are selected only by an immutable per-run shadow treatment with remote locality and explicit remoteDataAllowed consent. All capabilities remain disabled by default. Active mode is rejected, and model output does not change routing, context delivery, QA, or verified success.
+- Keys are read from process environment or a local .env.local file; CATHULU_ENV_FILE may name an explicit local file. Only the two documented Cathulu key names are read. Credentials and raw provider bodies are not logged or persisted.
+- The [TypeSafe OpenAPI](https://api.typesafe.ai/openapi.json) and [data-handling FAQ](https://help.typesafe.ai/articles/5974925716-how-is-submitted-data-used-or-retained), and the [ScaleDown Extract API](https://docs.scaledown.ai/api-reference/extract) and [quickstart](https://docs.scaledown.ai/quickstart), were reviewed for request/response shape and egress behavior. The reviewed ScaleDown pages do not state a request-retention period; no retention claim is made.
+- Local loopback HTTP tests use fake keys and do not contact either provider. They validate protocol mapping and safety boundaries, not provider quality or workflow benefit. M18 comparative scoring remains ineligible without representative Cathulu baseline runs; any future active trial needs a pre-registered comparison and separate explicit approval.
+
+Reqwest is kept to JSON, Rustls TLS, and system-proxy support with default features disabled; HTTP/2 is not needed for these provider endpoints. Context7’s documentation lookup had reached its monthly quota, so the current official provider API pages above were used directly.
 ## Evidence
 
 - User's specialist-model architecture request in the current task.
 - Existing source-of-truth constraints in [ADR-0001](ADR-0001-cathulu-is-the-local-evidence-layer.md), [ADR-0002](ADR-0002-cathulu-hosted-agent-selectors.md), [ADR-0003](ADR-0003-managed-local-memory-lifecycle.md), [ADR-0005](ADR-0005-codex-worker-telemetry-and-worktree-verification.md), and [ADR-0006](ADR-0006-local-graphify-snapshot-contract.md).
 - Existing measurement authorities described in [architecture](../architecture.md), [roadmap](../roadmap.md), and [PLAN-003](../plans/PLAN-003-evidence-gated-scaling.md).
 
-This ADR records the accepted architecture boundary and the M16/M17 decisions to keep remote provider use disabled while data-handling and credential questions remain unresolved. M15-M17 foundation implementation is recorded in [PLAN-004](../plans/PLAN-004-optional-specialist-model-optimization.md). No provider integration, live model call, active workflow treatment, or measured optimization result is claimed.
+This ADR records the accepted architecture boundary, the original local-only M16/M17 implementations, and the M18a optional provider adapters. M15-M18a implementation and evidence are recorded in [PLAN-004](../plans/PLAN-004-optional-specialist-model-optimization.md). No live model call, active workflow treatment, or measured optimization result is claimed.
 
 ## Reconsider if
 
