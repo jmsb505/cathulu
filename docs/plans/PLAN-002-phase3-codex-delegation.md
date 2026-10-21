@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: M1-M6 are validated and published to `main`; M7 is implemented and locally validated on `codex/phase3-worker-reports-review`. Publish the validated checkpoint after inspecting remote status; M8 follows publication.
+Status: M1-M7 are validated and published to `main`; M7 is published at `6251515`. M8 is next.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -245,7 +245,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] M5 combined M1-M4 integration gate passed locally on Windows.
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
 - [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
-- [x] Implement and validate M7 locally; Git publication is pending.
+- [x] Implement, validate, and publish M7 to `main` at `6251515`.
 - [ ] Implement and validate M8.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
 
@@ -258,9 +258,10 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: M6 implementation `1814ccd` was pushed to `main` after local validation passed; GitHub returned no status checks and no open pull request for the branch.
 - 2026-10-21: M7 uses additive SQLite schema v6. One immutable 16 KiB schema-v1 worker report may attach to a dispatched delegation. Changed paths are checked against packet scope; artifact and quality-check references are restricted to the parent run; parent quality-check state and details hashes are snapshotted. Report/review requests are idempotent, key values are hashed, reviews are append-only, and worker outcomes do not affect parent-run quality. Referenced report artifacts are protected from orphan collection.
 - 2026-10-21: The dashboard adds up to ten recently active delegation/report summaries as a read-only snapshot. React checks cover semantic labels/read-only states and responsive breakpoints are defined at 900px/620px. Browser viewport inspection could not run because available browser contexts could not reach the local Windows loopback server; no visual pass is claimed.
+- 2026-10-21: M7 commit `6251515156c033e15b276bacc73b54df92101643` was pushed as a fast-forward to `main` after local validation. GitHub's combined status response contained no status checks.
 
 ## Completion evidence
 
 M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. Commit `1814ccd` is published to `main`. GitHub reported no status checks for the commit; all applicable local gates passed.
 
-M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Git publication and remote status inspection remain pending. Each milestone must record source-of-truth documentation and its Git checkpoint.
+M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Commit `6251515` is published to `main`; GitHub returned no status checks. Each milestone must record source-of-truth documentation and its Git checkpoint.

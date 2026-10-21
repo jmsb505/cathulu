@@ -79,8 +79,8 @@
       "type": "RUNTIME",
       "locator": "M7 structured worker-report tests, full workspace validation, Windows MCP/Tauri integration smoke, and desktop checks",
       "date": "2026-10-21",
-      "revision": null,
-      "scope": "21 Rust tests passed with one dedicated integration test ignored by default; 3 React tests, formatting, frontend build, and disposable MCP/Tauri/Windows desktop/restart smoke passed. Semantic/read-only React assertions and 900px/620px responsive rules were checked. Direct browser viewport inspection could not connect to the local Windows loopback server. Milestone branch publication is pending."
+      "revision": "6251515156c033e15b276bacc73b54df92101643",
+      "scope": "21 Rust tests passed with one dedicated integration test ignored by default; 3 React tests, formatting, frontend build, and disposable MCP/Tauri/Windows desktop/restart smoke passed. Semantic/read-only React assertions and 900px/620px responsive rules were checked. Direct browser viewport inspection could not connect to the local Windows loopback server. Published to main by fast-forward; GitHub returned no status checks."
     }
   ],
   "claims": [
@@ -278,5 +278,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "Publish the validated Phase 3 M7 checkpoint after checking remote status, then start M8: record and reconcile verifiable worktree isolation and supported worker telemetry. Keep worker reports separate from parent-run quality. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
+  "next_action": "Start Phase 3 M8: record and reconcile verifiable worktree isolation and supported worker telemetry. Keep worker reports separate from parent-run quality. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
 }

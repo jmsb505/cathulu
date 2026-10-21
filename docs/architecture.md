@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M6 are published on Windows; M7 is implemented and locally validated on its milestone branch, with publication pending. The live owner Codex MCP connection remains an owner-controlled follow-up.
+Status: product boundaries are NORMATIVE. M1-M7 are validated and published on Windows; M7 is on `main` at `6251515`. The live owner Codex MCP connection remains an owner-controlled follow-up.
 
 ## System boundary
 
