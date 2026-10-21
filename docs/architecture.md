@@ -1,6 +1,6 @@
 # Cathulu architecture and development profile
 
-Status: product boundaries are NORMATIVE. M1-M5 are validated and published on Windows. M6 delegation identity and packet tracking pass the full Windows validation gate on `codex/phase3-delegation-contract`; publication is pending. The live owner Codex MCP connection remains an owner-controlled follow-up.
+Status: product boundaries are NORMATIVE. M1-M6 are validated and published on Windows; M6 is on `main` at `1814ccd`. The live owner Codex MCP connection remains an owner-controlled follow-up.
 
 ## System boundary
 

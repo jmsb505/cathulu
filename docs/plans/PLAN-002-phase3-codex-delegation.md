@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: READY TO PUBLISH; M5 integration and its documentation are published to `main` at `744a428`; M6 implementation and full Windows validation pass locally on `codex/phase3-delegation-contract`.
+Status: M1-M6 are validated and published to `main`; M6 is published at `1814ccd`. M7 is next.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -243,7 +243,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Current Codex documentation checked for model/effort and custom-agent per-role settings.
 - [x] M5 combined M1-M4 integration gate passed locally on Windows.
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
-- [ ] Publish the validated M6 Git checkpoint to `main` and record its revision.
+- [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
 - [ ] Implement and validate M7.
 - [ ] Implement and validate M8.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
@@ -254,7 +254,8 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: Cathulu will prepare and record native delegation; it will not spawn agents, create/delete worktrees, run tools, accept code, or mutate Codex configuration through MCP.
 - 2026-10-21: M5 uses a disposable repo/database and verifies shared MCP/Tauri SQLite state and restart Git reconciliation.
 - 2026-10-21: M6 uses SQLite schema v5, structured 16 KiB task packets, hashed retry/correlation identifiers, scope-checked memory/artifact links, and lifecycle events in the existing append-only journal. Dispatch records a native Codex handoff action but does not start a worker.
+- 2026-10-21: M6 implementation `1814ccd` was pushed to `main` after local validation passed; GitHub returned no status checks and no open pull request for the branch.
 
 ## Completion evidence
 
-M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. The milestone branch commit and publication to `main` remain pending. Each later milestone must record exact validation output, source-of-truth documentation, and Git checkpoint.
+M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. Commit `1814ccd` is published to `main`. GitHub reported no status checks for the commit; all applicable local gates passed. Each later milestone must record exact validation output, source-of-truth documentation, and Git checkpoint.

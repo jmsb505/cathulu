@@ -3,7 +3,7 @@
   "phase": "CHECKPOINTED",
   "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
   "last_updated": "2026-10-21",
-  "repository_revision": "e29c90f16f78b04c71ea231f2878d31f6cc91d88",
+  "repository_revision": "1814ccdb7199fcd293aa1b55e627edab33eec18c",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -67,6 +67,13 @@
       "date": "2026-10-21",
       "revision": "e29c90f16f78b04c71ea231f2878d31f6cc91d88",
       "scope": "Disposable Git/SQLite integration passed through MCP, Tauri dashboard IPC, Windows desktop startup, process restarts, QA and Git freshness reconciliation"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "M6 delegation lifecycle tests, full workspace validation, Windows build, and shared-store integration smoke",
+      "date": "2026-10-21",
+      "revision": "1814ccdb7199fcd293aa1b55e627edab33eec18c",
+      "scope": "19 Rust tests passed with one dedicated integration test ignored by default; 3 React tests, formatting, frontend build, Windows no-bundle build, and disposable MCP/Tauri/restart smoke passed. Published to main; GitHub reported no status checks."
     }
   ],
   "claims": [
@@ -264,5 +271,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M1-M5 are validated and published to main at e29c90f16f78b04c71ea231f2878d31f6cc91d88. Start Phase 3 M6 delegation contracts using docs/plans/PLAN-002-phase3-codex-delegation.md. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
+  "next_action": "Start Phase 3 M7: add structured worker report submission and explicit review, then present report and delegation state in the existing read-only dashboard. Keep report submission separate from parent-run acceptance and quality status. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
 }
