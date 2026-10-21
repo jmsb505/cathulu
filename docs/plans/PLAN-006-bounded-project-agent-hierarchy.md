@@ -1,6 +1,6 @@
 # PLAN-006 — Bounded per-project agent hierarchy
 
-Status: M20 role contract, M21 nested-spawn capability probe, M22 deterministic hierarchy admission, and M23 memory-gated activation are implemented and validated on Windows. M24-M25 remain pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with role-specific memory-tool availability and hook correlation still open.
+Status: M20-M23 are implemented and validated on Windows. M24's truthful activity graph, portfolio-wide Main view, project-focus filter, per-project monitor, and automated checks are implemented; native Windows visual smoke and review are still required. M25 remains gated on an owner-selected real task. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with role-specific memory-tool availability still open and no hook events observed in that probe.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -270,37 +270,42 @@ Expected Git checkpoint: validated memory-activation milestone branch and cohere
 
 Goal: show truthful, role-labeled Main → Project Manager → Worker activity for independent project runs.
 
+Design direction: make the recorded activity graph the first view and keep detail progressive. The default is a portfolio overview with exactly one stable Main Overseer root and a separate project lane for each registered project; lanes show only that project's latest running or recent run and explicit delegation relationships. Project chips are visualization filters that focus one lane and its run history; they do not select an orchestrator or alter project assignment. The owner can return to `All projects` at any time. Illustrative cross-project edges, agent names, metrics, and percentages from the rough canvas are not Cathulu evidence and must not appear. Use the existing React/CSS stack for this fixed topology rather than adding a graph library. Chats are session representations of the same Main role, not separate Main agents. Only a linked `SubagentStart` without a later `SubagentStop`, while its run remains `running`, may pulse as observed active. A recorded dispatch without linked hook activity is `unobserved`, never active. M21 surfaced no hook events, so unobserved states are expected and the dashboard must communicate that state without implying a proven idle agent. The application surface must fit its native window without document-level scrollbars; content should be compacted or contained in its own view where necessary. Keep the detached monitor as a separate compact per-project board; do not shrink the main dashboard into it. Native window and document corners must remain transparent, with a low-opacity clipped CSS surface rather than a native full-window material.
+
 Subtasks:
 
-- [ ] Extend the existing read-only snapshot with explicit hierarchy relationships and coarse lifecycle/tool activity supported by existing hooks.
-- [ ] Correlate observed start/stop events only through stable hashes and explicit delegation references; retain privacy minimization.
-- [ ] Show one project graph at a time, with accurate active/blocked/stopped/idle states and no inferred cross-project edges.
-- [ ] Add a clear telemetry-unavailable state that distinguishes missing hook data from a proven idle agent.
-- [ ] Keep the compact floating monitor focused on each project's state; show real hierarchy/activity only when expanded.
+- [x] Extend the existing read-only snapshot with stable project IDs, explicit hierarchy relationships, and coarse hook activity.
+- [x] Correlate observed start/stop events only through stable hashes and explicit delegation references; keep unbound hooks separate and retain privacy minimization.
+- [x] Default to one portfolio graph with one Main root and project-scoped lanes; allow explicit project focus and per-project run history without implying multiple Main identities.
+- [x] Add a clear unobserved state that distinguishes missing hook data from a proven idle agent.
+- [x] Keep the compact floating monitor focused on each project's state; show short project rows when expanded.
 
 Affected areas: `src/telemetry.rs`, `src/dashboard.rs`, `apps/desktop/src/App.tsx`, `apps/desktop/src/style.css`, Tauri snapshot types, and UI documentation.
 
-Dependencies: M21 runtime events, M22 hierarchy relationships, M23 activation evidence.
+Dependencies: M21 nested-spawn capability findings (including the absence of hook events in the probe), M22 hierarchy relationships, M23 activation evidence. Hook-backed activity remains conditional on observed/bound hook events and is not assumed by the graph.
 
 Acceptance criteria:
 
-- [ ] A recorded run renders one Main root and only real, linked Project Manager/Worker nodes.
-- [ ] A completed or failed child remains visible as history without pulsing as active.
-- [ ] Missing telemetry never creates an active node or percentage.
-- [ ] Independent projects have separate graphs, tasks, and memory scopes.
-- [ ] The dashboard remains read-only.
+- [x] A recorded run renders one Main root; manager and worker nodes follow explicit persisted assignment/parent relationships.
+- [x] The default dashboard shows the same single Main Overseer connected to every registered project's latest recorded activity; project selection is clearly labeled as a focus filter and can return to All projects.
+- [x] Main remains the same global coordinator identity across project/run views; the selected run does not create another Main agent.
+- [x] A completed or failed child remains visible as history without pulsing as active.
+- [x] Missing telemetry never creates an active node or percentage.
+- [x] Independent projects have separate graphs, tasks, and memory scopes.
+- [x] The dashboard remains read-only.
 
 Validation:
 
-- [ ] Frontend build and Rust snapshot checks.
-- [ ] Windows manual smoke with one recorded hierarchy, missing telemetry, stopped/blocked run, and multiple independent projects.
-- [ ] Reduced-motion/compact monitor behavior and `git diff --check`.
+- [x] Frontend build and Rust snapshot checks.
+- [x] Main dashboard root/document sizing prevents body-margin overflow and page-level horizontal/vertical scrollbars.
+- [ ] Windows native manual smoke with one recorded hierarchy, missing telemetry, stopped/blocked run, independent projects, transparent corners, dragging, always-on-top, and compact/expanded sizing.
+- [x] Reduced-motion/reduced-transparency behavior and `git diff --check`.
 
-Documentation updates: ADR-0008 compatibility note if necessary, architecture, roadmap, README, and this plan.
+Documentation updates: ADR-0008, architecture, roadmap, README, and this plan.
 
 Applicable specialized skills: `milestone-delivery`, `ui-ux-research`, `redesign-existing-projects`, `impeccable`, `apple-design`, `emil-design-eng`.
 
-Expected Git checkpoint: validated dashboard hierarchy milestone branch after Windows native smoke.
+Expected Git checkpoint: M24 branch and review request after automated validation; merge remains gated on Windows native visual smoke.
 
 ### M25 — Independent project-run verification
 
@@ -377,4 +382,12 @@ M20 documentation delivery (2026-10-21): added the normative Main/Project Manage
 M21 capability probe (2026-10-21): Cathulu run 4 is `verified_success`; the Main spawned one PM and the PM spawned one Worker, with delegations 1 and 2 recorded as dispatched and the Worker report submitted. No project repository was accessed. Main, PM, and Worker each reached Cathulu MCP, but the PM lacked `read_memories` while the Worker had it. HOT/WARM memory was empty; “no relevant memory” was recorded in the run, while `prepare_context_transfer` could not encode an empty transfer. No hooks surfaced, so no hierarchy edge was inferred. M21 closes the nested-spawn capability gate; M22 handles deterministic hierarchy, M23 addresses activation/tool parity, and M24 remains responsible for hook-backed graph evidence.
 
 M23 implementation and validation (2026-10-21): migration 11 adds append-only revisioned activation receipts and references. A ready receipt is tied to a successful bounded memory search event for the exact delegation run and receiver; selected memories must pass existing acceptance, freshness, scope, temperature, HOT-budget, transfer, and known-by rules. A structured `no_relevant_memory` disposition supports empty candidate sets without fabricating memory IDs. The latest ready receipt is required before Cathulu records dispatch; missing/incomplete cases append a run admission rejection. Local Windows validation passed formatting, 12 delegation lifecycle tests, the full offline workspace suite (74 passed, 1 existing desktop test ignored), and `git diff --check`. The default-sandbox Tauri build initially failed with Windows access denied; the same suite passed with the build permission required by that script. No project repository was accessed. M23 does not resolve the M21 PM memory-tool availability difference or native caller attribution; those remain explicit runtime limitations.
+
+M24 implementation and automated validation (2026-10-21): added a project-ID-scoped read-only graph for Main, explicitly assigned Project Managers, and parent-linked Workers; hook observations without a delegation binding stay in a separate unlinked strip. The dashboard marks dispatches without linked starts unobserved, and only a linked start on a running run may pulse as active. Added project IDs to dashboard run/blocker/delegation records, a bounded hook-activity projection, separate dashboard/monitor Tauri capabilities, and a 148×42 compact / 324×204 expanded always-on-top monitor with a transparent document and clipped low-opacity glass. Rust workspace tests passed (74 passed, 1 existing ignored), frontend tests passed (4), the frontend build passed, and formatting passed. Automated coverage includes real and missing hierarchy links, unlinked hooks, stop state, and project isolation. Native Windows visual smoke has not been performed; M24 is therefore not complete and must not merge until that smoke passes.
+
+Logical identity clarification (2026-10-21): the owner clarified that one logical Main Overseer exists portfolio-wide while multiple Codex chats may represent or resume that role. Updated ADR-0009 and the normative agent contract. M24 now renders a stable coordinator node without run-specific identity or an active-work pulse; project/run context remains in the graph toolbar. This is a presentation and role-contract invariant, not runtime chat authentication or a cross-chat lock.
+
+Portfolio observability clarification (2026-10-21): the owner could not tell what the project chips controlled and could not see Main's interactions with all projects at once. M24 therefore defaults to an `All projects` portfolio graph with one Main root and one latest-activity lane per project; choosing a project explicitly narrows the view. The visible global scrollbars came from the default body margin combined with a viewport-sized root; the desktop document now resets margin, uses border-box sizing, and clips the app viewport. Current frontend validation: `npm test -- --run` — 5 passed; `npm run build` — passed; `git diff --check` — passed. The native Windows viewport-fit and monitor smoke remains required before merge; no native visual pass is claimed.
+
+Compact monitor regression correction (2026-10-21): the final monitor CSS reintroduced 4px root padding after the global border-box reset. Since the detached window is only 148×42 logical pixels, the glass surface contracted to 140×34 and its controls lost usable space. The monitor root now has zero padding so the glass uses the full native window bounds; the dashboard viewport and scroll fix are unchanged. Validation: `cargo test --workspace` — 74 passed, 1 ignored; `cargo fmt --all -- --check` — passed; `npm test -- --run` — 5 passed; `npm run build` — passed; `git diff --check` — passed. Native Windows monitor interaction still needs visual smoke before M24 can merge.
 

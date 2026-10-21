@@ -122,6 +122,7 @@ pub struct WorkerReportReviewResult {
 #[serde(rename_all = "camelCase")]
 pub struct DashboardDelegationSummary {
     pub id: i64,
+    pub project_id: i64,
     pub project_name: String,
     pub task_title: String,
     pub run_id: i64,
@@ -1401,7 +1402,7 @@ impl Store {
         let rows = connection
             .raw()
             .prepare(
-                "SELECT d.id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
+                "SELECT d.id, d.project_id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
                         MAX(d.updated_at, COALESCE(wr.reported_at, 0),
                             COALESCE((SELECT MAX(review.created_at) FROM worker_report_reviews review
                                       WHERE review.report_id = wr.id), 0)), d.parent_delegation_id,
@@ -1415,23 +1416,24 @@ impl Store {
                  JOIN tasks t ON t.id = d.task_id
                  JOIN runs r ON r.id = d.run_id
                  LEFT JOIN worker_reports wr ON wr.delegation_id = d.id
-                 ORDER BY 9 DESC, d.id DESC LIMIT ?1",
+                 ORDER BY 10 DESC, d.id DESC LIMIT ?1",
             )
             .map_err(sqlite_error)?
             .query_map(params![limit.clamp(1, 20) as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(sqlite_error)?
@@ -1441,6 +1443,7 @@ impl Store {
             .map(
                 |(
                     id,
+                    project_id,
                     project_name,
                     task_title,
                     run_id,
@@ -1455,6 +1458,7 @@ impl Store {
                 )| {
                     Ok(DashboardDelegationSummary {
                         id,
+                        project_id,
                         project_name,
                         task_title,
                         run_id,

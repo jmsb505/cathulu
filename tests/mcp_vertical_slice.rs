@@ -2582,6 +2582,20 @@ fn subagent_hook_telemetry_requires_explicit_run_scoped_binding_and_stays_privat
     ));
     assert_eq!(duplicate_binding["hookEventId"], json!(hook_event_id));
 
+    let unlinked_start = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStart",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "agent_id": "m8-unlinked-agent-id",
+            "agent_type": "worker",
+            "model": "gpt-5-codex"
+        }),
+    ));
+    assert_eq!(unlinked_start["recorded"], json!(true));
+
     let stop = tool_text(&call_tool(
         &data_dir,
         "record_codex_hook_event",
@@ -2595,6 +2609,19 @@ fn subagent_hook_telemetry_requires_explicit_run_scoped_binding_and_stays_privat
         }),
     ));
     assert_eq!(stop["recorded"], json!(true));
+    let unlinked_stop = tool_text(&call_tool(
+        &data_dir,
+        "record_codex_hook_event",
+        json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "m8-private-parent-session",
+            "turn_id": "m8-private-parent-turn",
+            "agent_id": "m8-unlinked-agent-id",
+            "agent_type": "worker",
+            "model": "gpt-5-codex"
+        }),
+    ));
+    assert_eq!(unlinked_stop["recorded"], json!(true));
 
     let reopened = run_initialized_server(
         &data_dir,
@@ -2609,6 +2636,7 @@ fn subagent_hook_telemetry_requires_explicit_run_scoped_binding_and_stays_privat
                 "resources/read",
                 json!({ "uri": format!("cathulu://events/run/{run_id}") }),
             ),
+            request(4, "resources/read", json!({ "uri": "cathulu://dashboard" })),
         ],
     );
     let delegation = resource_text(response(&reopened, 2));
@@ -2624,6 +2652,16 @@ fn subagent_hook_telemetry_requires_explicit_run_scoped_binding_and_stays_privat
         delegation.pointer("/workerTelemetry/events/1/eventKind"),
         Some(&json!("stopped"))
     );
+    assert_eq!(delegation.get("projectId"), Some(&json!(project_id)));
+    let dashboard = resource_text(response(&reopened, 4));
+    assert_eq!(dashboard["recentRuns"][0]["projectId"], json!(project_id));
+    assert_eq!(dashboard["delegations"][0]["projectId"], json!(project_id));
+    assert_eq!(dashboard["agentActivity"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        dashboard["agentActivity"][0]["lastEventKind"],
+        json!("stopped")
+    );
+    assert_eq!(dashboard["agentActivity"][0]["eventCount"], json!(2));
     let history = resource_text(response(&reopened, 3)).to_string();
     for private_value in [
         "m8-private-parent-session",
