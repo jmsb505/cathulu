@@ -16,8 +16,9 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 - M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`. M11 is validated and published as `e18dc46` (PR #1).
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
-- The 2026-10-21 entry-gate audit was rechecked after M11 publication: `CATHULU_DATA_DIR` is unset, the default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` database is absent, `codex mcp list` has no Cathulu server, and there is no project-root Graphify snapshot. Graphify 0.9.82 remains available through the existing user Python site package; the pilot snapshot is ignored and temporary.
-- The local MCP registration and Cathulu project resource were verified during this continuation. No qualifying recurring cross-project workflow is currently available to evaluate.
+- The earlier pre-onboarding environment audit is historical; it does not describe the current local MCP state.
+- The 2026-10-21 live `cathulu://projects` and `cathulu://dashboard` snapshots confirm that the local MCP responds and lists Cathulu (project id 1, branch `main`, HEAD `3fbd0e9`, dirty with documentation changes) and `artificial_inc` (project id 2, branch `codex/ayni-studio-m1-scaffold`, HEAD `b505cd2`, dirty). The dashboard reports no recent runs, objectives, blockers, or failed checks, and all memory, transfer, and SQLite storage counters are zero; no verified Cathulu product-run cohort exists yet.
+- No qualifying recurring cross-project workflow is available. The owner has deferred cross-repository handoff checks until real work naturally spans repositories; the registered `artificial_inc` project currently has no task to use for that evaluation.
 - M10 is not eligible under the currently observed work pattern. Do not infer dependencies, combine unrelated repository tasks, or manufacture cross-project evidence. Reconsider M10 if a naturally recurring task crosses repositories.
 - Backlog only: when real work naturally spans repositories, capture and evaluate the actual cross-repository handoff and its dependency/context evidence. No current task is available for this check, and it does not block unrelated tests, maintenance, or independently eligible milestones. Do not manufacture a task or treat a static dependency audit as proof of a successful handoff.
 
@@ -344,7 +345,7 @@ M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --wo
 
 Non-gating Windows regression validation on 2026-10-21: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed (37 passed, one dedicated integration test ignored by default); `scripts/phase1-m4-integration-smoke.ps1` passed (the dedicated MCP/Tauri shared-state and restart test, no-bundle desktop build/startup, and persisted MCP read); `npm test -- --run` passed (5 tests); `npm run build` passed; and `git diff --check` passed. This validates existing seams but does not satisfy the real-work evidence gates for M10 or M12-M14.
 
-M11 was merged to `main` at `e18dc46` through PR #1. The initial pre-onboarding check found no Cathulu MCP registration or database. Since then, the local MCP has been configured and Cathulu registered; no real run history exists yet.
+M11 was merged to `main` at `e18dc46` through PR #1. The latest dashboard snapshot confirms the MCP is configured and Cathulu is registered, but there are no real runs or comparable task outcomes yet. This live evidence does not satisfy the M10 or M12-M14 product-evidence gates.
 
 M10 and M12-M14 are not claimed complete. M10 is not eligible under current evidence because no qualifying recurring cross-project workflow has been observed; its gate requires naturally recurring cross-project context reconstruction and must not be manufactured. M12-M14 need completed, comparable real runs. Synthetic fixture tests validate mechanics only and do not satisfy those product-evidence gates.
 
