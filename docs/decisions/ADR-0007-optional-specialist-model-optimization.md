@@ -51,13 +51,17 @@ The user requested that Codex remain the primary reasoning/coding system, that n
 - Any active pilot remains per-workflow and reversible. Human approval is required before active execution; no policy adaptation happens automatically.
 - Existing memory authority, provenance, temperature classes, Gardener constraints, and evidence-retention decisions remain unchanged. Candidate memory reranking occurs only after deterministic retrieval and never grants deletion authority.
 
+## M16 implementation decision
+
+M16 implements bounded workflow/delegation schemas, a compact SQLite-derived state projection, local-only shadow evaluation, and an append-only post-run review event. No remote provider adapter or model call is included. Context7's current-documentation lookup returned a monthly quota limit, so the current Jev AI API documentation, service terms, and API repository README were checked directly. The API page documents a remote endpoint, bearer-key requirement, model IDs, request schema, and response shape; the repository describes thejevai.com as an independent app rather than the official site for the underlying Jev model. The published terms do not establish request retention/data handling, model-operator identity, or Cathulu's secure credential path. The M16 runner records remote configurations as skipped without calling the service until those items are verified. This keeps Jev as a candidate and does not alter the all-disabled baseline.
+
 ## Evidence
 
 - User's specialist-model architecture request in the current task.
 - Existing source-of-truth constraints in [ADR-0001](ADR-0001-cathulu-is-the-local-evidence-layer.md), [ADR-0002](ADR-0002-cathulu-hosted-agent-selectors.md), [ADR-0003](ADR-0003-managed-local-memory-lifecycle.md), [ADR-0005](ADR-0005-codex-worker-telemetry-and-worktree-verification.md), and [ADR-0006](ADR-0006-local-graphify-snapshot-contract.md).
 - Existing measurement authorities described in [architecture](../architecture.md), [roadmap](../roadmap.md), and [PLAN-003](../plans/PLAN-003-evidence-gated-scaling.md).
 
-This ADR accepts architecture boundaries only. It does not claim a provider/API validation, implementation, active workflow treatment, or measured optimization result.
+This ADR records the accepted architecture boundary and the M16 decision to keep remote provider use disabled while data-handling and credential questions remain unresolved. M15/M16 foundation implementation is recorded in [PLAN-004](../plans/PLAN-004-optional-specialist-model-optimization.md). No provider integration, live model call, active workflow treatment, or measured optimization result is claimed.
 
 ## Reconsider if
 
