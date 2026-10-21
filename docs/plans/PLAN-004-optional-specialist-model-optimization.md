@@ -274,7 +274,7 @@ Validation includes seven integration tests and a locally generated failing Rust
 - Run the context extraction suite, including same-run artifact ownership and unchanged raw evidence, plus decision-trial tests and the full Rust workspace suite.
 - Check formatting, dependency lock consistency, and Git whitespace. Do not claim live provider quality, retention terms, or workflow value from local mocks.
 
-**Expected checkpoint:** local connector readiness. Live shadow trials begin only after the owner adds the chosen keys locally and explicitly starts a consented remote shadow run. M18 comparative scoring and any active treatment remain separately gated.
+**Expected checkpoint:** local connector readiness. The first consented Jev workflow-routing shadow trial is now recorded in the evidence section below. Further live trials require explicit per-run remote consent. M18 comparative scoring and any active treatment remain separately gated.
 
 **Public MCP contract follow-up (2026-10-21):** a real MCP subprocess test supplies an immutable run treatment for Jev workflow routing and ScaleDown extraction, removes both provider keys from the child process, and points `CATHULU_ENV_FILE` at a nonexistent file. Both public shadow tools return `skipped` and append attributed invocation events with `fallbackUsed=true` and `influencedExecution=false`. The run and pending QA check are byte-for-byte equivalent before and after the calls; the raw local test artifact remains unchanged. This closes the public tool/fallback test gap without making a live provider call. It validates missing-key behavior only, not provider response quality or product value.
 
