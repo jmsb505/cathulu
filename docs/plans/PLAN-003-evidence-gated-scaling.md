@@ -1,6 +1,6 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: Planned after Phase 3. M9 validation is complete on its milestone branch; M10-M14 remain conditional on the evidence gates below.
+Status: Planned after Phase 3. M9 is validated and published to `main`; M10-M14 remain conditional on the evidence gates below.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -14,7 +14,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 ## Current state
 
-- M1-M8 are validated and published to `main`; M9 validation is complete on its milestone branch, with publication pending the final checkpoint.
+- M1-M9 are validated and published to `main`; M9 implementation is `f2381ae`.
 - M4 already supplies stable scopes, HOT budgets, known-by state, transfer records, SQL/FTS retrieval, policy comparisons, storage snapshots, and health metrics. Later milestones must extend these authorities rather than create parallel ones.
 - The current process/user `CATHULU_DATA_DIR` and default `LOCALAPPDATA\Cathulu\cathulu.sqlite3` locations had no database on 2026-10-21. `codex mcp list` also showed no Cathulu server in the current local Codex profile. No repository `graphify-out/graph.json` snapshot exists, and the Graphify CLI is not installed.
 - No live Cathulu run corpus is available in the current local Codex profile to support M10, M12, M13, or M14 entry decisions. Other profiles or separately configured MCP launch environments were not inspected.
@@ -291,7 +291,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
 - [x] Check current local evidence for the M10-M14 entry gates without reading raw user memory: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, no Graphify snapshot, and no Graphify CLI were found on 2026-10-21.
 - [x] Validate M9 with explicit per-preview target selection and no implicit target.
-- [ ] Publish the validated M9 checkpoint and record its revision.
+- [x] Publish the validated M9 checkpoint `f2381ae` and record its revision.
 - [x] Re-evaluate the M10-M14 entry gates after M9; the live local run-data gate remains unmet.
 - [ ] Collect real local Cathulu runs and evaluate M10-M14 gates in sequence.
 

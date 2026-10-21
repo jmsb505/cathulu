@@ -249,6 +249,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] Implement, validate, and publish M8 to `main` at `aecac57`.
 - [x] Implement the M9 settings surface with explicit per-preview project, user-base, user-profile, and export-only choices.
 - [x] Implement safe configuration preview/apply/export behavior and validate with local, disposable fixtures.
+- [x] Publish the validated M9 checkpoint to `main` at `f2381ae` after local checks.
 
 ## Implementation discoveries / decisions
 
@@ -277,3 +278,5 @@ M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passe
 M8 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --target-dir target\m8-integration-smoke --workspace` passed 23 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that integration path with an actual linked worker worktree, report verification through MCP and Tauri, Windows desktop startup, and persisted MCP reads after restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Commit `aecac57777fdf31c021553bce8a30164a9444e07` was pushed as a fast-forward to `main`. GitHub returned no status checks and no workflow runs. The live owner Codex hook trust/configuration path remains unmodified and unverified.
 
 M9 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 33 tests with one dedicated Tauri integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the ignored MCP/Tauri shared-state and restart test, the no-bundle Windows desktop build/startup, persisted MCP reads after restart, and a verified Git refresh; `npm test -- --run` passed 5 tests; `npm run build` passed; and `git diff --check` passed. Rust tests exercised bundled catalog allowlisting, preference persistence, separate project/user/profile/export target resolution, TOML preservation, backup creation, stale-preview refusal, malformed/missing named-agent handling, and explicit Tauri preview/apply. All config writes used disposable files; the owner's Codex config was not changed. The live browser could not reach the Windows loopback preview, so no viewport visual pass is claimed; React semantics, responsive rules, and the prior clean design-detector result were checked, and small settings text colors were darkened after a manual contrast calculation. Runtime effectiveness and account availability remain unverified.
+
+M9 implementation commit `f2381aea6de57b6473245b4eddd051b1ef0010c2` was fast-forwarded to `main` after local validation. GitHub returned no status checks for the commit.
