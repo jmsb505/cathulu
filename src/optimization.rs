@@ -7,10 +7,13 @@ use crate::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 pub const OPTIMIZATION_SCHEMA_VERSION: u16 = 1;
+pub const DECISION_SCHEMA_VERSION: u16 = 1;
 const MAX_DECISION_STATE_BYTES: usize = 16 * 1024;
+const MAX_DECISION_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_CONTEXT_INPUT_BYTES: usize = 512 * 1024;
 const MAX_CONTEXT_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -284,10 +287,320 @@ impl DecisionRequest {
         if self.allowed_outcomes.is_empty() || self.allowed_outcomes.len() > 64 {
             return Err("decision requests need between 1 and 64 allowed outcomes".to_string());
         }
+        let mut seen = BTreeSet::new();
         for outcome in &self.allowed_outcomes {
             validate_identifier("decision outcome", outcome, 80)?;
+            if !seen.insert(outcome) {
+                return Err("decision outcomes must be unique".to_string());
+            }
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingDecisionSchema {
+    WorkflowClass,
+    DelegationStrategy,
+}
+
+impl RoutingDecisionSchema {
+    pub fn capability(self) -> OptimizationCapability {
+        match self {
+            Self::WorkflowClass => OptimizationCapability::WorkflowRouting,
+            Self::DelegationStrategy => OptimizationCapability::DelegationRouting,
+        }
+    }
+
+    pub fn allowed_outcomes(self) -> &'static [&'static str] {
+        match self {
+            Self::WorkflowClass => &[
+                "bug_fix",
+                "feature",
+                "dependency_fix",
+                "architecture",
+                "research",
+                "verification",
+                "other",
+                "unknown",
+                "insufficient_context",
+                "needs_codex",
+                "needs_more_evidence",
+                "not_applicable",
+            ],
+            Self::DelegationStrategy => &[
+                "main_only",
+                "sub_overseer",
+                "worker",
+                "sub_plus_worker",
+                "unknown",
+                "insufficient_context",
+                "needs_codex",
+                "needs_more_evidence",
+                "not_applicable",
+            ],
+        }
+    }
+
+    pub fn request(self, state: &RoutingDecisionState) -> Result<DecisionRequest, String> {
+        let request = DecisionRequest {
+            capability: self.capability(),
+            schema_version: DECISION_SCHEMA_VERSION,
+            state: serde_json::to_value(state)
+                .map_err(|error| format!("cannot encode routing decision state: {error}"))?,
+            allowed_outcomes: self
+                .allowed_outcomes()
+                .iter()
+                .map(|outcome| (*outcome).to_string())
+                .collect(),
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+/// A deliberately small projection of existing SQLite state for shadow routing.
+/// It contains no repository path, changed-file names, task text, run summary,
+/// artifact body, memory content, or transcript.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoutingDecisionState {
+    pub schema_version: u16,
+    pub run_status: String,
+    pub task_record_present: bool,
+    pub task_status: Option<String>,
+    pub objective_record_present: bool,
+    pub workflow_version_present: bool,
+    pub project_dirty: bool,
+    pub changed_path_count: u32,
+    pub mandatory_check_count: u32,
+    pub mandatory_failed_count: u32,
+    pub mandatory_pending_count: u32,
+    pub mandatory_inconclusive_count: u32,
+    pub active_worker_count: u32,
+    pub active_sub_overseer_count: u32,
+}
+
+impl Store {
+    /// Builds decision inputs from authoritative run/project/delegation rows.
+    /// Free-form task and repository content is intentionally excluded.
+    pub fn routing_decision_state(&self, run_id: i64) -> Result<RoutingDecisionState, String> {
+        let run = self
+            .get_run(run_id)?
+            .ok_or_else(|| format!("run {run_id} was not found"))?;
+        let project = self
+            .get_project(run.project_id)?
+            .ok_or_else(|| format!("project {} for run {run_id} was not found", run.project_id))?;
+        let task_status = run
+            .task_id
+            .map(|task_id| self.get_task(task_id))
+            .transpose()?
+            .flatten()
+            .map(|task| task.status);
+        let connection = self.connection()?;
+        let (active_worker_count, active_sub_overseer_count): (i64, i64) = connection
+            .raw()
+            .query_row(
+                "SELECT
+                   COALESCE(SUM(CASE WHEN role = 'worker' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN role = 'sub_overseer' THEN 1 ELSE 0 END), 0)
+                 FROM delegations
+                 WHERE run_id = ?1 AND status IN ('prepared', 'dispatched')",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(sqlite_error)?;
+        let mandatory_checks = run.checks.iter().filter(|check| check.mandatory);
+        let mandatory_check_count = mandatory_checks.clone().count();
+        let mandatory_failed_count = mandatory_checks
+            .clone()
+            .filter(|check| check.status == "failed")
+            .count();
+        let mandatory_pending_count = mandatory_checks
+            .clone()
+            .filter(|check| check.status == "pending")
+            .count();
+        let mandatory_inconclusive_count = mandatory_checks
+            .filter(|check| check.status == "inconclusive")
+            .count();
+
+        Ok(RoutingDecisionState {
+            schema_version: DECISION_SCHEMA_VERSION,
+            run_status: run.status,
+            task_record_present: task_status.is_some(),
+            task_status,
+            objective_record_present: run.objective_id.is_some(),
+            workflow_version_present: run.workflow_version_id.is_some(),
+            project_dirty: project.dirty,
+            changed_path_count: bounded_count(project.changed_paths.len()),
+            mandatory_check_count: bounded_count(mandatory_check_count),
+            mandatory_failed_count: bounded_count(mandatory_failed_count),
+            mandatory_pending_count: bounded_count(mandatory_pending_count),
+            mandatory_inconclusive_count: bounded_count(mandatory_inconclusive_count),
+            active_worker_count: bounded_count(active_worker_count.max(0) as usize),
+            active_sub_overseer_count: bounded_count(active_sub_overseer_count.max(0) as usize),
+        })
+    }
+
+    /// Runs one local-only shadow prediction and records metadata through the
+    /// existing append-only run event ledger. The prediction is never returned
+    /// as a routing action and cannot change run/delegation/QA state.
+    pub fn run_decision_shadow_trial(
+        &self,
+        run_id: i64,
+        invocation_id: &str,
+        request: &DecisionRequest,
+        model: &dyn DecisionModel,
+    ) -> Result<Option<ShadowTrialReceipt>, String> {
+        request.validate()?;
+        if !matches!(
+            request.capability,
+            OptimizationCapability::WorkflowRouting | OptimizationCapability::DelegationRouting
+        ) {
+            return Err(
+                "M16 shadow trials support workflow and delegation routing only".to_string(),
+            );
+        }
+        let treatment = self
+            .get_run_optimization_treatment(run_id)?
+            .ok_or_else(|| format!("run {run_id} has no optimization treatment snapshot"))?;
+        let settings = treatment.configuration.settings(request.capability);
+        match settings.effective_mode() {
+            EffectiveOptimizationMode::Disabled => return Ok(None),
+            EffectiveOptimizationMode::Active => {
+                return Err("M16 decision trials are shadow-only until M18 approval".to_string());
+            }
+            EffectiveOptimizationMode::Shadow => {}
+        }
+        let schema = match request.capability {
+            OptimizationCapability::WorkflowRouting => RoutingDecisionSchema::WorkflowClass,
+            OptimizationCapability::DelegationRouting => RoutingDecisionSchema::DelegationStrategy,
+            _ => return Err("M16 shadow trials support routing schemas only".to_string()),
+        };
+        let expected_request = schema.request(&self.routing_decision_state(run_id)?)?;
+        if request != &expected_request {
+            return Err(
+                "M16 shadow trials accept only the minimized SQLite routing-state projection"
+                    .to_string(),
+            );
+        }
+        let provider = settings
+            .provider
+            .clone()
+            .ok_or_else(|| "shadow capability has no configured provider".to_string())?;
+        let input_bytes = serde_json::to_vec(request)
+            .map_err(|error| format!("cannot size decision request: {error}"))?
+            .len() as u64;
+        if settings.provider_locality != Some(ProviderLocality::Local) {
+            let locality = settings.provider_locality.ok_or_else(|| {
+                "shadow capability has no configured provider locality".to_string()
+            })?;
+            let invocation = OptimizationInvocation {
+                invocation_id: invocation_id.to_string(),
+                capability: request.capability,
+                provider,
+                model: settings.model,
+                model_version: None,
+                provider_locality: locality,
+                remote_data_allowed: settings.remote_data_allowed,
+                schema_version: request.schema_version,
+                mode: EffectiveOptimizationMode::Shadow,
+                input_bytes,
+                output_bytes: 0,
+                input_tokens: None,
+                output_tokens: None,
+                latency_ms: 0,
+                status: InvocationStatus::Skipped,
+                prediction: None,
+                model_confidence: None,
+                probabilities: BTreeMap::new(),
+                fallback_used: true,
+                influenced_execution: false,
+            };
+            let event = self.record_optimization_invocation(run_id, &invocation)?;
+            return Ok(Some(ShadowTrialReceipt {
+                event_id: event.id,
+                status: invocation.status,
+            }));
+        }
+        let started = Instant::now();
+        let response = model.decide(request);
+        let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+        let (status, prediction, model_confidence, probabilities, output_bytes) = match response {
+            Ok(Some(result)) => {
+                let response_bytes = serde_json::to_vec(&result)
+                    .map(|bytes| bytes.len() as u64)
+                    .unwrap_or(0);
+                match result.validate_for(request) {
+                    Ok(normalized) => {
+                        let output_bytes = serde_json::to_vec(&normalized)
+                            .map(|bytes| bytes.len() as u64)
+                            .unwrap_or(response_bytes);
+                        (
+                            InvocationStatus::Completed,
+                            Some(normalized.outcome),
+                            normalized.model_confidence,
+                            normalized.probabilities,
+                            output_bytes,
+                        )
+                    }
+                    Err(_) => (
+                        InvocationStatus::InvalidResponse,
+                        None,
+                        None,
+                        BTreeMap::new(),
+                        response_bytes,
+                    ),
+                }
+            }
+            Ok(None) => (InvocationStatus::Skipped, None, None, BTreeMap::new(), 0),
+            Err(ModelCallFailure::ProviderUnavailable) => (
+                InvocationStatus::ProviderError,
+                None,
+                None,
+                BTreeMap::new(),
+                0,
+            ),
+            Err(ModelCallFailure::Timeout) => {
+                (InvocationStatus::Timeout, None, None, BTreeMap::new(), 0)
+            }
+            Err(ModelCallFailure::InvalidResponse) => (
+                InvocationStatus::InvalidResponse,
+                None,
+                None,
+                BTreeMap::new(),
+                0,
+            ),
+        };
+        let invocation = OptimizationInvocation {
+            invocation_id: invocation_id.to_string(),
+            capability: request.capability,
+            provider,
+            model: settings.model,
+            model_version: None,
+            provider_locality: ProviderLocality::Local,
+            remote_data_allowed: false,
+            schema_version: request.schema_version,
+            mode: EffectiveOptimizationMode::Shadow,
+            input_bytes,
+            output_bytes,
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms,
+            status,
+            prediction,
+            model_confidence,
+            probabilities,
+            fallback_used: status != InvocationStatus::Completed,
+            influenced_execution: false,
+        };
+        let event = self.record_optimization_invocation(run_id, &invocation)?;
+        Ok(Some(ShadowTrialReceipt {
+            event_id: event.id,
+            status: invocation.status,
+        }))
     }
 }
 
@@ -299,6 +612,81 @@ pub struct DecisionResult {
     pub model_confidence: Option<f64>,
     #[serde(default)]
     pub probabilities: BTreeMap<String, f64>,
+}
+
+impl DecisionResult {
+    /// Validates a bounded response and returns a copy with probability values
+    /// normalized for stable telemetry. Model confidence remains a model signal.
+    pub fn validate_for(&self, request: &DecisionRequest) -> Result<Self, String> {
+        request.validate()?;
+        if self.schema_version != request.schema_version {
+            return Err("decision response schema version does not match the request".to_string());
+        }
+        if !request.allowed_outcomes.contains(&self.outcome) {
+            return Err("decision response outcome is outside the allowed schema".to_string());
+        }
+        validate_probability("model confidence", self.model_confidence)?;
+
+        let mut normalized = self.clone();
+        if !normalized.probabilities.is_empty() {
+            if normalized.probabilities.len() != request.allowed_outcomes.len()
+                || normalized
+                    .probabilities
+                    .keys()
+                    .any(|outcome| !request.allowed_outcomes.contains(outcome))
+            {
+                return Err(
+                    "decision probabilities must cover exactly the allowed outcomes".to_string(),
+                );
+            }
+            let mut total = 0.0;
+            for probability in normalized.probabilities.values() {
+                if !probability.is_finite() || !(0.0..=1.0).contains(probability) {
+                    return Err(
+                        "decision probabilities must be finite values from 0 to 1".to_string()
+                    );
+                }
+                total += probability;
+            }
+            if !total.is_finite() || !(0.95..=1.05).contains(&total) {
+                return Err("decision probabilities must sum to approximately 1".to_string());
+            }
+            let selected_probability = normalized
+                .probabilities
+                .get(&normalized.outcome)
+                .copied()
+                .ok_or_else(|| {
+                "decision probabilities omit the selected outcome".to_string()
+            })?;
+            if normalized
+                .probabilities
+                .values()
+                .any(|probability| *probability > selected_probability + 1e-9)
+            {
+                return Err(
+                    "decision outcome must be one of the highest-probability choices".to_string(),
+                );
+            }
+            for probability in normalized.probabilities.values_mut() {
+                *probability /= total;
+            }
+        }
+        Ok(normalized)
+    }
+}
+
+/// Parses only Cathulu's bounded canonical response shape. Provider-specific
+/// wire responses must be mapped by an adapter before reaching this boundary.
+pub fn parse_decision_result(
+    bytes: &[u8],
+    request: &DecisionRequest,
+) -> Result<DecisionResult, String> {
+    if bytes.len() > MAX_DECISION_RESPONSE_BYTES {
+        return Err("decision response exceeds the 16 KiB limit".to_string());
+    }
+    let response: DecisionResult = serde_json::from_slice(bytes)
+        .map_err(|error| format!("decision response is invalid JSON: {error}"))?;
+    response.validate_for(request)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -428,6 +816,13 @@ pub enum InvocationStatus {
     InvalidResponse,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShadowTrialReceipt {
+    pub event_id: i64,
+    pub status: InvocationStatus,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OptimizationInvocation {
@@ -452,6 +847,25 @@ pub struct OptimizationInvocation {
     pub probabilities: BTreeMap<String, f64>,
     pub fallback_used: bool,
     pub influenced_execution: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowOutcomeAssessment {
+    WouldHaveHelped,
+    WouldHaveHurt,
+    NoMaterialDifference,
+    Unclear,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OptimizationShadowReview {
+    pub invocation_id: String,
+    pub assessment: ShadowOutcomeAssessment,
+    /// None means human correction was not observed or assessed.
+    pub human_corrected_prediction: Option<bool>,
+    pub evidence_event_ids: Vec<i64>,
 }
 
 impl OptimizationInvocation {
@@ -606,6 +1020,136 @@ impl Store {
         transaction.commit().map_err(sqlite_error)?;
         Ok(event)
     }
+
+    /// Appends a human-reviewed counterfactual assessment after a shadow run
+    /// finishes. It references final run/QA events and reuses the event ledger.
+    pub fn record_optimization_shadow_review(
+        &self,
+        run_id: i64,
+        review: &OptimizationShadowReview,
+    ) -> Result<EventRecord, String> {
+        validate_identifier("optimization invocation ID", &review.invocation_id, 100)?;
+        if review.evidence_event_ids.is_empty() || review.evidence_event_ids.len() > 32 {
+            return Err("shadow reviews need between 1 and 32 evidence event IDs".to_string());
+        }
+        let mut evidence_event_ids = review.evidence_event_ids.clone();
+        evidence_event_ids.sort_unstable();
+        evidence_event_ids.dedup();
+        if evidence_event_ids.len() != review.evidence_event_ids.len()
+            || evidence_event_ids.iter().any(|id| *id <= 0)
+        {
+            return Err("shadow review evidence IDs must be unique positive integers".to_string());
+        }
+
+        let run = self
+            .get_run(run_id)?
+            .ok_or_else(|| format!("run {run_id} was not found"))?;
+        if run.finished_at.is_none() {
+            return Err("shadow reviews can be recorded only after the run finishes".to_string());
+        }
+        let events = self.list_events("run", &run_id.to_string())?;
+        let invocation = events
+            .iter()
+            .find(|event| {
+                event.event_type == "optimization_invocation_recorded"
+                    && event.payload.get("invocationId").and_then(Value::as_str)
+                        == Some(review.invocation_id.as_str())
+            })
+            .ok_or_else(|| "shadow review invocation does not belong to this run".to_string())?;
+        if invocation.payload.get("mode").and_then(Value::as_str) != Some("shadow")
+            || invocation
+                .payload
+                .get("influencedExecution")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || invocation.payload.get("status").and_then(Value::as_str) != Some("completed")
+            || !matches!(
+                invocation.payload.get("capability").and_then(Value::as_str),
+                Some("workflow_routing" | "delegation_routing")
+            )
+            || invocation
+                .payload
+                .get("prediction")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            return Err(
+                "only completed, non-influencing shadow predictions can be reviewed".to_string(),
+            );
+        }
+        let referenced_events = events
+            .iter()
+            .filter(|event| evidence_event_ids.contains(&event.id))
+            .collect::<Vec<_>>();
+        if referenced_events.len() != evidence_event_ids.len()
+            || !referenced_events
+                .iter()
+                .any(|event| event.event_type == "run_finished")
+            || referenced_events.iter().any(|event| {
+                !matches!(
+                    event.event_type.as_str(),
+                    "run_finished" | "quality_check_recorded"
+                )
+            })
+        {
+            return Err(
+                "shadow review evidence must reference this run's final outcome or QA events"
+                    .to_string(),
+            );
+        }
+
+        let external_event_id = format!(
+            "optimization-review:{}",
+            content_hash(&format!("{run_id}:{}", review.invocation_id))
+        );
+        let payload = json!({
+            "reviewSchemaVersion": 1,
+            "invocationId": review.invocation_id,
+            "assessment": review.assessment,
+            "humanCorrectedPrediction": review.human_corrected_prediction,
+            "finalRunStatus": run.status,
+            "evidenceEventIds": evidence_event_ids
+        });
+        let now = crate::workflow::now();
+        let mut connection = self.connection()?;
+        let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        let inserted_id = append_external_event(
+            &transaction,
+            "run",
+            run_id,
+            "optimization_shadow_review_recorded",
+            &external_event_id,
+            &payload,
+            now,
+        )?;
+        let event_id = if let Some(event_id) = inserted_id {
+            event_id
+        } else {
+            let (event_id, existing_payload): (i64, String) = transaction
+                .query_row(
+                    "SELECT id, payload_json FROM events WHERE external_event_id = ?1",
+                    params![external_event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(sqlite_error)?;
+            let requested_payload = serde_json::to_string(&payload)
+                .map_err(|error| format!("cannot serialize shadow review: {error}"))?;
+            if requested_payload != existing_payload {
+                return Err("shadow review was already recorded with different content".to_string());
+            }
+            event_id
+        };
+        let event = transaction
+            .query_row(
+                "SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at
+                 FROM events WHERE id = ?1",
+                params![event_id],
+                crate::workflow::event_from_row,
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(event)
+    }
 }
 
 pub(crate) fn treatment_from_run_started(
@@ -619,6 +1163,10 @@ pub(crate) fn treatment_from_run_started(
         .map(serde_json::from_value)
         .transpose()
         .map_err(|error| format!("stored optimization treatment is invalid: {error}"))
+}
+
+fn bounded_count(count: usize) -> u32 {
+    count.min(u32::MAX as usize) as u32
 }
 
 fn validate_identifier(name: &str, value: &str, max_len: usize) -> Result<(), String> {

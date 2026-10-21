@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15 LOCALLY VALIDATED; M16-M19 PROPOSED. The architecture boundary is accepted in ADR-0007; no provider adapters or model calls are implemented. Active treatments remain gated until the M18 approval stage.
+Status: M15 MERGED; M16 SHADOW MECHANICS LOCALLY VALIDATED; M17-M19 PROPOSED. No provider adapters or live model calls are implemented. Active treatments remain gated until the M18 approval stage.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -203,6 +203,12 @@ All Cathulu state, treatment records, evidence references, and telemetry remain 
 
 **Expected checkpoint:** local validation of bounded shadow behavior; no active routing.
 
+**Result (2026-10-21):** implemented `RoutingDecisionSchema` v1 for workflow class and delegation strategy with explicit escape outcomes; `RoutingDecisionState` is derived from the existing run, task-status, project, QA, and delegation rows and excludes free-form text and repository paths. The trial runner accepts only that exact minimized SQLite projection, requires a local shadow treatment, validates and normalizes bounded results, writes metadata to the existing append-only event ledger, and does not return a routing action. Provider errors, timeouts, skipped results, and invalid output are recorded as non-influencing fallback outcomes. A post-run human review event can link the prediction to final-run and QA evidence. No migration was needed.
+
+Jev was not integrated or called. Context7 `resolve-library-id` returned “Monthly quota reached”; the current [Jev AI API documentation](https://thejevai.com/docs), [service terms](https://thejevai.com/terms-of-service), and [API repository README](https://github.com/jev-ai/jev-api) were reviewed directly. The API docs describe a remote bearer-key endpoint and typed request/response; the repository says thejevai.com is an independent app rather than the official product site for the underlying Jev model. The published terms do not clarify request retention/data handling or model-operator identity, and no supported local credential path has been selected. The M16 runner therefore records remote configuration as skipped without calling it. Tests use only a deterministic local double; this validates mechanics, not model quality or product value.
+
+**Validation evidence:** `cargo test --offline --workspace --test optimization_m16` — 6 passed, 0 failed. Full-workspace validation is recorded under Completion evidence after the final gate.
+
 ### M17 — ContextModel shadow extraction
 
 **Goal:** assess whether extraction can reduce large tool-result interpretation while keeping source evidence intact.
@@ -326,8 +332,8 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] Inspect the existing M4 memory/run/telemetry substrate and M9/M11 boundaries.
 - [x] Record the optional specialist architecture and M15-M19 plan. No implementation or provider call is included in this documentation milestone.
 - [x] Validate documentation with git diff whitespace checks, local link resolution, and a trailing-whitespace scan.
-- [x] M15 provider-neutral contracts, disabled-by-default configuration, immutable run attribution, and append-only telemetry.
-- [ ] M16 DecisionModel shadow trials.
+- [x] M15 provider-neutral contracts, disabled-by-default configuration, immutable run attribution, and append-only telemetry; merged via [PR #6](https://github.com/jmsb505/cathulu/pull/6) at `bf9e9a9b5f78ef45da6f31b549fdd857c80201c8`.
+- [x] M16 local shadow-trial mechanics, strict decision schemas, SQLite routing-state minimization, and evidence-linked human review; no provider or live call.
 - [ ] M17 ContextModel shadow extraction.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
@@ -339,6 +345,8 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - 2026-10-21: Provider candidate names are not a commitment. Current primary documentation, API, privacy/terms, credentials, local alternatives, and maintenance need review before adapters are implemented.
 - 2026-10-21: M15 uses the existing append-only `run_started` event for immutable treatment snapshots and `external_event_id` for idempotent invocation telemetry. The audit found no need for a schema migration or a parallel experiment/telemetry table. Invalid base or workflow override configuration is captured as an all-disabled fallback so it cannot prevent run creation. Active settings are represented in the contract but rejected until the M18 owner-approved pilot gate.
 - 2026-10-21: `Store::start_run` continues to use the all-disabled defaults. A host may pass a typed `OptimizationConfig` to `start_run_with_optimization`; an immutable workflow version can override selected entries under its `optimization.capabilities` object. This milestone does not add a settings UI, provider registry, credential store, provider adapter, or model call.
+- 2026-10-21: M16 uses only the existing event ledger for shadow invocations and post-run counterfactual review; no schema migration or duplicate experiment store was necessary. The SQLite-derived routing projection excludes user task text, repository paths, artifact contents, memory bodies, and summaries. The call boundary enforces this projection exactly and currently accepts only local providers.
+- 2026-10-21: Context7's Jev documentation lookup hit the monthly quota. The Jev API and service-terms pages and its API repository README were inspected directly. The API wrapper's relationship to the underlying model, request-retention/data-handling details, and a secure local credential path remain unresolved, so no Jev adapter or network call was added; this is a deliberate M16 scope limit, not a model evaluation result.
 
 ## Completion evidence
 
@@ -353,5 +361,13 @@ M15 passed local Windows validation on 2026-10-21. Commands and results:
 - M15 tests confirm that invocation payloads contain metadata only, reuse of an invocation ID is idempotent, differing telemetry under the same ID is rejected, and existing schema version 9 is unchanged.
 - Rollback is a code rollback only: no schema migration or new provider is present. Existing v9 databases and append-only treatment events remain readable; a prior binary ignores the additional `run_started` field and unknown invocation event type.
 
-No provider integration/API validation, network model call, active treatment, or measured optimization result is claimed complete. M16-M19 remain proposed.
+M16 passed local Windows validation on 2026-10-21. Commands and results:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --workspace --test optimization_m16` — passed (6 tests).
+- `cargo test --offline --workspace` — passed: core unit tests (10), delegation lifecycle (4), MCP vertical slice (16), memory lifecycle (4), M15 optimization tests (5), M16 optimization tests (6), desktop library tests (3 passed, 1 existing Windows integration test ignored by design), and doc tests.
+- M16 tests cover fixed outcome/escape schemas, strict/oversized response parsing, probability normalization, SQLite-derived minimized state, rejected unminimized state, no shadow influence, disabled/remote/failure fallback, and append-only post-run review idempotency and persistence after reopening SQLite.
+- No migration or frontend change was required. The M16 runner rejected remote providers before invoking a model. No provider call, active treatment, or product-value result is claimed.
+
+No live model call, active treatment, or measured optimization result is claimed complete. M17-M19 remain proposed.
 
