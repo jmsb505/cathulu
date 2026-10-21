@@ -1,6 +1,6 @@
 # PLAN-004 — Optional specialist-model optimization
 
-Status: M15-M16 MERGED; M17 SHADOW MECHANICS LOCALLY VALIDATED; M18-M19 PROPOSED. No provider adapters or live model calls are implemented. Active treatments remain gated until the M18 approval stage.
+Status: M15-M17 MERGED; M18 PRE-TRIAL READINESS REVIEW RECORDED; COMPARATIVE SCORING NOT ELIGIBLE; M19 NOT STARTED. No live provider adapters or model calls are implemented. Active treatments still require explicit owner approval.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -23,7 +23,8 @@ Shadow predictions can establish schema safety, privacy behavior, fallback, late
 - SQLite is authoritative. Existing runs, workflow_versions, events, memory_policy_evaluations, and evidence_artifacts are the first sources to audit for treatment attribution and invocation telemetry.
 - M9's Codex model/effort preferences configure Codex and remain separate from specialist-provider settings.
 - M10 and M12-M14 retain their own evidence gates. The deferred cross-repository handoff check is not a prerequisite for this phase.
-- Jev, ScaleDown, and GLiNER-family models are candidates named for evaluation, not vetted dependencies or verified provider APIs. No provider is currently integrated.
+- Jev/TypeSafe, ScaleDown, and GLiNER-family models remain candidate providers, not dependencies. Current primary TypeSafe API and data-handling documentation supports further evaluation of Jev for minimized bounded decisions. ScaleDown's official client documents remote prompt compression, but the reviewed sources do not establish the selected-span extraction contract or request-retention terms needed for M17.
+- The current dashboard has no recorded runs or objectives and zero memory/transfer/storage measurements. There is no baseline cohort from which to set sample or quality thresholds, so M18 cannot score product impact yet.
 
 ## Scope
 
@@ -343,6 +344,7 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - [x] M15 provider-neutral contracts, disabled-by-default configuration, immutable run attribution, and append-only telemetry; merged via [PR #6](https://github.com/jmsb505/cathulu/pull/6) at `bf9e9a9b5f78ef45da6f31b549fdd857c80201c8`.
 - [x] M16 local shadow-trial mechanics, strict decision schemas, SQLite routing-state minimization, and evidence-linked human review; no provider or live call.
 - [x] M17 local ContextModel shadow extraction boundary and selected-span provenance; no provider or live call.
+- [x] Re-audit M18 provider documentation and current Cathulu run readiness; preserve the no-run/no-egress gate.
 - [ ] M18 controlled ablation and evidence review.
 - [ ] M19 additional evidence-backed capability proposals.
 
@@ -354,7 +356,8 @@ Set the affected capability to disabled and resume the existing Cathulu/Codex pa
 - 2026-10-21: M15 uses the existing append-only `run_started` event for immutable treatment snapshots and `external_event_id` for idempotent invocation telemetry. The audit found no need for a schema migration or a parallel experiment/telemetry table. Invalid base or workflow override configuration is captured as an all-disabled fallback so it cannot prevent run creation. Active settings are represented in the contract but rejected until the M18 owner-approved pilot gate.
 - 2026-10-21: `Store::start_run` continues to use the all-disabled defaults. A host may pass a typed `OptimizationConfig` to `start_run_with_optimization`; an immutable workflow version can override selected entries under its `optimization.capabilities` object. This milestone does not add a settings UI, provider registry, credential store, provider adapter, or model call.
 - 2026-10-21: M16 uses only the existing event ledger for shadow invocations and post-run counterfactual review; no schema migration or duplicate experiment store was necessary. The SQLite-derived routing projection excludes user task text, repository paths, artifact contents, memory bodies, and summaries. The call boundary enforces this projection exactly and currently accepts only local providers.
-- 2026-10-21: Context7's Jev documentation lookup hit the monthly quota. The Jev API and service-terms pages and its API repository README were inspected directly. The API wrapper's relationship to the underlying model, request-retention/data-handling details, and a secure local credential path remain unresolved, so no Jev adapter or network call was added; this is a deliberate M16 scope limit, not a model evaluation result.
+- 2026-10-21: Primary TypeSafe OpenAPI documentation confirms `POST https://api.typesafe.ai/v1/systemone`, bearer-key authentication, and the bounded `model`/`state`/`questions` request shape ([OpenAPI](https://api.typesafe.ai/openapi.json)). TypeSafe's data-handling FAQ says requests are not used to train models but may be processed for service delivery, usage charges, abuse prevention, and telemetry; retention depends on the applicable agreement, with zero-data-retention offered for enterprise accounts ([data handling](https://help.typesafe.ai/articles/5974925716-how-is-submitted-data-used-or-retained)). This makes Jev a candidate only for the minimized SQLite-derived routing state. No remote egress approval, adapter, or live call is present.
+- 2026-10-21: ScaleDown's official Python client documents an API-powered compression service and its `SCALEDOWN_API_KEY`/`SCALEDOWN_API_URL` settings ([official client](https://github.com/scaledown-team/scaledown)). The sources reviewed do not verify a selected-span extraction API or request-retention terms; do not send selected context to ScaleDown until its extraction contract and retention terms are verified and remote processing is explicitly enabled.
 - 2026-10-21: M17 reuses the existing evidence-artifact registry and event ledger without a migration. The extraction request contains selected text and a stable Cathulu resource ID, never the local filesystem path; the output event stores hashes and validated spans while retaining the raw artifact by reference. Remote extraction remains unimplemented and is skipped regardless of configured remote opt-in.
 - 2026-10-21: `.env.example` documents empty reserved decision/context API-key placeholders and `.gitignore` excludes local `.env` files. The runtime currently has no dotenv loader, provider adapter, or secure credential path; adding key values to `.env.local` does not activate a provider.
 
@@ -390,5 +393,5 @@ M17 passed focused local Windows validation on 2026-10-21. Commands and results:
 - `cargo clippy --offline --workspace --all-targets -- -D warnings` — not clean because of 10 existing lints in `codex_config_files.rs`, `gardener.rs`, `graphify.rs`, `mcp.rs`, `memory.rs`, `workflow.rs`, and `lib.rs`. The strict run reported no remaining M17 lint after cleanup; unrelated lint debt was left unchanged.
 - No migration, dependency, provider adapter, real model call, active treatment, UI, or product-value claim was added. Model effectiveness, information-recovery rate, Codex-turn savings, and latency impact remain unknown.
 
-No live model call, active treatment, or measured optimization result is claimed complete. M18-M19 remain proposed; M17's tested shadow boundary is ready for review, while provider/model quality remains unmeasured.
+M18 readiness audit (2026-10-21): the read-only `cathulu://dashboard` snapshot reports `recentRuns=[]`, `objectives=[]`, `blockers=[]`, and `failedChecks=[]`; memory, transfer, and storage counters are all zero. No comparable baseline cohort exists, so sample size, expected variation, and a quality guard cannot be responsibly selected yet. The TypeSafe API and data-handling sources were reviewed; no provider adapter, credential loader, live model call, remote transmission, active treatment, or product-value measurement is implemented or claimed. M18 remains ineligible for comparative scoring until representative real Cathulu runs exist; any active pilot additionally requires explicit owner approval.
 
