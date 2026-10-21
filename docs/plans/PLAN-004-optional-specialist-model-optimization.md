@@ -433,7 +433,7 @@ M18a provider-connectivity readiness passed local Windows validation on 2026-10-
 
 - `cargo fmt --all -- --check` — passed.
 - `cargo test --offline --workspace` — passed: 64 passed, 0 failed, 1 existing desktop integration test ignored by design; doc tests passed.
-- `git diff --check` — passed before the final evidence-only plan update; rerun as the final repository check.
+- `git diff --check` — passed after the final evidence-only plan update.
 - `cargo check --locked --offline --workspace --all-targets` — passed during M18a implementation.
 - Provider tests use loopback HTTP fixtures and fake keys only. They cover Jev bearer auth and bounded routing state, ScaleDown x-api-key auth and excerpt minimization, secret masking and exact source-span mapping, and credential parsing without shell evaluation. M17 tests also cover same-run artifact enforcement and non-blocking fallback.
 - No real API key was read, no live provider call or external data transmission was made, and no active optimization mode was enabled. Provider quality, retention behavior beyond the reviewed documentation, and workflow impact remain unmeasured. ScaleDown retention is unspecified in the reviewed API pages; credential masking is best-effort.
