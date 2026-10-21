@@ -519,6 +519,17 @@ impl Store {
             if delegation_reference_count > 0 {
                 reasons.push("delegation_reference".to_string());
             }
+            let worker_report_reference_count: i64 = connection
+                .raw()
+                .query_row(
+                    "SELECT COUNT(*) FROM worker_report_artifact_refs WHERE artifact_id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if worker_report_reference_count > 0 {
+                reasons.push("worker_report_reference".to_string());
+            }
             let hold_count: i64 = connection.raw().query_row(
                 "SELECT COUNT(*) FROM evidence_holds WHERE artifact_id = ?1 AND released_at IS NULL",
                 params![id], |row| row.get(0),
@@ -627,7 +638,8 @@ impl Store {
             let reference_count: i64 = transaction.query_row(
                 "SELECT (SELECT COUNT(*) FROM memory_artifact_refs WHERE artifact_id = ?1) +
                         (SELECT COUNT(*) FROM memory_sources WHERE source_type = 'artifact' AND source_id = CAST(?1 AS TEXT)) +
-                        (SELECT COUNT(*) FROM delegation_artifact_refs WHERE artifact_id = ?1)",
+                        (SELECT COUNT(*) FROM delegation_artifact_refs WHERE artifact_id = ?1) +
+                        (SELECT COUNT(*) FROM worker_report_artifact_refs WHERE artifact_id = ?1)",
                 params![candidate.artifact_id], |row| row.get(0),
             ).map_err(sqlite_error)?;
             let active_holds: i64 = transaction.query_row(
@@ -926,6 +938,7 @@ impl Store {
             "SELECT COUNT(*) FROM evidence_artifacts a WHERE a.archived_at IS NULL AND a.protected = 0
              AND NOT EXISTS (SELECT 1 FROM memory_artifact_refs r WHERE r.artifact_id = a.id)
              AND NOT EXISTS (SELECT 1 FROM delegation_artifact_refs d WHERE d.artifact_id = a.id)
+             AND NOT EXISTS (SELECT 1 FROM worker_report_artifact_refs w WHERE w.artifact_id = a.id)
              AND NOT EXISTS (SELECT 1 FROM memory_sources s WHERE s.source_type = 'artifact' AND s.source_id = CAST(a.id AS TEXT))",
             [], |row| row.get(0),
         ).map_err(sqlite_error)?;
@@ -1128,6 +1141,7 @@ fn collect_proposals(
         "SELECT a.id FROM evidence_artifacts a WHERE a.archived_at IS NULL AND a.protected = 0
          AND NOT EXISTS (SELECT 1 FROM memory_artifact_refs r WHERE r.artifact_id = a.id)
          AND NOT EXISTS (SELECT 1 FROM delegation_artifact_refs d WHERE d.artifact_id = a.id)
+         AND NOT EXISTS (SELECT 1 FROM worker_report_artifact_refs w WHERE w.artifact_id = a.id)
          AND NOT EXISTS (SELECT 1 FROM memory_sources s WHERE s.source_type = 'artifact' AND s.source_id = CAST(a.id AS TEXT))
          ORDER BY a.id"
     ).map_err(sqlite_error)?;

@@ -112,6 +112,441 @@ fn preview_evidence(data_dir: &Path) -> Value {
     serde_json::from_slice(&output.stdout).expect("evidence preview is JSON")
 }
 
+fn call_tool(data_dir: &Path, name: &str, arguments: Value) -> Value {
+    let responses = run_initialized_server(data_dir, &[tool_call(2, name, arguments)]);
+    tool_text(response(&responses, 2))
+}
+
+fn tool_error(data_dir: &Path, name: &str, arguments: Value) -> Value {
+    let responses = run_initialized_server(data_dir, &[tool_call(2, name, arguments)]);
+    let result = response(&responses, 2).clone();
+    assert!(
+        result.pointer("/result/isError") == Some(&json!(true)) || result.get("error").is_some(),
+        "MCP tool call unexpectedly succeeded: {result}"
+    );
+    if result.get("error").is_some() {
+        json!({ "result": { "isError": true }, "rpcError": result["error"] })
+    } else {
+        result
+    }
+}
+
+fn create_task_and_run(data_dir: &Path, project_id: i64, label: &str) -> (i64, i64, i64) {
+    let objective = call_tool(
+        data_dir,
+        "create_objective",
+        json!({ "project_id": project_id, "title": format!("{label} objective") }),
+    );
+    let objective_id = objective["id"].as_i64().expect("objective ID");
+    let task = call_tool(
+        data_dir,
+        "create_task",
+        json!({ "objective_id": objective_id, "title": format!("{label} task") }),
+    );
+    let task_id = task["id"].as_i64().expect("task ID");
+    let run = call_tool(
+        data_dir,
+        "start_run",
+        json!({ "project_id": project_id, "objective_id": objective_id, "task_id": task_id }),
+    );
+    let run_id = run["id"].as_i64().expect("run ID");
+    (objective_id, task_id, run_id)
+}
+
+#[test]
+fn worker_reports_are_bounded_idempotent_reviewable_and_do_not_bypass_parent_quality() {
+    let root = unique_temp_dir("worker-report-review");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    let mut project_ids = Vec::new();
+    for (name, path) in [
+        ("m7-main-fixture", "C:/fixture/m7-main"),
+        ("m7-other-fixture", "C:/fixture/m7-other"),
+    ] {
+        database
+            .execute(
+                "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+                 VALUES (?1, ?2, 'main', NULL, 0, '[]', 1, 1)",
+                rusqlite::params![name, path],
+            )
+            .expect("seed registered project");
+        project_ids.push(database.last_insert_rowid());
+    }
+    drop(database);
+
+    let (_objective_id, task_id, parent_run_id) =
+        create_task_and_run(&data_dir, project_ids[0], "worker report");
+    let (other_objective_id, other_task_id, other_run_id) =
+        create_task_and_run(&data_dir, project_ids[1], "foreign evidence");
+    let parent_artifact = call_tool(
+        &data_dir,
+        "record_evidence_artifact",
+        json!({
+            "run_id": parent_run_id,
+            "artifact_kind": "test-log",
+            "uri": "artifact://local/m7-parent-test-log",
+            "content_hash": "sha256:m7-parent-test-log"
+        }),
+    )["id"]
+        .as_i64()
+        .expect("parent evidence artifact ID");
+    let foreign_artifact = call_tool(
+        &data_dir,
+        "record_evidence_artifact",
+        json!({
+            "run_id": other_run_id,
+            "artifact_kind": "test-log",
+            "uri": "artifact://local/m7-foreign-test-log",
+            "content_hash": "sha256:m7-foreign-test-log"
+        }),
+    )["id"]
+        .as_i64()
+        .expect("foreign evidence artifact ID");
+    let parent_check = call_tool(
+        &data_dir,
+        "record_quality_check",
+        json!({
+            "run_id": parent_run_id,
+            "check_key": "worker-unit-tests",
+            "mandatory": false,
+            "status": "passed",
+            "details": { "source": "parent-recorded" }
+        }),
+    )["id"]
+        .as_i64()
+        .expect("parent quality-check ID");
+    let foreign_check = call_tool(
+        &data_dir,
+        "record_quality_check",
+        json!({
+            "run_id": other_run_id,
+            "check_key": "foreign-check",
+            "mandatory": false,
+            "status": "passed",
+            "details": {}
+        }),
+    )["id"]
+        .as_i64()
+        .expect("foreign quality-check ID");
+    assert!(other_objective_id > 0 && other_task_id > 0);
+
+    let packet = json!({
+        "schema_version": 1,
+        "title": "Implement worker report evidence",
+        "objective": "Submit an evidence-backed report through the local MCP boundary.",
+        "acceptance_criteria": ["Keep worker claims distinct from parent QA"],
+        "constraints": ["Do not spawn or control a worker"],
+        "allowed_scope": ["src/**"],
+        "referenced_memory_ids": [],
+        "referenced_artifact_ids": [],
+        "requested_report_fields": ["summary", "changed_paths", "commits", "checks", "blockers", "artifact_refs"]
+    });
+    let prepared = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": project_ids[0],
+            "task_id": task_id,
+            "run_id": parent_run_id,
+            "role": "worker",
+            "task_packet": packet,
+            "idempotency_key": "m7-delegation-attempt"
+        }),
+    );
+    let delegation_id = prepared["id"].as_i64().expect("delegation ID");
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": delegation_id }),
+    );
+
+    let worker_report = json!({
+        "schemaVersion": 1,
+        "summary": "The scoped change is complete and its worker checks passed.",
+        "outcome": "completed",
+        "changedFiles": ["src/delegation.rs"],
+        "commits": ["0123456789abcdef0123456789abcdef01234567"],
+        "checkResults": [{
+            "name": "workspace tests",
+            "status": "passed",
+            "summary": "The worker reports all workspace tests passed."
+        }],
+        "blockers": [],
+        "artifactIds": [parent_artifact],
+        "qualityCheckIds": [parent_check]
+    });
+
+    let mut out_of_scope = worker_report.clone();
+    out_of_scope["changedFiles"][0] = json!("tests/other.rs");
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": out_of_scope, "idempotency_key": "m7-out-of-scope" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let mut traversal = worker_report.clone();
+    traversal["changedFiles"][0] = json!("src/../../secrets.txt");
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": traversal, "idempotency_key": "m7-path-traversal" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let mut duplicate_files = worker_report.clone();
+    duplicate_files["changedFiles"] = json!(["src/delegation.rs", "src/delegation.rs"]);
+    tool_error(
+        &data_dir,
+        "submit_delegation_report",
+        json!({ "delegation_id": delegation_id, "worker_report": duplicate_files, "idempotency_key": "m7-duplicate-file" }),
+    );
+
+    let mut invalid_outcome = worker_report.clone();
+    invalid_outcome["outcome"] = json!("verified_success");
+    tool_error(
+        &data_dir,
+        "submit_delegation_report",
+        json!({ "delegation_id": delegation_id, "worker_report": invalid_outcome, "idempotency_key": "m7-invalid-outcome" }),
+    );
+
+    let mut foreign_evidence = worker_report.clone();
+    foreign_evidence["artifactIds"] = json!([foreign_artifact]);
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": foreign_evidence, "idempotency_key": "m7-foreign-artifact" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let mut foreign_check_reference = worker_report.clone();
+    foreign_check_reference["qualityCheckIds"] = json!([foreign_check]);
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": foreign_check_reference, "idempotency_key": "m7-foreign-check" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let mut oversized = worker_report.clone();
+    oversized["summary"] = json!("s".repeat(4_000));
+    oversized["blockers"] = json!(vec!["b".repeat(1_000); 16]);
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": oversized, "idempotency_key": "m7-oversized-report" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let submitted = run_initialized_server(
+        &data_dir,
+        &[
+            request(2, "tools/list", json!({})),
+            tool_call(
+                3,
+                "submit_delegation_report",
+                json!({
+                    "delegation_id": delegation_id,
+                    "worker_report": worker_report,
+                    "idempotency_key": "m7-report-attempt"
+                }),
+            ),
+            tool_call(
+                4,
+                "submit_delegation_report",
+                json!({
+                    "delegation_id": delegation_id,
+                    "worker_report": worker_report,
+                    "idempotency_key": "m7-report-attempt"
+                }),
+            ),
+        ],
+    );
+    let tool_names = response(&submitted, 2)
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .expect("MCP tools are listed")
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert!(tool_names.contains(&"submit_delegation_report"));
+    assert!(tool_names.contains(&"review_delegation_report"));
+    assert!(!tool_names.iter().any(|name| {
+        name.contains("spawn") || name.contains("execute") || name.contains("accept_changes")
+    }));
+    let first_report = tool_text(response(&submitted, 3));
+    let duplicate_report = tool_text(response(&submitted, 4));
+    let report_id = first_report["reportId"].as_i64().expect("report ID");
+    assert_eq!(duplicate_report["reportId"], json!(report_id));
+    assert_eq!(first_report["reviewStatus"], json!("reported"));
+    assert_eq!(first_report["report"]["outcome"], json!("completed"));
+    assert_eq!(first_report["reportHash"].as_str().map(str::len), Some(64));
+    assert!(!serde_json::to_string(&first_report)
+        .expect("serialize report")
+        .contains("m7-report-attempt"));
+
+    let mut conflicting_report = worker_report.clone();
+    conflicting_report["summary"] = json!("Different worker report");
+    assert_eq!(
+        tool_error(
+            &data_dir,
+            "submit_delegation_report",
+            json!({ "delegation_id": delegation_id, "worker_report": conflicting_report, "idempotency_key": "m7-report-attempt" })
+        )
+        .pointer("/result/isError"),
+        Some(&json!(true))
+    );
+
+    let review_args = json!({
+        "delegation_id": delegation_id,
+        "decision": "needs_follow_up",
+        "note": "Attach the parent verification result before accepting.",
+        "idempotency_key": "m7-review-attempt-1"
+    });
+    let repeated_review = run_initialized_server(
+        &data_dir,
+        &[
+            tool_call(2, "review_delegation_report", review_args.clone()),
+            tool_call(3, "review_delegation_report", review_args),
+        ],
+    );
+    let first_review = tool_text(response(&repeated_review, 2));
+    let duplicate_review = tool_text(response(&repeated_review, 3));
+    assert_eq!(first_review["reviewStatus"], json!("needs_follow_up"));
+    assert_eq!(first_review["reviewId"], duplicate_review["reviewId"]);
+
+    let accepted = call_tool(
+        &data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id": delegation_id,
+            "decision": "accepted",
+            "note": "Worker evidence reviewed; parent QA remains authoritative.",
+            "idempotency_key": "m7-review-attempt-2"
+        }),
+    );
+    assert_eq!(accepted["reviewStatus"], json!("accepted"));
+
+    let before_finish_responses = run_initialized_server(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://runs/{parent_run_id}") }),
+            ),
+            request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    let before_finish = resource_text(response(&before_finish_responses, 2));
+    assert_eq!(before_finish["status"], json!("running"));
+    let before_finish_dashboard = resource_text(response(&before_finish_responses, 3));
+    assert_eq!(
+        before_finish_dashboard["delegations"][0]["report"]["reviewStatus"],
+        json!("accepted")
+    );
+    let finished = call_tool(
+        &data_dir,
+        "finish_run",
+        json!({ "run_id": parent_run_id, "summary": "Worker reported completion." }),
+    );
+    assert_eq!(finished["status"], json!("blocked"));
+
+    let final_state = run_initialized_server(
+        &data_dir,
+        &[
+            request(
+                2,
+                "resources/read",
+                json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+            ),
+            request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    let persisted = resource_text(response(&final_state, 2));
+    assert_eq!(persisted["report"]["reportId"], json!(report_id));
+    assert_eq!(persisted["report"]["reviewStatus"], json!("accepted"));
+    assert_eq!(
+        persisted["report"]["qualityCheckRefs"][0]["qualityCheckId"],
+        json!(parent_check)
+    );
+    assert_eq!(
+        persisted["report"]["qualityCheckRefs"][0]["status"],
+        json!("passed")
+    );
+    assert_eq!(
+        persisted["report"]["reviewHistory"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        persisted["lifecycleEvents"].as_array().map(Vec::len),
+        Some(5)
+    );
+    let dashboard = resource_text(response(&final_state, 3));
+    let parent_run = dashboard["recentRuns"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|run| run["id"] == json!(parent_run_id)))
+        .expect("dashboard includes the parent run");
+    assert_eq!(parent_run["status"], json!("blocked"));
+    assert_eq!(
+        dashboard["delegations"][0]["report"]["reviewStatus"],
+        json!("accepted")
+    );
+
+    let evidence_preview = preview_evidence(&data_dir);
+    let protected_report_evidence = evidence_preview
+        .as_array()
+        .and_then(|candidates| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.get("artifactId") == Some(&json!(parent_artifact)))
+        })
+        .expect("worker report evidence appears in the evidence preview");
+    assert!(protected_report_evidence["reasons"]
+        .as_array()
+        .expect("evidence preview reasons")
+        .contains(&json!("worker_report_reference")));
+
+    let reopened = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+        )],
+    );
+    let after_restart = resource_text(response(&reopened, 2));
+    assert_eq!(after_restart["report"]["reviewStatus"], json!("accepted"));
+    assert_eq!(
+        after_restart["report"]["reviewHistory"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
+    fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
 #[test]
 fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
     let root = unique_temp_dir("delegation-lifecycle");
@@ -479,7 +914,104 @@ fn delegation_packet_has_idempotent_auditable_lifecycle_and_survives_restart() {
 }
 
 #[test]
-fn version_five_migration_preserves_version_four_project_run_and_memory_state() {
+fn version_six_migration_preserves_existing_version_five_delegations() {
+    let root = unique_temp_dir("delegation-v5-migration");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized fixture store");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('m7-v5-migration', 'C:/fixture/m7-v5-migration', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed registered project");
+    drop(database);
+
+    let (_objective_id, task_id, run_id) =
+        create_task_and_run(&data_dir, 1, "preserve v5 delegation");
+    let packet = json!({
+        "schema_version": 1,
+        "title": "Preserve this existing handoff",
+        "objective": "Verify the additive M7 report migration keeps M6 records intact.",
+        "acceptance_criteria": ["Keep the packet hash and dispatched state"],
+        "constraints": ["Do not mutate the parent run"],
+        "allowed_scope": ["src/**"],
+        "referenced_memory_ids": [],
+        "referenced_artifact_ids": [],
+        "requested_report_fields": ["summary"]
+    });
+    let prepared = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1,
+            "task_id": task_id,
+            "run_id": run_id,
+            "role": "worker",
+            "task_packet": packet,
+            "idempotency_key": "m7-v5-existing-delegation"
+        }),
+    );
+    let delegation_id = prepared["id"].as_i64().expect("delegation ID");
+    let packet_hash = prepared["packetHash"].clone();
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": delegation_id }),
+    );
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open v5 database fixture");
+    database
+        .execute_batch(
+            "DROP TABLE worker_report_reviews;
+             DROP TABLE worker_report_quality_check_refs;
+             DROP TABLE worker_report_artifact_refs;
+             DROP TABLE worker_reports;
+             DELETE FROM schema_migrations WHERE version = 6;",
+        )
+        .expect("restore the populated version-five schema");
+    drop(database);
+
+    let migrated = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://delegations/{delegation_id}") }),
+        )],
+    );
+    let delegation = resource_text(response(&migrated, 2));
+    assert_eq!(delegation["packetHash"], packet_hash);
+    assert_eq!(delegation["status"], json!("dispatched"));
+    assert_eq!(delegation["report"], Value::Null);
+    assert_eq!(
+        delegation["lifecycleEvents"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open upgraded v6 database");
+    let version: i64 = database
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    let delegation_count: i64 = database
+        .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
+        .expect("count preserved v5 delegations");
+    assert_eq!(version, 6);
+    assert_eq!(delegation_count, 1);
+
+    drop(database);
+    fs::remove_dir_all(root).expect("remove migration fixture");
+}
+
+#[test]
+fn version_five_and_six_migrations_preserve_version_four_project_run_and_memory_state() {
     let root = unique_temp_dir("delegation-v4-migration");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -536,7 +1068,20 @@ fn version_five_migration_preserves_version_four_project_run_and_memory_state() 
         .expect("seed version-four memory state");
     database
         .execute_batch(
-            "DROP TRIGGER delegation_memory_refs_no_update;
+            "DROP TRIGGER worker_report_reviews_no_update;
+             DROP TRIGGER worker_report_reviews_no_delete;
+             DROP TRIGGER worker_report_quality_check_refs_no_update;
+             DROP TRIGGER worker_report_quality_check_refs_no_delete;
+             DROP TRIGGER worker_report_artifact_refs_no_update;
+             DROP TRIGGER worker_report_artifact_refs_no_delete;
+             DROP TRIGGER worker_reports_no_update;
+             DROP TRIGGER worker_reports_no_delete;
+             DROP TABLE worker_report_reviews;
+             DROP TABLE worker_report_quality_check_refs;
+             DROP TABLE worker_report_artifact_refs;
+             DROP TABLE worker_reports;
+             DELETE FROM schema_migrations WHERE version = 6;
+             DROP TRIGGER delegation_memory_refs_no_update;
              DROP TRIGGER delegation_memory_refs_no_delete;
              DROP TRIGGER delegation_artifact_refs_no_update;
              DROP TRIGGER delegation_artifact_refs_no_delete;
@@ -588,7 +1133,7 @@ fn version_five_migration_preserves_version_four_project_run_and_memory_state() 
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

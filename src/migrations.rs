@@ -485,3 +485,68 @@ BEGIN SELECT RAISE(ABORT, 'delegation artifact references are retained for audit
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (5, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_6: &str = r#"
+CREATE TABLE worker_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delegation_id INTEGER NOT NULL UNIQUE REFERENCES delegations(id) ON DELETE RESTRICT,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  report_json TEXT NOT NULL CHECK(length(CAST(report_json AS BLOB)) <= 16384),
+  report_hash TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  reported_at INTEGER NOT NULL
+);
+CREATE INDEX worker_reports_delegation_idx ON worker_reports(delegation_id, reported_at DESC);
+
+CREATE TABLE worker_report_artifact_refs (
+  report_id INTEGER NOT NULL REFERENCES worker_reports(id) ON DELETE RESTRICT,
+  artifact_id INTEGER NOT NULL REFERENCES evidence_artifacts(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(report_id, artifact_id)
+);
+CREATE INDEX worker_report_artifact_refs_artifact_idx ON worker_report_artifact_refs(artifact_id);
+
+CREATE TABLE worker_report_quality_check_refs (
+  report_id INTEGER NOT NULL REFERENCES worker_reports(id) ON DELETE RESTRICT,
+  quality_check_id INTEGER NOT NULL REFERENCES quality_checks(id) ON DELETE RESTRICT,
+  check_key_snapshot TEXT NOT NULL,
+  mandatory_snapshot INTEGER NOT NULL CHECK(mandatory_snapshot IN (0, 1)),
+  status_snapshot TEXT NOT NULL CHECK(status_snapshot IN ('pending', 'passed', 'failed', 'inconclusive')),
+  details_hash_snapshot TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(report_id, quality_check_id)
+);
+CREATE INDEX worker_report_quality_check_refs_check_idx ON worker_report_quality_check_refs(quality_check_id);
+
+CREATE TABLE worker_report_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL REFERENCES worker_reports(id) ON DELETE RESTRICT,
+  decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected', 'needs_follow_up')),
+  note TEXT NOT NULL DEFAULT '' CHECK(length(CAST(note AS BLOB)) <= 2000),
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX worker_report_reviews_report_idx ON worker_report_reviews(report_id, id DESC);
+
+CREATE TRIGGER worker_reports_no_update BEFORE UPDATE ON worker_reports
+BEGIN SELECT RAISE(ABORT, 'worker reports are immutable'); END;
+CREATE TRIGGER worker_reports_no_delete BEFORE DELETE ON worker_reports
+BEGIN SELECT RAISE(ABORT, 'worker reports are retained for audit'); END;
+CREATE TRIGGER worker_report_artifact_refs_no_update BEFORE UPDATE ON worker_report_artifact_refs
+BEGIN SELECT RAISE(ABORT, 'worker report artifact references are immutable'); END;
+CREATE TRIGGER worker_report_artifact_refs_no_delete BEFORE DELETE ON worker_report_artifact_refs
+BEGIN SELECT RAISE(ABORT, 'worker report artifact references are retained for audit'); END;
+CREATE TRIGGER worker_report_quality_check_refs_no_update BEFORE UPDATE ON worker_report_quality_check_refs
+BEGIN SELECT RAISE(ABORT, 'worker report quality-check references are immutable'); END;
+CREATE TRIGGER worker_report_quality_check_refs_no_delete BEFORE DELETE ON worker_report_quality_check_refs
+BEGIN SELECT RAISE(ABORT, 'worker report quality-check references are retained for audit'); END;
+CREATE TRIGGER worker_report_reviews_no_update BEFORE UPDATE ON worker_report_reviews
+BEGIN SELECT RAISE(ABORT, 'worker report review history is append-only'); END;
+CREATE TRIGGER worker_report_reviews_no_delete BEFORE DELETE ON worker_report_reviews
+BEGIN SELECT RAISE(ABORT, 'worker report review history is retained for audit'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (6, CAST(strftime('%s','now') AS INTEGER));
+"#;

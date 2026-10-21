@@ -1,4 +1,4 @@
-use crate::delegation::DelegationTaskPacket;
+use crate::delegation::{DelegationTaskPacket, WorkerReport};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::telemetry::CodexHookEvent;
@@ -109,6 +109,22 @@ struct PrepareDelegationArgs {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct DelegationIdArgs {
     delegation_id: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SubmitDelegationReportArgs {
+    delegation_id: i64,
+    worker_report: WorkerReport,
+    idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReviewDelegationReportArgs {
+    delegation_id: i64,
+    decision: String,
+    #[serde(default)]
+    note: String,
+    idempotency_key: String,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -465,6 +481,32 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
+    #[tool(
+        description = "Submit one bounded, idempotent worker report for a dispatched delegation. Reported claims and referenced evidence remain separate from parent-run verification."
+    )]
+    fn submit_delegation_report(
+        &self,
+        Parameters(a): Parameters<SubmitDelegationReportArgs>,
+    ) -> CallToolResult {
+        self.store
+            .submit_delegation_report(a.delegation_id, &a.worker_report, &a.idempotency_key)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Append an explicit review decision for a worker report: accepted, rejected, or needs_follow_up. This does not accept code or change parent-run quality state."
+    )]
+    fn review_delegation_report(
+        &self,
+        Parameters(a): Parameters<ReviewDelegationReportArgs>,
+    ) -> CallToolResult {
+        self.store
+            .review_delegation_report(a.delegation_id, &a.decision, &a.note, &a.idempotency_key)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
     #[tool(description = "Record or update a named quality check for an open run.")]
     fn record_quality_check(
         &self,
@@ -787,7 +829,7 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             Resource::new("cathulu://dashboard", "Cathulu dashboard snapshot")
                 .with_description(
-                    "Read-only project, workflow, quality, and memory-health summary.",
+                    "Read-only project, workflow, quality, worker-delegation, and memory-health summary.",
                 )
                 .with_mime_type("application/json"),
         ];
@@ -808,7 +850,7 @@ impl ServerHandler for CathuluServer {
                 .with_description("One run and its quality check results.")
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://delegations/{id}", "Cathulu delegation")
-                .with_description("One bounded task packet, requested settings, and append-only lifecycle history.")
+                .with_description("One bounded task packet, requested settings, append-only lifecycle history, and any worker report with review history.")
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://decisions/{id}", "Cathulu decision")
                 .with_description("One immutable project decision and its supersession link.")

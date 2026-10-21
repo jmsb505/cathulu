@@ -199,6 +199,12 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
         "set_objective_status",
         json!({"id":objective_id, "status":"active"}),
     );
+    let task = mcp_tool(
+        &data_dir,
+        "create_task",
+        json!({"objective_id":objective_id, "title":"Review worker evidence"}),
+    );
+    let task_id = task["id"].as_i64().expect("task ID");
     let decision = mcp_tool(
         &data_dir,
         "record_decision",
@@ -214,15 +220,17 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     let run = mcp_tool(
         &data_dir,
         "start_run",
-        json!({"project_id":project_id, "objective_id":objective_id, "workflow_version_id":workflow_id}),
+        json!({"project_id":project_id, "objective_id":objective_id, "task_id":task_id, "workflow_version_id":workflow_id}),
     );
     let run_id = run["id"].as_i64().expect("run ID");
+    let mut quality_check_ids = Vec::new();
     for check in ["format", "tests"] {
-        mcp_tool(
+        let result = mcp_tool(
             &data_dir,
             "record_quality_check",
             json!({"run_id":run_id, "check_key":check, "mandatory":true, "status":"passed", "details":{"fixture":"isolated phase 1–4 smoke"}}),
         );
+        quality_check_ids.push(result["id"].as_i64().expect("quality-check ID"));
     }
     let evidence_dir = root.join("evidence");
     fs::create_dir_all(&evidence_dir).expect("create external evidence fixture directory");
@@ -235,6 +243,64 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
         json!({"run_id":run_id, "artifact_kind":"test_result", "uri":artifact_path, "protected":true}),
     );
     let artifact_id = artifact["id"].as_i64().expect("artifact ID");
+    let delegation = mcp_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id":project_id,
+            "task_id":task_id,
+            "run_id":run_id,
+            "role":"worker",
+            "task_packet":{
+                "schemaVersion":1,
+                "title":"Review worker evidence",
+                "objective":"Return a structured report for a scoped implementation.",
+                "acceptanceCriteria":["Keep report review distinct from parent QA"],
+                "constraints":["Do not let report state bypass parent quality gates"],
+                "allowedScope":["**"],
+                "referencedMemoryIds":[],
+                "referencedArtifactIds":[],
+                "requestedReportFields":["summary","outcome","changed_paths","commits","checks","blockers","artifact_refs"]
+            },
+            "idempotency_key":"phase3-m7-smoke-delegation"
+        }),
+    );
+    let delegation_id = delegation["id"].as_i64().expect("delegation ID");
+    mcp_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({"delegation_id":delegation_id}),
+    );
+    mcp_tool(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id":delegation_id,
+            "worker_report":{
+                "schemaVersion":1,
+                "summary":"The worker reports its scoped changes and checks are complete.",
+                "outcome":"completed",
+                "changedFiles":["README.md"],
+                "commits":[project["head"].as_str().expect("registered HEAD")],
+                "checkResults":[{"name":"worker tests","status":"passed","summary":"Worker reports passing tests."}],
+                "blockers":[],
+                "artifactIds":[artifact_id],
+                "qualityCheckIds":quality_check_ids
+            },
+            "idempotency_key":"phase3-m7-smoke-report"
+        }),
+    );
+    let report_review = mcp_tool(
+        &data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id":delegation_id,
+            "decision":"accepted",
+            "note":"Report evidence is linked; parent checks remain authoritative.",
+            "idempotency_key":"phase3-m7-smoke-review"
+        }),
+    );
+    assert_eq!(report_review["reviewStatus"], json!("accepted"));
     mcp_tool(
         &data_dir,
         "set_memory_hot_budget",
@@ -324,6 +390,20 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     assert_eq!(dashboard.objectives[0].id, objective_id);
     assert_eq!(dashboard.recent_runs[0].id, run_id);
     assert_eq!(dashboard.recent_runs[0].status, "verified_success");
+    assert_eq!(dashboard.delegations.len(), 1);
+    assert_eq!(dashboard.delegations[0].id, delegation_id);
+    assert_eq!(dashboard.delegations[0].status, "dispatched");
+    assert_eq!(
+        dashboard.delegations[0].parent_run_status,
+        "verified_success"
+    );
+    assert_eq!(
+        dashboard.delegations[0]
+            .report
+            .as_ref()
+            .map(|report| report.review_status.as_str()),
+        Some("accepted")
+    );
     assert!(dashboard.memory_health.hot_bytes > 0);
     assert!(dashboard.memory_health.hot_bytes <= 1024);
     assert!(dashboard.memory_health.largest_scope_hot_bytes <= 1024);
@@ -344,6 +424,16 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
         run_after_restart["checks"].as_array().map(Vec::len),
         Some(2)
     );
+    let delegation_after_restart =
+        mcp_resource(&data_dir, &format!("cathulu://delegations/{delegation_id}"));
+    assert_eq!(
+        delegation_after_restart["report"]["reviewStatus"],
+        json!("accepted")
+    );
+    assert_eq!(
+        delegation_after_restart["report"]["report"]["artifactIds"],
+        json!([artifact_id])
+    );
     let memory_after_restart = mcp_resource(&data_dir, &format!("cathulu://memories/{memory_id}"));
     assert_eq!(
         memory_after_restart["sources"][0]["sourceId"],
@@ -357,5 +447,5 @@ fn phase1_m4_mcp_state_is_visible_through_tauri_and_survives_restarts() {
     assert_eq!(transfer_after_restart["firstTimeForReceiver"], json!(true));
     assert!(transfer_after_restart.get("body").is_none());
 
-    println!("MCP registered project {project_id}, verified run {run_id}, memory {memory_id}, transfer {transfer_id}; the read-only Tauri dashboard returned the same SQLite state.");
+    println!("MCP registered project {project_id}, verified run {run_id}, reviewed delegation report {delegation_id}, memory {memory_id}, transfer {transfer_id}; the read-only Tauri dashboard returned the same SQLite state.");
 }

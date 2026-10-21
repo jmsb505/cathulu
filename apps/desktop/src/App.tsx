@@ -13,6 +13,48 @@ type ProjectSnapshot = {
   reconciledAt: number;
 };
 
+type WorkerCheckResult = {
+  name: string;
+  status: string;
+  summary: string;
+};
+
+type WorkerReportPayload = {
+  schemaVersion: number;
+  summary: string;
+  outcome: string;
+  changedFiles: string[];
+  commits: string[];
+  checkResults: WorkerCheckResult[];
+  blockers: string[];
+  artifactIds: number[];
+  qualityCheckIds: number[];
+};
+
+type WorkerReportRecord = {
+  reportId: number;
+  delegationId: number;
+  reviewStatus: "reported" | "accepted" | "rejected" | "needs_follow_up";
+  report: WorkerReportPayload;
+  reportHash: string;
+  reportedAt: number;
+  qualityCheckRefs: { qualityCheckId: number; checkKey: string; status: string }[];
+  reviewHistory: { id: number; decision: string; note: string; createdAt: number }[];
+};
+
+type DelegationSnapshot = {
+  id: number;
+  projectName: string;
+  taskTitle: string;
+  runId: number;
+  role: string;
+  status: string;
+  parentRunStatus: string;
+  createdAt: number;
+  updatedAt: number;
+  report: WorkerReportRecord | null;
+};
+
 type DashboardSnapshot = {
   projects: ProjectSnapshot[];
   objectives: { id: number; projectId: number; projectName: string; title: string; status: string; updatedAt: number }[];
@@ -22,6 +64,7 @@ type DashboardSnapshot = {
     workflowKey: string | null; workflowVersion: number | null; status: string; summary: string;
     startedAt: number; finishedAt: number | null;
   }[];
+  delegations: DelegationSnapshot[];
   failedChecks: { id: number; runId: number; projectName: string; checkKey: string; mandatory: boolean; status: string; details: unknown; updatedAt: number }[];
   memoryHealth: {
     hotBytes: number; hotScopeCount: number; largestScopeHotBytes: number;
@@ -342,6 +385,94 @@ export default function App() {
                   <div><span>Retrieval usefulness</span><strong>{formatBasisPoints(snapshot.memoryHealth.retrievalUsefulnessBasisPoints)}</strong></div>
                 </div>
                 <p className="memory-footnote">HOT memory is kept bounded per scope; detailed health remains in local SQLite.</p>
+              </section>
+
+              <section className="overview-panel delegation-panel" aria-labelledby="delegations-title">
+                <div className="panel-heading">
+                  <h3 id="delegations-title">Delegations &amp; worker reports</h3>
+                  <span>{snapshot.delegations.length.toString().padStart(2, "0")}</span>
+                </div>
+                {snapshot.delegations.length === 0 ? (
+                  <p className="panel-empty">No worker handoffs yet. Prepared delegation status and returned evidence will appear here.</p>
+                ) : (
+                  <ul className="delegation-list">
+                    {snapshot.delegations.map((delegation) => {
+                      const report = delegation.report;
+                      const latestReview = report
+                        ? report.reviewHistory[report.reviewHistory.length - 1]
+                        : undefined;
+                      return (
+                        <li className="delegation-item" key={delegation.id}>
+                          <div className="delegation-header">
+                            <div className="delegation-identity">
+                              <strong>{delegation.taskTitle}</strong>
+                              <span>{delegation.projectName} · run {delegation.runId} · {delegation.role.replace(/_/g, " ")}</span>
+                            </div>
+                            <div className="delegation-statuses">
+                              <span className={`status-pill ${delegation.status === "dispatched" ? "status-running" : delegation.status === "cancelled" ? "status-neutral" : "status-attention"}`}>
+                                Handoff {delegation.status.replace(/_/g, " ")}
+                              </span>
+                              <span className={`status-pill ${delegation.parentRunStatus === "verified_success" ? "status-clean" : "status-attention"}`}>
+                                Parent run {delegation.parentRunStatus.replace(/_/g, " ")}
+                              </span>
+                            </div>
+                          </div>
+                          {report ? (
+                            <div className="worker-report">
+                              <div className="report-status-line">
+                                <span className={`status-pill status-${report.reviewStatus.replace(/_/g, "-")}`}>
+                                  {report.reviewStatus === "reported" ? "Reported · awaiting review" : report.reviewStatus.replace(/_/g, " ")}
+                                </span>
+                                <span className="report-outcome">Worker-reported outcome: {report.report.outcome.replace(/_/g, " ")}</span>
+                                <time dateTime={new Date(report.reportedAt * 1_000).toISOString()}>{formatSnapshotTime(report.reportedAt)}</time>
+                              </div>
+                              <p className="report-summary">{report.report.summary}</p>
+                              <dl className="report-facts">
+                                <div>
+                                  <dt>Changed files</dt>
+                                  <dd>{report.report.changedFiles.length === 0 ? "None reported" : report.report.changedFiles.map((path) => <code key={path}>{path}</code>)}</dd>
+                                </div>
+                                <div>
+                                  <dt>Commits</dt>
+                                  <dd>{report.report.commits.length === 0 ? "None reported" : report.report.commits.map((commit) => <code key={commit}>{commit.slice(0, 12)}</code>)}</dd>
+                                </div>
+                                <div>
+                                  <dt>Linked evidence</dt>
+                                  <dd>{report.report.artifactIds.length === 0 ? "No artifacts" : report.report.artifactIds.map((id) => `Artifact ${id}`).join(", ")}</dd>
+                                </div>
+                                <div>
+                                  <dt>Parent checks linked</dt>
+                                  <dd>{report.qualityCheckRefs.length === 0 ? "None" : report.qualityCheckRefs.map((check) => `${check.checkKey} · ${check.status}`).join(", ")}</dd>
+                                </div>
+                              </dl>
+                              {report.report.checkResults.length > 0 && (
+                                <ul className="report-checks" aria-label={`Worker-reported checks for ${delegation.taskTitle}`}>
+                                  {report.report.checkResults.map((check) => (
+                                    <li key={check.name}>
+                                      <span><strong>{check.name}</strong><small>{check.summary}</small></span>
+                                      <span className={`check-result status-${check.status}`}>{check.status.replace(/_/g, " ")}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              {report.report.blockers.length > 0 && (
+                                <ul className="report-blockers" aria-label={`Worker-reported blockers for ${delegation.taskTitle}`}>
+                                  {report.report.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                                </ul>
+                              )}
+                              {latestReview?.note && <p className="review-note">Latest review: {latestReview.note}</p>}
+                            </div>
+                          ) : (
+                            <p className="delegation-report-pending">
+                              {delegation.status === "dispatched" ? "Awaiting worker report." : "No report has been submitted."}
+                            </p>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <p className="delegation-footnote">Worker reports are claims for review. Parent-run verification still depends on its own mandatory checks.</p>
               </section>
             </div>
           </section>

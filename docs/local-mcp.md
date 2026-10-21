@@ -123,6 +123,8 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 - Workflow tools create objectives and tasks, record immutable decisions and workflow versions, start runs, record quality checks and local evidence references, and finish runs using mandatory-check results.
 - `prepare_delegation` stores a typed v1 task packet against a matching project, task, and running/blocked run. Packets are limited to 16 KiB and include an objective, acceptance criteria, constraints, repository-relative allowed paths, current memory/artifact references, and requested report fields. Invalid or cross-scope references are rejected.
 - `mark_delegation_dispatched` and `cancel_delegation` append validated lifecycle events. These only record the owner's native Codex action or Cathulu cancellation state; they do not spawn or signal a worker and do not change parent-run quality.
+- `submit_delegation_report` stores one idempotent, schema-v1 report (maximum 16 KiB) for a dispatched delegation. Changed paths must fit the packet's allowed scope; referenced artifacts and quality checks must belong to the parent run. The report remains a worker claim, even when its own checks say `passed`.
+- `review_delegation_report` appends an idempotent `accepted`, `rejected`, or `needs_follow_up` review. A report with no review is `reported`. Review state does not accept code or change parent-run quality; mandatory parent checks still gate verified success.
 - Requested model/effort values are preferences only. Idempotency and optional external correlation values are SHA-256 hashed and the raw values are discarded. Effective model/effort values are not inferred.
 - `record_codex_hook_event` accepts only an allowlist of Codex lifecycle metadata. One observed session/turn maps to a run; stopping or interrupting it records an inconclusive outcome, never verified success.
 - Memory tools create provenance-bearing candidates, review candidates, change temperature or scope activation, set a HOT byte budget, read scope memories, and prepare explicit context transfers. A canonical memory requires a provenance source; current reads omit rejected, stale, superseded, and COLD memory by default.
@@ -132,11 +134,11 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 - `cathulu://projects/{id}` reads one project's snapshot.
 - `cathulu://dashboard` reads the compact dashboard snapshot.
 - `cathulu://runs/{id}`, `cathulu://decisions/{id}`, `cathulu://memories/{id}`, and `cathulu://transfers/{id}` read one durable record.
-- `cathulu://delegations/{id}` reads one structured task packet, its stable packet hash, requested settings, artifact/memory IDs, and append-only lifecycle history.
+- `cathulu://delegations/{id}` reads one structured task packet, its stable packet hash, requested settings, artifact/memory IDs, append-only lifecycle history, and any worker report with report hash, referenced parent-run evidence, and append-only review history.
 - `cathulu://objectives/{id}`, `cathulu://tasks/{id}`, `cathulu://dependencies/{id}`, and `cathulu://artifacts/{id}` read current domain records and protection metadata.
 - `cathulu://events/run/{id}` reads a run's append-only event history.
 
-The dashboard polls the same local store through the read-only `dashboard_snapshot` Tauri command. It shows objectives, blockers, recent runs, failed or inconclusive checks, and compact memory health. It does not provide registration, reconciliation, memory, model, or effort controls.
+The dashboard polls the same local store through the read-only `dashboard_snapshot` Tauri command. It shows objectives, blockers, recent runs, failed or inconclusive checks, compact memory health, and up to ten recently active delegations with their report/review status and parent-run status. Worker-reported checks and outcomes are visibly distinct from parent-run verification. It does not provide registration, reconciliation, review, dispatch, memory, model, or effort controls.
 
 Both the desktop app and MCP server attempt to refresh registered Git snapshots at process startup. A missing repository is reported on stderr while other projects continue to reconcile and the application remains available.
 

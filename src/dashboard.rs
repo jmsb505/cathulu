@@ -1,4 +1,4 @@
-use crate::{ProjectSnapshot, Store};
+use crate::{delegation::DashboardDelegationSummary, ProjectSnapshot, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -89,6 +89,7 @@ pub struct DashboardSnapshot {
     pub blockers: Vec<BlockerSummary>,
     pub recent_runs: Vec<RunSummary>,
     pub failed_checks: Vec<FailedCheckSummary>,
+    pub delegations: Vec<DashboardDelegationSummary>,
     pub memory_health: MemoryHealthSummary,
 }
 
@@ -96,6 +97,7 @@ impl Store {
     pub fn dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let connection = self.connection()?;
         let projects = self.list_projects()?;
+        let delegations = self.dashboard_delegations(10)?;
         let objectives = connection
             .raw()
             .prepare(
@@ -348,6 +350,7 @@ impl Store {
             blockers,
             recent_runs,
             failed_checks,
+            delegations,
             memory_health,
         })
     }

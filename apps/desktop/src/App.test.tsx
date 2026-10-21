@@ -34,6 +34,67 @@ describe("read-only project dashboard", () => {
         { id: 8, projectName: "Atlas", objectiveTitle: null, taskTitle: "Run migration", workflowKey: "migration", workflowVersion: 1, status: "failed", summary: "A required check failed.", startedAt: 1_800_000_108, finishedAt: 1_800_000_142 },
         { id: 9, projectName: "Atlas", objectiveTitle: null, taskTitle: null, workflowKey: null, workflowVersion: null, status: "inconclusive", summary: "Codex turn ended; Cathulu verification was not recorded.", startedAt: 1_800_000_107, finishedAt: 1_800_000_143 },
       ],
+      delegations: [{
+        id: 12,
+        projectName: "Atlas",
+        taskTitle: "Implement worker reports",
+        runId: 7,
+        role: "worker",
+        status: "dispatched",
+        parentRunStatus: "blocked",
+        createdAt: 1_800_000_120,
+        updatedAt: 1_800_000_150,
+        report: {
+          reportId: 13,
+          delegationId: 12,
+          reviewStatus: "reported",
+          report: {
+            schemaVersion: 1,
+            summary: "The worker completed the scoped changes and reports passing tests.",
+            outcome: "completed",
+            changedFiles: ["src/delegation.rs"],
+            commits: ["0123456789abcdef0123456789abcdef01234567"],
+            checkResults: [{ name: "workspace tests", status: "passed", summary: "All reported tests passed." }],
+            blockers: [],
+            artifactIds: [11],
+            qualityCheckIds: [5],
+          },
+          reportHash: "a".repeat(64),
+          reportedAt: 1_800_000_150,
+          qualityCheckRefs: [{ qualityCheckId: 5, checkKey: "workspace-tests", status: "passed" }],
+          reviewHistory: [],
+        },
+      }, {
+        id: 14,
+        projectName: "Atlas",
+        taskTitle: "Resolve schema mismatch",
+        runId: 8,
+        role: "worker",
+        status: "dispatched",
+        parentRunStatus: "blocked",
+        createdAt: 1_800_000_121,
+        updatedAt: 1_800_000_151,
+        report: {
+          reportId: 15,
+          delegationId: 14,
+          reviewStatus: "needs_follow_up",
+          report: {
+            schemaVersion: 1,
+            summary: "The migration stopped after detecting an incompatible schema.",
+            outcome: "blocked",
+            changedFiles: [],
+            commits: [],
+            checkResults: [{ name: "migration check", status: "failed", summary: "The existing schema does not match the expected version." }],
+            blockers: ["Resolve the schema mismatch before retrying."],
+            artifactIds: [],
+            qualityCheckIds: [],
+          },
+          reportHash: "b".repeat(64),
+          reportedAt: 1_800_000_151,
+          qualityCheckRefs: [],
+          reviewHistory: [{ id: 16, decision: "needs_follow_up", note: "Please add the migration diagnosis.", createdAt: 1_800_000_152 }],
+        },
+      }],
       failedChecks: [
         { id: 5, runId: 6, projectName: "Atlas", checkKey: "integration", mandatory: true, status: "failed", details: {}, updatedAt: 1_800_000_115 },
         { id: 9, runId: 8, projectName: "Atlas", checkKey: "packaging", mandatory: false, status: "inconclusive", details: {}, updatedAt: 1_800_000_116 },
@@ -57,6 +118,14 @@ describe("read-only project dashboard", () => {
     expect(screen.getByRole("heading", { name: "Quality watch" })).toBeTruthy();
     expect(screen.getByText("integration")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Memory health" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Delegations & worker reports" })).toBeTruthy();
+    expect(screen.getByText("Implement worker reports")).toBeTruthy();
+    expect(screen.getByText("Reported · awaiting review")).toBeTruthy();
+    expect(screen.getByText("Worker-reported outcome: completed")).toBeTruthy();
+    expect(screen.getAllByText("Parent run blocked").length).toBe(2);
+    expect(screen.getByText("needs follow up")).toBeTruthy();
+    expect(screen.getByText("Resolve the schema mismatch before retrying.")).toBeTruthy();
+    expect(screen.getByText(/Parent-run verification still depends on its own mandatory checks\./)).toBeTruthy();
     expect(screen.getByText("HOT scopes")).toBeTruthy();
     expect(screen.getByText("Largest scope HOT")).toBeTruthy();
     expect(screen.getByText("256 B")).toBeTruthy();
@@ -75,7 +144,7 @@ describe("read-only project dashboard", () => {
 
   it("shows the empty state when no projects are registered", async () => {
     invokeMock.mockResolvedValueOnce({
-      projects: [], objectives: [], blockers: [], recentRuns: [], failedChecks: [],
+      projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
       memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
     } as never);
 
@@ -83,6 +152,7 @@ describe("read-only project dashboard", () => {
 
     expect(await screen.findByText("A quiet starting point.")).toBeTruthy();
     expect(screen.getByText("Register a repository through Codex to see its Git snapshot here.")).toBeTruthy();
+    expect(screen.getByText(/No worker handoffs yet\./)).toBeTruthy();
   });
 
   it("shows command failures as a visible local-state error", async () => {

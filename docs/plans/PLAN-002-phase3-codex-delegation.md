@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: M1-M6 are validated and published to `main`; M6 is published at `1814ccd`. M7 is next.
+Status: M1-M6 are validated and published to `main`; M7 is implemented and locally validated on `codex/phase3-worker-reports-review`. Publish the validated checkpoint after inspecting remote status; M8 follows publication.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -131,11 +131,11 @@ Goal: capture bounded worker claims and evidence in a form the Main Overseer can
 
 Subtasks:
 
-- [ ] Add a versioned structured report with summary, outcome, changed files, commits, test/check results, blockers, and artifact references.
-- [ ] Validate reported files and evidence references against the registered project and existing artifact/check records; preserve raw report body limits.
-- [ ] Make report submission idempotent and distinguish `reported`, `accepted`, `rejected`, and `needs_follow_up` decisions.
-- [ ] Show delegation status and report evidence in the read-only dashboard without adding accept/dispatch controls.
-- [ ] Require parent-level mandatory checks to pass before any `verified_success` status.
+- [x] Add a versioned structured report with summary, outcome, changed files, commits, test/check results, blockers, and artifact references.
+- [x] Validate reported files and evidence references against the registered project and existing artifact/check records; preserve raw report body limits.
+- [x] Make report submission idempotent and distinguish `reported`, `accepted`, `rejected`, and `needs_follow_up` decisions.
+- [x] Show delegation status and report evidence in the read-only dashboard without adding accept/dispatch controls.
+- [x] Require parent-level mandatory checks to pass before any `verified_success` status.
 
 Affected areas: delegation domain/MCP, event history, dashboard snapshot/types/UI/tests, `docs/`.
 
@@ -143,16 +143,17 @@ Dependencies: M6 delegation contract.
 
 Acceptance criteria:
 
-- [ ] Malformed, oversized, duplicate, or cross-project artifact/path claims are rejected without partial state.
-- [ ] A valid report and later review decision remain separately auditable after restart.
-- [ ] A positive worker report cannot finish a parent run as verified without its mandatory checks.
-- [ ] The dashboard remains read-only and clearly distinguishes reported work from accepted/verified outcomes.
+- [x] Malformed, oversized, duplicate, or cross-project artifact/path claims are rejected without partial state.
+- [x] A valid report and later review decision remain separately auditable after restart.
+- [x] A positive worker report cannot finish a parent run as verified without its mandatory checks.
+- [x] The dashboard remains read-only and clearly distinguishes reported work from accepted/verified outcomes.
 
 Validation:
 
-- [ ] Contract and property tests for validation, idempotency, report review, and quality-gate non-bypass.
-- [ ] React tests for no delegations, active delegation, blocked report, and reported-but-unverified run states.
-- [ ] Keyboard/accessibility and narrow-window dashboard checks; all workspace checks and Windows build.
+- [x] MCP contract tests cover validation, idempotency, report review, reference scope, restart persistence, and quality-gate non-bypass.
+- [x] React tests cover no delegations, active delegation, blocked report, reported-but-unverified run state, semantic headings/link, and the absence of write controls.
+- [x] Responsive rules are present for 900px and 620px widths; semantic/read-only behavior is covered in React tests. Direct visual browser viewport inspection was unavailable because the browser tool could not connect to the local Windows loopback server; this limitation is retained in completion evidence.
+- [x] Workspace tests, formatting, frontend build, and Windows MCP/Tauri desktop/restart smoke pass.
 
 Documentation updates: project definition, architecture, local MCP, roadmap, plan.
 
@@ -244,7 +245,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - [x] M5 combined M1-M4 integration gate passed locally on Windows.
 - [x] Publish M5 integration closeout and this plan after docs and checks pass.
 - [x] Publish the validated M6 Git checkpoint to `main` and record its revision (`1814ccd`).
-- [ ] Implement and validate M7.
+- [x] Implement and validate M7 locally; Git publication is pending.
 - [ ] Implement and validate M8.
 - [ ] Resolve the owner-controlled M9 apply target, then implement and validate M9.
 
@@ -255,7 +256,11 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 - 2026-10-21: M5 uses a disposable repo/database and verifies shared MCP/Tauri SQLite state and restart Git reconciliation.
 - 2026-10-21: M6 uses SQLite schema v5, structured 16 KiB task packets, hashed retry/correlation identifiers, scope-checked memory/artifact links, and lifecycle events in the existing append-only journal. Dispatch records a native Codex handoff action but does not start a worker.
 - 2026-10-21: M6 implementation `1814ccd` was pushed to `main` after local validation passed; GitHub returned no status checks and no open pull request for the branch.
+- 2026-10-21: M7 uses additive SQLite schema v6. One immutable 16 KiB schema-v1 worker report may attach to a dispatched delegation. Changed paths are checked against packet scope; artifact and quality-check references are restricted to the parent run; parent quality-check state and details hashes are snapshotted. Report/review requests are idempotent, key values are hashed, reviews are append-only, and worker outcomes do not affect parent-run quality. Referenced report artifacts are protected from orphan collection.
+- 2026-10-21: The dashboard adds up to ten recently active delegation/report summaries as a read-only snapshot. React checks cover semantic labels/read-only states and responsive breakpoints are defined at 900px/620px. Browser viewport inspection could not run because available browser contexts could not reach the local Windows loopback server; no visual pass is claimed.
 
 ## Completion evidence
 
-M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. Commit `1814ccd` is published to `main`. GitHub reported no status checks for the commit; all applicable local gates passed. Each later milestone must record exact validation output, source-of-truth documentation, and Git checkpoint.
+M6 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 19 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed and exercised that test plus desktop startup/restart; `npm test -- --run` passed 3 tests; `npm run build` passed; `cargo tauri build --no-bundle -- --offline` passed; `git diff --check` passed. Commit `1814ccd` is published to `main`. GitHub reported no status checks for the commit; all applicable local gates passed.
+
+M7 validation evidence (Windows, 2026-10-21): `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed 21 tests with one dedicated integration test ignored by default; `scripts/phase1-m4-integration-smoke.ps1` passed, including the dedicated report/review path through MCP, the shared Tauri dashboard snapshot, Windows desktop startup, and MCP restart persistence; `npm test -- --run` passed 3 tests; `npm run build` passed; `git diff --check` passed. Browser viewport inspection could not run because the available browser hosts timed out connecting to the local Vite loopback port; semantic React/read-only assertions and the 900px/620px responsive rules were checked instead. Git publication and remote status inspection remain pending. Each milestone must record source-of-truth documentation and its Git checkpoint.

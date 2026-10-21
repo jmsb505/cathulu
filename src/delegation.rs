@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PACKET_BYTES: usize = 16 * 1024;
+const MAX_REPORT_BYTES: usize = 16 * 1024;
 const REPORT_FIELDS: &[&str] = &[
     "summary",
     "outcome",
@@ -39,6 +40,90 @@ pub struct DelegationTaskPacket {
     pub requested_report_fields: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerCheckResult {
+    pub name: String,
+    pub status: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerReport {
+    #[serde(alias = "schema_version")]
+    pub schema_version: i64,
+    pub summary: String,
+    pub outcome: String,
+    #[serde(alias = "changed_files")]
+    pub changed_files: Vec<String>,
+    pub commits: Vec<String>,
+    #[serde(alias = "check_results")]
+    pub check_results: Vec<WorkerCheckResult>,
+    pub blockers: Vec<String>,
+    #[serde(alias = "artifact_ids")]
+    pub artifact_ids: Vec<i64>,
+    #[serde(alias = "quality_check_ids")]
+    pub quality_check_ids: Vec<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerReportReviewRecord {
+    pub id: i64,
+    pub decision: String,
+    pub note: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerReportQualityCheckRef {
+    pub quality_check_id: i64,
+    pub check_key: String,
+    pub mandatory: bool,
+    pub status: String,
+    pub details_hash: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerReportRecord {
+    pub report_id: i64,
+    pub delegation_id: i64,
+    pub review_status: String,
+    pub report: WorkerReport,
+    pub report_hash: String,
+    pub reported_at: i64,
+    pub quality_check_refs: Vec<WorkerReportQualityCheckRef>,
+    pub review_history: Vec<WorkerReportReviewRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerReportReviewResult {
+    pub review_id: i64,
+    pub delegation_id: i64,
+    pub decision: String,
+    pub review_status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardDelegationSummary {
+    pub id: i64,
+    pub project_name: String,
+    pub task_title: String,
+    pub run_id: i64,
+    pub role: String,
+    pub status: String,
+    pub parent_run_status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub report: Option<WorkerReportRecord>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DelegationRecord {
@@ -56,6 +141,7 @@ pub struct DelegationRecord {
     pub created_at: i64,
     pub updated_at: i64,
     pub lifecycle_events: Vec<EventRecord>,
+    pub report: Option<WorkerReportRecord>,
 }
 
 impl Store {
@@ -207,6 +293,386 @@ impl Store {
         self.transition_delegation(id, "cancelled", "delegation_cancelled")
     }
 
+    pub fn submit_delegation_report(
+        &self,
+        delegation_id: i64,
+        report: &WorkerReport,
+        idempotency_key: &str,
+    ) -> Result<WorkerReportRecord, String> {
+        let report = normalize_worker_report(report)?;
+        let report_json = serde_json::to_string(&report)
+            .map_err(|error| format!("cannot serialize worker report: {error}"))?;
+        if report_json.len() > MAX_REPORT_BYTES {
+            return Err("worker report exceeds the 16 KiB limit".to_string());
+        }
+        let report_hash = content_hash(&report_json);
+        let idempotency_key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let idempotency_key_hash = content_hash(&idempotency_key);
+        let request_hash = content_hash(
+            &serde_json::to_string(&json!({
+                "delegationId": delegation_id,
+                "reportHash": report_hash
+            }))
+            .map_err(|error| format!("cannot serialize worker report identity: {error}"))?,
+        );
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+
+        let existing = transaction
+            .query_row(
+                "SELECT id, delegation_id, request_hash FROM worker_reports
+                 WHERE idempotency_key_hash = ?1",
+                params![idempotency_key_hash],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some((_, existing_delegation, existing_hash)) = existing {
+            if existing_hash != request_hash {
+                return Err(
+                    "idempotency key was already used for a different worker report".to_string(),
+                );
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            if existing_delegation != delegation_id {
+                return Err("idempotency key belongs to another delegation".to_string());
+            }
+            return self
+                .get_delegation_report(delegation_id)?
+                .ok_or_else(|| "idempotent worker report disappeared".to_string());
+        }
+
+        let (delegation_status, run_id, packet_json): (String, i64, String) = transaction
+            .query_row(
+                "SELECT status, run_id, packet_json FROM delegations WHERE id = ?1",
+                params![delegation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        if delegation_status != "dispatched" {
+            return Err("worker reports require a dispatched delegation".to_string());
+        }
+        let packet: DelegationTaskPacket = serde_json::from_str(&packet_json)
+            .map_err(|error| format!("stored delegation task packet is invalid: {error}"))?;
+        validate_report_scope(&report, &packet)?;
+
+        let already_reported: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM worker_reports WHERE delegation_id = ?1)",
+                params![delegation_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if already_reported {
+            return Err(format!(
+                "delegation {delegation_id} already has a worker report"
+            ));
+        }
+
+        let mut quality_check_snapshots = Vec::new();
+        for artifact_id in &report.artifact_ids {
+            let belongs_to_run: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM evidence_artifacts
+                       WHERE id = ?1 AND run_id = ?2 AND archived_at IS NULL
+                     )",
+                    params![artifact_id, run_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !belongs_to_run {
+                return Err(format!(
+                    "worker report artifact {artifact_id} must be available and attached to the parent run"
+                ));
+            }
+        }
+        for quality_check_id in &report.quality_check_ids {
+            let snapshot = transaction
+                .query_row(
+                    "SELECT check_key, mandatory, status, details_json FROM quality_checks
+                     WHERE id = ?1 AND run_id = ?2",
+                    params![quality_check_id, run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sqlite_error)?
+                .ok_or_else(|| {
+                    format!(
+                        "worker report quality check {quality_check_id} must belong to the parent run"
+                    )
+                })?;
+            quality_check_snapshots.push((
+                *quality_check_id,
+                snapshot.0,
+                snapshot.1,
+                snapshot.2,
+                content_hash(&snapshot.3),
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO worker_reports
+                 (delegation_id, schema_version, report_json, report_hash, request_hash,
+                  idempotency_key_hash, reported_at)
+                 VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    delegation_id,
+                    report_json,
+                    report_hash,
+                    request_hash,
+                    idempotency_key_hash,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        let report_id = transaction.last_insert_rowid();
+        for artifact_id in &report.artifact_ids {
+            transaction
+                .execute(
+                    "INSERT INTO worker_report_artifact_refs (report_id, artifact_id, created_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![report_id, artifact_id, now],
+                )
+                .map_err(sqlite_error)?;
+        }
+        for (quality_check_id, check_key, mandatory, status, details_hash) in
+            quality_check_snapshots
+        {
+            transaction
+                .execute(
+                    "INSERT INTO worker_report_quality_check_refs
+                     (report_id, quality_check_id, check_key_snapshot, mandatory_snapshot,
+                      status_snapshot, details_hash_snapshot, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        report_id,
+                        quality_check_id,
+                        check_key,
+                        mandatory,
+                        status,
+                        details_hash,
+                        now
+                    ],
+                )
+                .map_err(sqlite_error)?;
+        }
+        append_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            "delegation_report_submitted",
+            &json!({
+                "reportId": report_id,
+                "reportHash": report_hash,
+                "outcome": report.outcome,
+                "artifactCount": report.artifact_ids.len(),
+                "qualityCheckCount": report.quality_check_ids.len()
+            }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.get_delegation_report(delegation_id)?
+            .ok_or_else(|| "submitted worker report disappeared".to_string())
+    }
+
+    pub fn review_delegation_report(
+        &self,
+        delegation_id: i64,
+        decision: &str,
+        note: &str,
+        idempotency_key: &str,
+    ) -> Result<WorkerReportReviewResult, String> {
+        let decision = decision.trim();
+        if !matches!(decision, "accepted" | "rejected" | "needs_follow_up") {
+            return Err(
+                "report decision must be accepted, rejected, or needs_follow_up".to_string(),
+            );
+        }
+        let note = note.trim();
+        validate_text("worker report review note", note, 1_000, false)?;
+        if note.len() > 2_000 {
+            return Err("worker report review note exceeds 2,000 bytes".to_string());
+        }
+        let idempotency_key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let idempotency_key_hash = content_hash(&idempotency_key);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let report_id = transaction
+            .query_row(
+                "SELECT id FROM worker_reports WHERE delegation_id = ?1",
+                params![delegation_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("delegation {delegation_id} has no worker report to review"))?;
+        let request_hash = content_hash(
+            &serde_json::to_string(&json!({
+                "reportId": report_id,
+                "decision": decision,
+                "note": note
+            }))
+            .map_err(|error| format!("cannot serialize worker report review: {error}"))?,
+        );
+        let existing = transaction
+            .query_row(
+                "SELECT id, request_hash, decision FROM worker_report_reviews
+                 WHERE idempotency_key_hash = ?1",
+                params![idempotency_key_hash],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some((review_id, existing_hash, existing_decision)) = existing {
+            if existing_hash != request_hash {
+                return Err(
+                    "idempotency key was already used for a different review decision".to_string(),
+                );
+            }
+            let review_status = latest_review_status(&transaction, report_id)?;
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(WorkerReportReviewResult {
+                review_id,
+                delegation_id,
+                decision: existing_decision,
+                review_status,
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO worker_report_reviews
+                 (report_id, decision, note, request_hash, idempotency_key_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    report_id,
+                    decision,
+                    note,
+                    request_hash,
+                    idempotency_key_hash,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        let review_id = transaction.last_insert_rowid();
+        append_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            "delegation_report_reviewed",
+            &json!({
+                "reportId": report_id,
+                "reviewId": review_id,
+                "decision": decision
+            }),
+            now,
+        )?;
+        let review_status = latest_review_status(&transaction, report_id)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(WorkerReportReviewResult {
+            review_id,
+            delegation_id,
+            decision: decision.to_string(),
+            review_status,
+        })
+    }
+
+    pub fn dashboard_delegations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DashboardDelegationSummary>, String> {
+        let connection = self.connection()?;
+        let rows = connection
+            .raw()
+            .prepare(
+                "SELECT d.id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
+                        MAX(d.updated_at, COALESCE(wr.reported_at, 0),
+                            COALESCE((SELECT MAX(review.created_at) FROM worker_report_reviews review
+                                      WHERE review.report_id = wr.id), 0))
+                 FROM delegations d
+                 JOIN projects p ON p.id = d.project_id
+                 JOIN tasks t ON t.id = d.task_id
+                 JOIN runs r ON r.id = d.run_id
+                 LEFT JOIN worker_reports wr ON wr.delegation_id = d.id
+                 ORDER BY 9 DESC, d.id DESC LIMIT ?1",
+            )
+            .map_err(sqlite_error)?
+            .query_map(params![limit.clamp(1, 20) as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    project_name,
+                    task_title,
+                    run_id,
+                    role,
+                    status,
+                    parent_run_status,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ok(DashboardDelegationSummary {
+                        id,
+                        project_name,
+                        task_title,
+                        run_id,
+                        role,
+                        status,
+                        parent_run_status,
+                        created_at,
+                        updated_at,
+                        report: self.get_delegation_report(id)?,
+                    })
+                },
+            )
+            .collect()
+    }
+
     pub fn get_delegation(&self, id: i64) -> Result<Option<DelegationRecord>, String> {
         let connection = self.connection()?;
         let row = connection
@@ -272,6 +738,90 @@ impl Store {
             created_at,
             updated_at,
             lifecycle_events,
+            report: self.get_delegation_report(id)?,
+        }))
+    }
+
+    fn get_delegation_report(
+        &self,
+        delegation_id: i64,
+    ) -> Result<Option<WorkerReportRecord>, String> {
+        let connection = self.connection()?;
+        let report_row = connection
+            .raw()
+            .query_row(
+                "SELECT id, report_json, report_hash, reported_at
+                 FROM worker_reports WHERE delegation_id = ?1",
+                params![delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some((report_id, report_json, report_hash, reported_at)) = report_row else {
+            return Ok(None);
+        };
+        let report = serde_json::from_str(&report_json)
+            .map_err(|error| format!("stored worker report is invalid: {error}"))?;
+        let quality_check_refs = connection
+            .raw()
+            .prepare(
+                "SELECT quality_check_id, check_key_snapshot, mandatory_snapshot,
+                        status_snapshot, details_hash_snapshot, created_at
+                 FROM worker_report_quality_check_refs WHERE report_id = ?1
+                 ORDER BY quality_check_id",
+            )
+            .map_err(sqlite_error)?
+            .query_map(params![report_id], |row| {
+                Ok(WorkerReportQualityCheckRef {
+                    quality_check_id: row.get(0)?,
+                    check_key: row.get(1)?,
+                    mandatory: row.get(2)?,
+                    status: row.get(3)?,
+                    details_hash: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let review_history = connection
+            .raw()
+            .prepare(
+                "SELECT id, decision, note, created_at FROM worker_report_reviews
+                 WHERE report_id = ?1 ORDER BY id",
+            )
+            .map_err(sqlite_error)?
+            .query_map(params![report_id], |row| {
+                Ok(WorkerReportReviewRecord {
+                    id: row.get(0)?,
+                    decision: row.get(1)?,
+                    note: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let review_status = review_history
+            .last()
+            .map(|review| review.decision.clone())
+            .unwrap_or_else(|| "reported".to_string());
+        Ok(Some(WorkerReportRecord {
+            report_id,
+            delegation_id,
+            review_status,
+            report,
+            report_hash,
+            reported_at,
+            quality_check_refs,
+            review_history,
         }))
     }
 
@@ -392,6 +942,216 @@ fn normalize_and_validate_packet(
         return Err("delegation task packet exceeds the 16 KiB limit".to_string());
     }
     Ok(packet)
+}
+
+fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String> {
+    let mut report = report.clone();
+    report.summary = report.summary.trim().to_string();
+    report.outcome = report.outcome.trim().to_string();
+    trim_items(&mut report.changed_files);
+    trim_items(&mut report.commits);
+    trim_items(&mut report.blockers);
+
+    if report.schema_version != 1 {
+        return Err("worker report schema_version must be 1".to_string());
+    }
+    validate_text("worker report summary", &report.summary, 4_000, true)?;
+    if !matches!(
+        report.outcome.as_str(),
+        "completed" | "partial" | "blocked" | "failed"
+    ) {
+        return Err(
+            "worker report outcome must be completed, partial, blocked, or failed".to_string(),
+        );
+    }
+    if report.changed_files.len() > 128 {
+        return Err("worker report may list at most 128 changed files".to_string());
+    }
+    for path in &mut report.changed_files {
+        *path = normalize_report_path(path)?;
+    }
+    validate_unique("changed files", &report.changed_files)?;
+    if report.commits.len() > 64 {
+        return Err("worker report may list at most 64 commits".to_string());
+    }
+    for commit in &mut report.commits {
+        *commit = commit.to_ascii_lowercase();
+        if !(7..=64).contains(&commit.len()) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "worker report commits must be 7 to 64 character hexadecimal IDs".to_string(),
+            );
+        }
+    }
+    validate_unique("commits", &report.commits)?;
+    if report.check_results.len() > 64 {
+        return Err("worker report may include at most 64 check results".to_string());
+    }
+    for check in &mut report.check_results {
+        check.name = check.name.trim().to_string();
+        check.status = check.status.trim().to_string();
+        check.summary = check.summary.trim().to_string();
+        validate_text("worker check name", &check.name, 120, true)?;
+        validate_text("worker check summary", &check.summary, 1_000, true)?;
+        if !matches!(
+            check.status.as_str(),
+            "passed" | "failed" | "inconclusive" | "not_run"
+        ) {
+            return Err(format!("unsupported worker check status: {}", check.status));
+        }
+    }
+    validate_unique(
+        "worker check names",
+        &report
+            .check_results
+            .iter()
+            .map(|check| check.name.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    validate_list("worker report blockers", &report.blockers, 32, 1_000, false)?;
+    validate_unique("worker report blockers", &report.blockers)?;
+    if report.artifact_ids.len() > 64 || report.quality_check_ids.len() > 64 {
+        return Err(
+            "worker report may reference at most 64 artifacts and 64 quality checks".to_string(),
+        );
+    }
+    if report
+        .artifact_ids
+        .iter()
+        .chain(report.quality_check_ids.iter())
+        .any(|id| *id <= 0)
+    {
+        return Err("worker report reference IDs must be positive integers".to_string());
+    }
+    validate_unique_ids("worker report artifact references", &report.artifact_ids)?;
+    validate_unique_ids(
+        "worker report quality-check references",
+        &report.quality_check_ids,
+    )?;
+    let encoded = serde_json::to_vec(&report)
+        .map_err(|error| format!("cannot size worker report: {error}"))?;
+    if encoded.len() > MAX_REPORT_BYTES {
+        return Err("worker report exceeds the 16 KiB limit".to_string());
+    }
+    Ok(report)
+}
+
+fn validate_report_scope(
+    report: &WorkerReport,
+    packet: &DelegationTaskPacket,
+) -> Result<(), String> {
+    let requested = &packet.requested_report_fields;
+    for (field, present) in [
+        ("changed_paths", !report.changed_files.is_empty()),
+        ("commits", !report.commits.is_empty()),
+        (
+            "checks",
+            !report.check_results.is_empty() || !report.quality_check_ids.is_empty(),
+        ),
+        ("blockers", !report.blockers.is_empty()),
+        ("artifact_refs", !report.artifact_ids.is_empty()),
+    ] {
+        if present
+            && !requested
+                .iter()
+                .any(|requested_field| requested_field == field)
+        {
+            return Err(format!(
+                "worker report field {field} was not requested by the delegation packet"
+            ));
+        }
+    }
+    for path in &report.changed_files {
+        if !packet
+            .allowed_scope
+            .iter()
+            .any(|scope| path_matches_scope(path, scope))
+        {
+            return Err(format!(
+                "worker report changed file is outside the allowed delegation scope: {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_report_path(path: &str) -> Result<String, String> {
+    let path = path.trim().replace('\\', "/");
+    validate_text("worker report changed file", &path, 500, true)?;
+    let is_drive_path = path.as_bytes().get(1) == Some(&b':');
+    if path.starts_with('/')
+        || is_drive_path
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == ".." || component == ".")
+        || path
+            .chars()
+            .any(|character| matches!(character, '*' | '?' | '[' | ']'))
+    {
+        return Err(format!(
+            "worker report changed file must be a literal repository-relative path: {path}"
+        ));
+    }
+    Ok(path)
+}
+
+fn path_matches_scope(path: &str, scope: &str) -> bool {
+    let path_segments = path.split('/').collect::<Vec<_>>();
+    let scope = scope.replace('\\', "/");
+    let scope_segments = scope.split('/').collect::<Vec<_>>();
+    let mut matches = vec![false; path_segments.len() + 1];
+    matches[0] = true;
+    for scope_segment in scope_segments {
+        let mut next = vec![false; path_segments.len() + 1];
+        if scope_segment == "**" {
+            next[0] = matches[0];
+            for path_index in 1..=path_segments.len() {
+                next[path_index] = matches[path_index] || next[path_index - 1];
+            }
+        } else {
+            for path_index in 1..=path_segments.len() {
+                next[path_index] = matches[path_index - 1]
+                    && segment_matches(scope_segment, path_segments[path_index - 1]);
+            }
+        }
+        matches = next;
+    }
+    matches[path_segments.len()]
+}
+
+fn segment_matches(pattern: &str, segment: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let segment = segment.chars().collect::<Vec<_>>();
+    let mut matches = vec![false; segment.len() + 1];
+    matches[0] = true;
+    for pattern_char in pattern {
+        let mut next = vec![false; segment.len() + 1];
+        if pattern_char == '*' {
+            next[0] = matches[0];
+            for segment_index in 1..=segment.len() {
+                next[segment_index] = matches[segment_index] || next[segment_index - 1];
+            }
+        } else {
+            for segment_index in 1..=segment.len() {
+                next[segment_index] = matches[segment_index - 1]
+                    && (pattern_char == '?' || pattern_char == segment[segment_index - 1]);
+            }
+        }
+        matches = next;
+    }
+    matches[segment.len()]
+}
+
+fn latest_review_status(transaction: &Transaction<'_>, report_id: i64) -> Result<String, String> {
+    transaction
+        .query_row(
+            "SELECT decision FROM worker_report_reviews WHERE report_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![report_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sqlite_error)
+        .map(|decision| decision.unwrap_or_else(|| "reported".to_string()))
 }
 
 fn validate_parent_links(
