@@ -149,6 +149,7 @@ fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
             content_hash: "a".repeat(64),
             source_ref: "artifact://test/output".to_string(),
             content: "raw output remains local".to_string(),
+            source_spans: vec![],
         }],
         max_output_bytes: 1024,
     };

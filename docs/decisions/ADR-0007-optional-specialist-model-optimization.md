@@ -55,13 +55,17 @@ The user requested that Codex remain the primary reasoning/coding system, that n
 
 M16 implements bounded workflow/delegation schemas, a compact SQLite-derived state projection, local-only shadow evaluation, and an append-only post-run review event. No remote provider adapter or model call is included. Context7's current-documentation lookup returned a monthly quota limit, so the current Jev AI API documentation, service terms, and API repository README were checked directly. The API page documents a remote endpoint, bearer-key requirement, model IDs, request schema, and response shape; the repository describes thejevai.com as an independent app rather than the official site for the underlying Jev model. The published terms do not establish request retention/data handling, model-operator identity, or Cathulu's secure credential path. The M16 runner records remote configurations as skipped without calling the service until those items are verified. This keeps Jev as a candidate and does not alter the all-disabled baseline.
 
+## M17 implementation decision
+
+M17 reads only registered local test/compiler/CI/tool-output artifacts through their existing evidence references. It verifies a stored content hash when present, selects bounded error-adjacent byte spans, and gives a local ContextModel a stable `cathulu://artifacts/{id}` reference rather than a filesystem path. Candidate output is accepted only when its artifact IDs/hashes, schema, selected ranges, exact source quotes, and output size validate. The immutable source remains available for audit and recovery. Invocation metadata and result evidence use existing append-only run events; no migration or second artifact store is needed. Remote providers are skipped because no provider API/terms and local credential path have been approved. The implementation and tests establish the shadow boundary only; a deterministic test double does not establish provider quality or workflow benefit.
+
 ## Evidence
 
 - User's specialist-model architecture request in the current task.
 - Existing source-of-truth constraints in [ADR-0001](ADR-0001-cathulu-is-the-local-evidence-layer.md), [ADR-0002](ADR-0002-cathulu-hosted-agent-selectors.md), [ADR-0003](ADR-0003-managed-local-memory-lifecycle.md), [ADR-0005](ADR-0005-codex-worker-telemetry-and-worktree-verification.md), and [ADR-0006](ADR-0006-local-graphify-snapshot-contract.md).
 - Existing measurement authorities described in [architecture](../architecture.md), [roadmap](../roadmap.md), and [PLAN-003](../plans/PLAN-003-evidence-gated-scaling.md).
 
-This ADR records the accepted architecture boundary and the M16 decision to keep remote provider use disabled while data-handling and credential questions remain unresolved. M15/M16 foundation implementation is recorded in [PLAN-004](../plans/PLAN-004-optional-specialist-model-optimization.md). No provider integration, live model call, active workflow treatment, or measured optimization result is claimed.
+This ADR records the accepted architecture boundary and the M16/M17 decisions to keep remote provider use disabled while data-handling and credential questions remain unresolved. M15-M17 foundation implementation is recorded in [PLAN-004](../plans/PLAN-004-optional-specialist-model-optimization.md). No provider integration, live model call, active workflow treatment, or measured optimization result is claimed.
 
 ## Reconsider if
 
