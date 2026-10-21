@@ -133,6 +133,12 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 
 ## 4. Use Cathulu through Codex
 
+### Required for Main Overseer, Project Managers, and Workers
+
+Follow the role and memory protocol in [agent-operating-contract.md](agent-operating-contract.md). Main Overseer coordinates only; it does not implement. Assign one Project Manager per active project, and limit each Project Manager assignment to two worker agents total. The Project Manager and every Worker must receive the current task/run IDs, use Cathulu MCP to read scoped memory and retrieve relevant WARM candidates, and record selected context with `prepare_context_transfer` before it is handed off. Include only relevant memory/artifact IDs in `prepare_delegation`; if retrieval finds nothing useful, state that explicitly. Do not inject COLD or stale memory automatically, replay transcripts, or treat a worker report as verified success.
+
+Native Codex hierarchical spawning is not created by these MCP tools. Confirm the current client supports Project Manager child spawning and that those children inherit the Cathulu MCP server before using the full hierarchy. If that path is unavailable, stop and report the limitation; do not have Main do the implementation or flatten the hierarchy. See [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md) and [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.md).
+
 - `register_project` accepts a local Git repository path. It stores the canonical repository root and an initial branch, HEAD, dirty flag, and changed-path list.
 - `reconcile_project` refreshes the Git snapshot for a registered project ID.
 - `trace_code_path` optionally traces a directed path between exact code symbols in `<repository>\graphify-out\graph.json`. It defaults to three hops (maximum four), accepts optional repository-relative source/target file filters, and returns node IDs, edge relation/confidence, and current source locations without source contents. Graphify metadata is recorded in SQLite; a changed or unavailable snapshot invalidates only memories that name the previous graph snapshot. Missing, stale, malformed, or unsupported snapshots return no candidates so current SQLite/SQL/FTS and source inspection remain the fallback.
@@ -211,3 +217,4 @@ The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks
 By default the database is `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you set `CATHULU_DATA_DIR`, use the same absolute path in both the MCP server and desktop app environments. Otherwise the dashboard may open the default database while MCP writes to the override. Cathulu retains local domain state, bounded event metadata, distilled memory records, provenance links, and artifact references. Do not add secrets, raw prompts, or full transcripts. Detailed artifacts should remain local and be referenced by local paths or artifact identifiers.
 
 Codex uses `[mcp_servers.<name>]` tables in `config.toml` for local stdio servers. Review the current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) before changing this setup.
+
