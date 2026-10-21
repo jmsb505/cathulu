@@ -732,3 +732,61 @@ BEGIN SELECT RAISE(ABORT, 'Project Manager assignment identity is immutable'); E
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (10, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_11: &str = r#"
+CREATE TABLE delegation_activation_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  retrieval_event_id INTEGER REFERENCES events(id) ON DELETE RESTRICT,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  request_hash TEXT NOT NULL,
+  receiver_scope_key TEXT NOT NULL,
+  disposition TEXT NOT NULL CHECK(disposition IN (
+    'context_selected', 'no_relevant_memory', 'memory_tools_unavailable', 'retrieval_incomplete'
+  )),
+  status TEXT NOT NULL CHECK(status IN ('ready', 'incomplete')),
+  memory_tools_available INTEGER NOT NULL CHECK(memory_tools_available IN (0, 1)),
+  retrieval_completed INTEGER NOT NULL CHECK(retrieval_completed IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  UNIQUE(delegation_id, revision),
+  CHECK(
+    (status = 'ready' AND memory_tools_available = 1 AND retrieval_completed = 1
+      AND retrieval_event_id IS NOT NULL
+      AND disposition IN ('context_selected', 'no_relevant_memory'))
+    OR (status = 'incomplete' AND disposition = 'memory_tools_unavailable'
+      AND memory_tools_available = 0 AND retrieval_completed = 0
+      AND retrieval_event_id IS NULL)
+    OR (status = 'incomplete' AND disposition = 'retrieval_incomplete'
+      AND memory_tools_available = 1 AND retrieval_completed = 0
+      AND retrieval_event_id IS NULL)
+  )
+);
+
+CREATE TABLE delegation_activation_memory_refs (
+  activation_id INTEGER NOT NULL REFERENCES delegation_activation_receipts(id) ON DELETE RESTRICT,
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+  content_hash TEXT NOT NULL,
+  delivery TEXT NOT NULL CHECK(delivery IN ('transferred', 'already_known')),
+  transfer_id INTEGER REFERENCES context_transfers(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(activation_id, memory_id),
+  CHECK((delivery = 'transferred' AND transfer_id IS NOT NULL)
+     OR (delivery = 'already_known' AND transfer_id IS NULL))
+);
+
+CREATE INDEX delegation_activation_receipts_latest_idx
+  ON delegation_activation_receipts(delegation_id, revision DESC);
+
+CREATE TRIGGER delegation_activation_receipts_no_update BEFORE UPDATE ON delegation_activation_receipts
+BEGIN SELECT RAISE(ABORT, 'delegation activation receipts are append-only'); END;
+CREATE TRIGGER delegation_activation_receipts_no_delete BEFORE DELETE ON delegation_activation_receipts
+BEGIN SELECT RAISE(ABORT, 'delegation activation receipts are append-only'); END;
+CREATE TRIGGER delegation_activation_memory_refs_no_update BEFORE UPDATE ON delegation_activation_memory_refs
+BEGIN SELECT RAISE(ABORT, 'delegation activation memory references are append-only'); END;
+CREATE TRIGGER delegation_activation_memory_refs_no_delete BEFORE DELETE ON delegation_activation_memory_refs
+BEGIN SELECT RAISE(ABORT, 'delegation activation memory references are append-only'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (11, CAST(strftime('%s','now') AS INTEGER));
+"#;

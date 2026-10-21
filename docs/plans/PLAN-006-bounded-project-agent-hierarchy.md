@@ -1,6 +1,6 @@
 # PLAN-006 — Bounded per-project agent hierarchy
 
-Status: M20 role contract, M21 nested-spawn capability probe, and M22 deterministic hierarchy admission are complete and validated on Windows. M23-M25 remain pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with memory-tool parity and hook correlation still open.
+Status: M20 role contract, M21 nested-spawn capability probe, M22 deterministic hierarchy admission, and M23 memory-gated activation are implemented and validated on Windows. M24-M25 remain pending. M21 proved native PM-to-Worker spawning and Cathulu MCP reachability, with role-specific memory-tool availability and hook correlation still open.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -37,7 +37,7 @@ The new hierarchy applies to independent project work. PULSO, Mecanografica prop
 - Define role boundaries and the required memory workflow.
 - Verify nested native Codex agent creation and Cathulu MCP availability in the actual desktop client before relying on them.
 - Extend current delegation and hook correlation only where required for parent-child hierarchy and caps.
-- Make agent activation require a transfer receipt or an explicit, recorded `no relevant memory` outcome, reusing existing memory and transfer authorities.
+- Make agent activation require a successful bounded memory search plus transfer references or an explicit, recorded `no relevant memory` outcome, reusing existing memory and transfer authorities.
 - Project only actual hierarchy and lifecycle evidence into the read-only dashboard.
 - Validate with an independent real project task when one is available; this does not require cross-repository work.
 
@@ -218,38 +218,49 @@ Expected Git checkpoint: validated additive-schema milestone branch and coherent
 - The initial full-workspace attempt hit Windows `Access is denied` in the `aws-lc-sys` build script under the default sandbox. The same offline command passed when rerun with the build permission required by that script.
 - Test fixtures were isolated; no PULSO, Mecanografica proposals, Cathulu, or other registered project repository was accessed.
 
-### M23 — Memory-gated agent activation and handoff
+### M23 — Memory-gated agent activation and handoff — complete with runtime limitations recorded
 
 Goal: require every Project Manager and Worker activation to be traceable to scoped Cathulu memory retrieval and transfer.
 
 Subtasks:
 
-- [ ] Reuse current memories, known-by state, freshness, scope budgets, artifact links, and transfer ledger; add no duplicate memory authority.
-- [ ] Add a compact agent-activation receipt referencing transferred memory IDs/hashes or a structured no-relevant-memory disposition.
-- [ ] Require the receipt in a delegation packet before recording dispatch; enforce project scope and active HOT budget.
-- [ ] Verify required memory retrieval/transfer operations are actually available to each agent role before dispatch; record an explicit incomplete/blocked activation when they are not.
-- [ ] Record each receiver's logical scope so unchanged known content is omitted and changed knowledge is a delta.
-- [ ] Require worker discoveries to be submitted as provenance-linked evidence/candidates and reviewed before canonical promotion.
-- [ ] Reject attempts to use a model summary as authoritative state or to use specialist output to delete/overwrite memory.
+- [x] Reuse current memories, known-by state, freshness, scope budgets, artifact links, and transfer ledger; add no duplicate memory authority.
+- [x] Add append-only, revisioned activation receipts referencing a successful bounded memory search and transferred memory IDs/hashes, already-known refs, or a structured no-relevant-memory disposition.
+- [x] Require the latest ready receipt before dispatching hierarchy-aware PMs and child Workers; reject missing/incomplete receipts and append a run admission event.
+- [x] Record a successful `search_memory_candidates` event tied to delegation run and exact logical receiver. A boolean claim or generic Cathulu resource read alone cannot satisfy readiness.
+- [x] Keep the limitation explicit: Cathulu does not receive native Codex caller identity or tool-list visibility. The receipt records a declared receiver scope and a successful scoped search; runtime role-specific tool availability remains a separate probe requirement.
+- [x] Record each receiver's logical scope so unchanged known content is omitted and changed knowledge is a delta.
+- [x] Reuse the existing provenance-bearing memory-candidate and review flow for durable worker discoveries; do not promote report text or model summaries directly to canonical authority.
+- [x] Keep summaries non-authoritative and specialist output unable to delete or overwrite durable memory.
 
 Affected areas: `src/memory.rs`, `src/delegation.rs`, migrations only if required, `src/mcp.rs`, context-transfer resources, and `docs/local-mcp.md`.
 
-Dependencies: M20; M21 runtime capability; M22 parent/child identity; existing Phase 1 memory schema. The M21 probe showed PM/Worker tool-surface differences and that `prepare_context_transfer` cannot encode empty memory; M23 must resolve both without inventing memory IDs.
+Dependencies: M20; M21 runtime capability; M22 parent/child identity; existing Phase 1 memory schema. M23 closes the empty-transfer evidence gap without inventing memory IDs. The observed PM memory-tool availability gap remains a runtime limitation: a hierarchy-aware PM stays prepared until it can perform the required bounded search.
 
 Acceptance criteria:
 
-- [ ] Each dispatched PM/worker has a transfer receipt or explicit no-relevant-memory record.
-- [ ] A role with missing memory tools cannot be treated as having completed memory activation merely because it can read a generic Cathulu resource.
-- [ ] Stale, COLD, superseded, foreign-scope, or over-budget memory cannot be injected as current context.
-- [ ] Unchanged known content is not resent; changed content records a delta/replacement.
-- [ ] Canonical promotion preserves source evidence and does not delete unique provenance.
+- [x] Each dispatched hierarchy-aware PM/Worker has a ready receipt tied to a successful bounded memory search, plus valid transfer/known-by refs or an explicit no-relevant-memory disposition. Missing/incomplete receipts block Cathulu's dispatch record.
+- [x] A ready receipt requires a successful bounded search event for its exact delegation run and receiver scope; no search event means dispatch remains blocked.
+- [x] Documentation distinguishes scoped search evidence from proof of per-agent MCP tool availability; the M21 PM `read_memories` gap remains open pending a runtime probe that confirms the required bounded-search operation is available to that role.
+- [x] Stale, COLD, superseded, foreign-scope, or over-budget memory cannot be injected as current context.
+- [x] Unchanged known content is not resent; changed content records a delta/replacement.
+- [x] Existing canonical promotion continues to preserve source evidence; M23 adds no alternate promotion or deletion authority.
 
 Validation:
 
-- [ ] MCP and persistence checks exercise first delivery, repeat delivery, delta delivery, no-memory outcome, stale memory, and worker candidate provenance.
-- [ ] Run existing memory lifecycle and delegation checks; build/check the Rust workspace and verify `git diff --check`.
+- [x] MCP and persistence checks exercise missing/incomplete/readiness gate, first delivery, idempotent receipt retry, already-known omission, delta delivery, no-memory outcome, foreign/superseded/COLD/over-budget memory, and migration preservation.
+- [x] Run existing memory lifecycle and delegation checks; build/check the Rust workspace and verify `git diff --check`.
 
-Documentation updates: local MCP role sequence, architecture, ADR-0009 consequences, and this plan.
+#### M23 validation evidence
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test --offline --test delegation_lifecycle` — 12 passed.
+- `cargo test --offline --workspace` — 74 passed, 1 existing desktop integration test ignored by design; no failures.
+- `git diff --check` — passed.
+- The initial default-sandbox workspace run was blocked by Windows `Access is denied` in the Tauri build script; the same offline workspace run passed when rerun with the build permission required by that script.
+- No project repository was accessed. These tests validate Cathulu's persistence, MCP, and dispatch-record behavior; they do not prove which native agent identity called an MCP tool or that the PM's client tool inventory now includes memory search.
+
+Documentation updates: local MCP role sequence, architecture, ADR-0009 consequences, agent contract, roadmap, and this plan.
 
 Applicable specialized skills: `milestone-delivery`, `ponytail-balanced`, `tdd`.
 
@@ -345,8 +356,8 @@ Use additive migrations only. Preserve legacy delegation records without guessed
 - [x] Confirmed official docs describe MCP inheritance for configured Codex subagents; M21 later verified nested spawning in the tested client/session.
 - [x] M20 — role contract and memory protocol.
 - [x] M21 — nested-spawn/MCP capability probe; role-specific memory tool parity and hook correlation remain open follow-ups.
-- [ ] M22 — hierarchy-aware delegation and caps.
-- [ ] M23 — memory-gated activation and handoff.
+- [x] M22 — hierarchy-aware delegation and caps.
+- [x] M23 — memory-gated activation and handoff; role-specific tool availability and native hook identity remain runtime limitations.
 - [ ] M24 — project activity graph.
 - [ ] M25 — independent real-task verification when a task exists.
 
@@ -357,10 +368,13 @@ Use additive migrations only. Preserve legacy delegation records without guessed
 - 2026-10-21: Official Codex subagent docs state that custom agents inherit MCP servers from the parent configuration; they do not promise nested spawn support uniformly across clients. M21 then demonstrated one PM-to-Worker spawn in the tested session, but PM/Worker memory tool availability differed and no hook metadata surfaced.
 - 2026-10-21: The limit is interpreted strictly as two worker agents total for a Project Manager assignment, including replacements. Revisit only if the owner changes the rule.
 - 2026-10-21: The current workflow uses independent project scopes; cross-project handoff testing remains deferred.
+- 2026-10-21: M23 adds an append-only activation receipt and requires a receiver/run-scoped successful `search_memory_candidates` event before Cathulu can record a hierarchy-aware delegation as dispatched. The activation receipt validates current memory, exact transfer or known-by state, scope, temperature, freshness, and HOT budget. Cathulu still cannot authenticate the native agent caller or inspect its tool inventory; the M21 PM memory-tool gap therefore remains visible and a PM must stay prepared until its bounded-search call succeeds.
 
 ## Completion evidence
 
 M20 documentation delivery (2026-10-21): added the normative Main/Project Manager/Worker operating contract and Cathulu memory workflow; accepted ADR-0009; updated the project definition, architecture, roadmap, and local MCP guide. Documentation review confirms coordinator-only Main behavior, one manager per project assignment, a strict two-worker total per assignment, independent project scopes, and no invented runtime capability. M21 subsequently verified nested spawning in the tested session; deterministic enforcement, complete memory activation, dashboard hierarchy, and real-task evaluation remain pending under M22-M25.
 
 M21 capability probe (2026-10-21): Cathulu run 4 is `verified_success`; the Main spawned one PM and the PM spawned one Worker, with delegations 1 and 2 recorded as dispatched and the Worker report submitted. No project repository was accessed. Main, PM, and Worker each reached Cathulu MCP, but the PM lacked `read_memories` while the Worker had it. HOT/WARM memory was empty; “no relevant memory” was recorded in the run, while `prepare_context_transfer` could not encode an empty transfer. No hooks surfaced, so no hierarchy edge was inferred. M21 closes the nested-spawn capability gate; M22 handles deterministic hierarchy, M23 addresses activation/tool parity, and M24 remains responsible for hook-backed graph evidence.
+
+M23 implementation and validation (2026-10-21): migration 11 adds append-only revisioned activation receipts and references. A ready receipt is tied to a successful bounded memory search event for the exact delegation run and receiver; selected memories must pass existing acceptance, freshness, scope, temperature, HOT-budget, transfer, and known-by rules. A structured `no_relevant_memory` disposition supports empty candidate sets without fabricating memory IDs. The latest ready receipt is required before Cathulu records dispatch; missing/incomplete cases append a run admission rejection. Local Windows validation passed formatting, 12 delegation lifecycle tests, the full offline workspace suite (74 passed, 1 existing desktop test ignored), and `git diff --check`. The default-sandbox Tauri build initially failed with Windows access denied; the same suite passed with the build permission required by that script. No project repository was accessed. M23 does not resolve the M21 PM memory-tool availability difference or native caller attribution; those remain explicit runtime limitations.
 

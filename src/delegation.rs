@@ -2,6 +2,7 @@ use crate::worktree::DelegationWorktreeState;
 use crate::{
     events::{append_event, append_external_event},
     hash::content_hash,
+    memory::DEFAULT_HOT_BUDGET_BYTES,
     telemetry::DelegationWorkerBinding,
     workflow::EventRecord,
     Store,
@@ -128,6 +129,7 @@ pub struct DashboardDelegationSummary {
     pub status: String,
     pub parent_delegation_id: Option<i64>,
     pub project_manager_assignment_status: Option<String>,
+    pub activation_status: Option<String>,
     pub parent_run_status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -147,6 +149,7 @@ pub struct DelegationRecord {
     pub status: String,
     pub parent_delegation_id: Option<i64>,
     pub project_manager_assignment_status: Option<String>,
+    pub activation_receipt: Option<DelegationActivationReceipt>,
     pub task_packet: DelegationTaskPacket,
     pub packet_hash: String,
     pub requested_model: Option<String>,
@@ -170,6 +173,35 @@ pub struct ProjectManagerAssignmentRecord {
     pub status: String,
     pub created_at: i64,
     pub closed_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivationMemoryReference {
+    #[serde(alias = "memory_id")]
+    pub memory_id: i64,
+    #[serde(alias = "content_hash")]
+    pub content_hash: String,
+    pub delivery: String,
+    #[serde(alias = "transfer_id")]
+    pub transfer_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationActivationReceipt {
+    pub id: i64,
+    pub delegation_id: i64,
+    pub revision: i64,
+    pub retrieval_event_id: Option<i64>,
+    pub receiver_scope_key: String,
+    pub disposition: String,
+    pub status: String,
+    pub memory_tools_available: bool,
+    pub retrieval_completed: bool,
+    pub memory_references: Vec<ActivationMemoryReference>,
+    pub request_hash: String,
+    pub created_at: i64,
 }
 
 impl Store {
@@ -554,6 +586,499 @@ impl Store {
             .map_err(sqlite_error)
     }
 
+    pub fn record_delegation_memory_retrieval(
+        &self,
+        delegation_id: i64,
+        source_scope_type: &str,
+        source_scope_id: Option<&str>,
+        receiver_scope_type: &str,
+        receiver_scope_id: &str,
+        method: &str,
+        memory_references: &[(i64, String)],
+    ) -> Result<i64, String> {
+        if receiver_scope_type != "scope" {
+            return Err(
+                "delegation memory retrieval requires a logical receiver scope".to_string(),
+            );
+        }
+        if method != "search_memory_candidates" {
+            return Err("unsupported delegation memory retrieval method".to_string());
+        }
+        if memory_references.len() > 4096 {
+            return Err(
+                "memory retrieval result exceeds the 4096-reference audit limit".to_string(),
+            );
+        }
+        let receiver_scope_id =
+            normalize_required("retrieval receiver scope", receiver_scope_id, 200)?;
+        let mut seen_memory_ids = HashSet::new();
+        for (memory_id, content_hash) in memory_references {
+            if *memory_id <= 0 || !seen_memory_ids.insert(*memory_id) {
+                return Err("retrieval references must use unique positive memory IDs".to_string());
+            }
+            normalize_required("retrieval content hash", content_hash, 128)?;
+        }
+        let refs_json = serde_json::to_string(memory_references)
+            .map_err(|error| format!("cannot serialize memory retrieval references: {error}"))?;
+        let result_hash = content_hash(&refs_json);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let delegation = transaction
+            .query_row(
+                "SELECT d.role, d.parent_delegation_id, d.project_id, d.task_id, d.run_id,
+                        d.status, t.objective_id,
+                        EXISTS(SELECT 1 FROM project_manager_assignments a
+                               WHERE a.manager_delegation_id = d.id)
+                 FROM delegations d JOIN tasks t ON t.id = d.task_id
+                 WHERE d.id = ?1",
+                params![delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, bool>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        let is_hierarchy_delegation = (delegation.0 == "sub_overseer" && delegation.7)
+            || (delegation.0 == "worker" && delegation.1.is_some());
+        if !is_hierarchy_delegation {
+            return Err(
+                "memory retrieval receipts are only available for hierarchy-aware delegations"
+                    .to_string(),
+            );
+        }
+        if delegation.5 != "prepared" {
+            return Err("delegation memory retrieval must happen before dispatch".to_string());
+        }
+        let (source_scope_key, normalized_source_id) =
+            crate::memory::normalize_scope(&transaction, source_scope_type, source_scope_id)?;
+        let scope_matches = match source_scope_type {
+            "global" => normalized_source_id.is_none(),
+            "project" => normalized_source_id.as_deref() == Some(&delegation.2.to_string()),
+            "objective" => normalized_source_id.as_deref() == Some(&delegation.6.to_string()),
+            "task" => normalized_source_id.as_deref() == Some(&delegation.3.to_string()),
+            _ => false,
+        };
+        if !scope_matches {
+            return Err(
+                "memory retrieval scope is outside the delegation project/task scope".to_string(),
+            );
+        }
+        let (receiver_scope_key, _) = crate::memory::normalize_scope(
+            &transaction,
+            receiver_scope_type,
+            Some(&receiver_scope_id),
+        )?;
+        let retrieval_event_id = append_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            "delegation_memory_retrieval_completed",
+            &json!({
+                "runId": delegation.4,
+                "sourceScopeKey": source_scope_key,
+                "receiverScopeKey": receiver_scope_key,
+                "method": method,
+                "resultCount": memory_references.len(),
+                "resultHash": result_hash
+            }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(retrieval_event_id)
+    }
+
+    pub fn record_delegation_activation(
+        &self,
+        delegation_id: i64,
+        receiver_scope_type: &str,
+        receiver_scope_id: &str,
+        disposition: &str,
+        memory_tools_available: bool,
+        retrieval_completed: bool,
+        memory_references: &[ActivationMemoryReference],
+        idempotency_key: &str,
+    ) -> Result<DelegationActivationReceipt, String> {
+        if receiver_scope_type != "scope" {
+            return Err("activation receiver must use a logical scope".to_string());
+        }
+        let receiver_scope_id =
+            normalize_required("activation receiver scope", receiver_scope_id, 200)?;
+        if memory_references.len() > 64 {
+            return Err("activation receipt exceeds the 64 memory-reference limit".to_string());
+        }
+        if !matches!(
+            disposition,
+            "context_selected"
+                | "no_relevant_memory"
+                | "memory_tools_unavailable"
+                | "retrieval_incomplete"
+        ) {
+            return Err("unsupported delegation activation disposition".to_string());
+        }
+        let status =
+            match disposition {
+                "context_selected" if memory_tools_available && retrieval_completed => {
+                    if memory_references.is_empty() {
+                        return Err(
+                            "context_selected activation requires memory references".to_string()
+                        );
+                    }
+                    "ready"
+                }
+                "no_relevant_memory" if memory_tools_available && retrieval_completed => {
+                    if !memory_references.is_empty() {
+                        return Err(
+                            "no_relevant_memory activation cannot include memory references"
+                                .to_string(),
+                        );
+                    }
+                    "ready"
+                }
+                "memory_tools_unavailable" if !memory_tools_available && !retrieval_completed => {
+                    if !memory_references.is_empty() {
+                        return Err(
+                            "incomplete activation cannot include memory references".to_string()
+                        );
+                    }
+                    "incomplete"
+                }
+                "retrieval_incomplete" if memory_tools_available && !retrieval_completed => {
+                    if !memory_references.is_empty() {
+                        return Err(
+                            "incomplete activation cannot include memory references".to_string()
+                        );
+                    }
+                    "incomplete"
+                }
+                _ => return Err(
+                    "activation disposition does not match the reported tool and retrieval state"
+                        .to_string(),
+                ),
+            };
+        let idempotency_key =
+            normalize_required("activation idempotency key", idempotency_key, 256)?;
+        let idempotency_key_hash = content_hash(&idempotency_key);
+        let now = unix_time();
+        let mut normalized_references = memory_references.to_vec();
+        let mut seen_memory_ids = HashSet::new();
+        for reference in &mut normalized_references {
+            if reference.memory_id <= 0 || !seen_memory_ids.insert(reference.memory_id) {
+                return Err(
+                    "activation memory references must use unique positive memory IDs".to_string(),
+                );
+            }
+            reference.content_hash =
+                normalize_required("activation content hash", &reference.content_hash, 128)?;
+            match reference.delivery.as_str() {
+                "transferred" if reference.transfer_id.is_some_and(|id| id > 0) => {}
+                "already_known" if reference.transfer_id.is_none() => {}
+                _ => {
+                    return Err(
+                        "activation memory delivery must be transferred with a transfer ID or already_known without one"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+        let request_json = serde_json::to_string(&json!({
+            "delegationId": delegation_id,
+            "receiverScopeType": receiver_scope_type,
+            "receiverScopeId": receiver_scope_id,
+            "disposition": disposition,
+            "memoryToolsAvailable": memory_tools_available,
+            "retrievalCompleted": retrieval_completed,
+            "memoryReferences": normalized_references
+        }))
+        .map_err(|error| format!("cannot serialize activation request: {error}"))?;
+        let request_hash = content_hash(&request_json);
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let existing = transaction
+            .query_row(
+                "SELECT id, request_hash FROM delegation_activation_receipts
+                 WHERE idempotency_key_hash = ?1",
+                params![idempotency_key_hash],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some((existing_id, existing_hash)) = existing {
+            if existing_hash != request_hash {
+                return Err(
+                    "activation idempotency key was already used for a different request"
+                        .to_string(),
+                );
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            return self
+                .get_delegation_activation_receipt(existing_id)?
+                .ok_or_else(|| "idempotent activation receipt disappeared".to_string());
+        }
+        let delegation = transaction
+            .query_row(
+                "SELECT d.role, d.parent_delegation_id, d.project_id, d.task_id, d.run_id,
+                        d.status, t.objective_id,
+                        EXISTS(SELECT 1 FROM project_manager_assignments a
+                               WHERE a.manager_delegation_id = d.id)
+                 FROM delegations d JOIN tasks t ON t.id = d.task_id
+                 WHERE d.id = ?1",
+                params![delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, bool>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        let is_hierarchy_delegation = (delegation.0 == "sub_overseer" && delegation.7)
+            || (delegation.0 == "worker" && delegation.1.is_some());
+        if !is_hierarchy_delegation {
+            return Err(
+                "activation receipts are required only for hierarchy-aware delegations".to_string(),
+            );
+        }
+        if delegation.5 != "prepared" {
+            return Err(
+                "activation receipts can only be recorded before delegation dispatch".to_string(),
+            );
+        }
+        let (receiver_scope_key, _) = crate::memory::normalize_scope(
+            &transaction,
+            receiver_scope_type,
+            Some(&receiver_scope_id),
+        )?;
+        let retrieval_event_id = if status == "ready" {
+            transaction
+                .query_row(
+                    "SELECT id FROM events
+                     WHERE aggregate_type = 'delegation' AND aggregate_id = ?1
+                       AND event_type = 'delegation_memory_retrieval_completed'
+                       AND json_extract(payload_json, '$.method') = 'search_memory_candidates'
+                       AND json_extract(payload_json, '$.runId') = ?2
+                       AND json_extract(payload_json, '$.receiverScopeKey') = ?3
+                     ORDER BY id DESC LIMIT 1",
+                    params![delegation_id, delegation.4, receiver_scope_key],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?
+        } else {
+            None
+        };
+        if status == "ready" && retrieval_event_id.is_none() {
+            return Err(
+                "ready activation requires a successful bounded Cathulu memory search for this delegation and receiver scope"
+                    .to_string(),
+            );
+        }
+        for reference in &normalized_references {
+            validate_activation_memory_reference(
+                &transaction,
+                delegation.2,
+                delegation.6,
+                delegation.3,
+                delegation.4,
+                &receiver_scope_key,
+                reference,
+                now,
+            )?;
+        }
+        let revision: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(revision), 0) + 1
+                 FROM delegation_activation_receipts WHERE delegation_id = ?1",
+                params![delegation_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO delegation_activation_receipts
+                 (delegation_id, revision, retrieval_event_id, idempotency_key_hash, request_hash, receiver_scope_key,
+                  disposition, status, memory_tools_available, retrieval_completed, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    delegation_id,
+                    revision,
+                    retrieval_event_id,
+                    idempotency_key_hash,
+                    request_hash,
+                    receiver_scope_key,
+                    disposition,
+                    status,
+                    memory_tools_available,
+                    retrieval_completed,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        let activation_id = transaction.last_insert_rowid();
+        for reference in &normalized_references {
+            transaction
+                .execute(
+                    "INSERT INTO delegation_activation_memory_refs
+                     (activation_id, memory_id, content_hash, delivery, transfer_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        activation_id,
+                        reference.memory_id,
+                        reference.content_hash,
+                        reference.delivery,
+                        reference.transfer_id,
+                        now
+                    ],
+                )
+                .map_err(sqlite_error)?;
+        }
+        append_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            "delegation_activation_recorded",
+            &json!({
+                "activationId": activation_id,
+                "revision": revision,
+                "requestHash": request_hash,
+                "retrievalEventId": retrieval_event_id,
+                "receiverScopeKey": receiver_scope_key,
+                "disposition": disposition,
+                "status": status,
+                "memoryReferenceCount": normalized_references.len()
+            }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.get_delegation_activation_receipt(activation_id)?
+            .ok_or_else(|| "recorded activation receipt disappeared".to_string())
+    }
+
+    fn get_delegation_activation_receipt(
+        &self,
+        activation_id: i64,
+    ) -> Result<Option<DelegationActivationReceipt>, String> {
+        let connection = self.connection()?;
+        let receipt = connection
+            .raw()
+            .query_row(
+                "SELECT id, delegation_id, revision, receiver_scope_key, disposition, status,
+                        retrieval_event_id, memory_tools_available, retrieval_completed, request_hash, created_at
+                 FROM delegation_activation_receipts WHERE id = ?1",
+                params![activation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, bool>(7)?,
+                        row.get::<_, bool>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some((
+            id,
+            delegation_id,
+            revision,
+            receiver_scope_key,
+            disposition,
+            status,
+            retrieval_event_id,
+            memory_tools_available,
+            retrieval_completed,
+            request_hash,
+            created_at,
+        )) = receipt
+        else {
+            return Ok(None);
+        };
+        let memory_references = connection
+            .raw()
+            .prepare(
+                "SELECT memory_id, content_hash, delivery, transfer_id
+                 FROM delegation_activation_memory_refs WHERE activation_id = ?1 ORDER BY memory_id",
+            )
+            .map_err(sqlite_error)?
+            .query_map(params![activation_id], |row| {
+                Ok(ActivationMemoryReference {
+                    memory_id: row.get(0)?,
+                    content_hash: row.get(1)?,
+                    delivery: row.get(2)?,
+                    transfer_id: row.get(3)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        Ok(Some(DelegationActivationReceipt {
+            id,
+            delegation_id,
+            revision,
+            retrieval_event_id,
+            receiver_scope_key,
+            disposition,
+            status,
+            memory_tools_available,
+            retrieval_completed,
+            memory_references,
+            request_hash,
+            created_at,
+        }))
+    }
+
+    fn latest_delegation_activation_receipt(
+        &self,
+        delegation_id: i64,
+    ) -> Result<Option<DelegationActivationReceipt>, String> {
+        let connection = self.connection()?;
+        let activation_id = connection
+            .raw()
+            .query_row(
+                "SELECT id FROM delegation_activation_receipts
+                 WHERE delegation_id = ?1 ORDER BY revision DESC LIMIT 1",
+                params![delegation_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        activation_id
+            .map(|activation_id| self.get_delegation_activation_receipt(activation_id))
+            .transpose()
+            .map(Option::flatten)
+    }
+
     pub fn submit_delegation_report(
         &self,
         delegation_id: i64,
@@ -881,7 +1406,10 @@ impl Store {
                             COALESCE((SELECT MAX(review.created_at) FROM worker_report_reviews review
                                       WHERE review.report_id = wr.id), 0)), d.parent_delegation_id,
                         (SELECT assignment.status FROM project_manager_assignments assignment
-                         WHERE assignment.manager_delegation_id = d.id)
+                         WHERE assignment.manager_delegation_id = d.id),
+                        (SELECT activation.status FROM delegation_activation_receipts activation
+                         WHERE activation.delegation_id = d.id
+                         ORDER BY activation.revision DESC LIMIT 1)
                  FROM delegations d
                  JOIN projects p ON p.id = d.project_id
                  JOIN tasks t ON t.id = d.task_id
@@ -903,6 +1431,7 @@ impl Store {
                     row.get::<_, i64>(8)?,
                     row.get::<_, Option<i64>>(9)?,
                     row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(sqlite_error)?
@@ -922,6 +1451,7 @@ impl Store {
                     updated_at,
                     parent_delegation_id,
                     project_manager_assignment_status,
+                    activation_status,
                 )| {
                     Ok(DashboardDelegationSummary {
                         id,
@@ -932,6 +1462,7 @@ impl Store {
                         status,
                         parent_delegation_id,
                         project_manager_assignment_status,
+                        activation_status,
                         parent_run_status,
                         created_at,
                         updated_at,
@@ -1001,6 +1532,7 @@ impl Store {
         let task_packet = serde_json::from_str(&packet_json)
             .map_err(|error| format!("stored delegation task packet is invalid: {error}"))?;
         let lifecycle_events = self.list_events("delegation", &id.to_string())?;
+        let activation_receipt = self.latest_delegation_activation_receipt(id)?;
         Ok(Some(DelegationRecord {
             id,
             project_id,
@@ -1010,6 +1542,7 @@ impl Store {
             status,
             parent_delegation_id,
             project_manager_assignment_status,
+            activation_receipt,
             task_packet,
             packet_hash,
             requested_model,
@@ -1154,6 +1687,43 @@ impl Store {
             return Err(format!(
                 "delegation cannot transition from {from_status} to {to_status}"
             ));
+        }
+        let hierarchy_aware = (role == "sub_overseer" && assignment_status.is_some())
+            || (role == "worker" && parent_delegation_id.is_some());
+        if to_status == "dispatched" && hierarchy_aware {
+            let activation = transaction
+                .query_row(
+                    "SELECT status, disposition FROM delegation_activation_receipts
+                     WHERE delegation_id = ?1 ORDER BY revision DESC LIMIT 1",
+                    params![id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            let rejection = match activation {
+                None => Some((
+                    "memory_activation_missing",
+                    format!("delegation {id} requires a memory activation receipt before dispatch"),
+                )),
+                Some((status, disposition)) if status != "ready" => Some((
+                    "memory_activation_incomplete",
+                    format!("delegation {id} has an incomplete memory activation receipt ({disposition})"),
+                )),
+                Some(_) => None,
+            };
+            if let Some((reason, message)) = rejection {
+                record_admission_rejection(
+                    &transaction,
+                    run_id,
+                    Some(id),
+                    reason,
+                    &message,
+                    now,
+                    None,
+                )?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Err(message);
+            }
         }
         if to_status == "dispatched" && role == "worker" {
             if let Some(parent_id) = parent_delegation_id {
@@ -1789,6 +2359,197 @@ fn validate_packet_references(
         if !available {
             return Err(format!(
                 "referenced artifact {artifact_id} is unavailable or belongs to another run"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_activation_memory_reference(
+    transaction: &Transaction<'_>,
+    project_id: i64,
+    objective_id: i64,
+    task_id: i64,
+    run_id: i64,
+    receiver_scope_key: &str,
+    reference: &ActivationMemoryReference,
+    now: i64,
+) -> Result<(), String> {
+    let memory = transaction
+        .query_row(
+            "SELECT m.scope_type, m.scope_id, m.review_state, m.temperature, m.active,
+                    m.valid_from, m.valid_until, m.superseded_by_id, m.invalidated_at,
+                    m.content_hash, m.scope_key, m.freshness_repo_id,
+                    (m.freshness_repo_id IS NULL OR
+                     (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head)),
+                    (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                       SELECT 1 FROM project_graphify_snapshots g
+                       WHERE g.project_id = m.freshness_repo_id
+                         AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                         AND g.status = 'available'))
+             FROM memories m LEFT JOIN projects p ON p.id = m.freshness_repo_id
+             WHERE m.id = ?1",
+            params![reference.memory_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, bool>(12)?,
+                    row.get::<_, bool>(13)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| format!("activation memory {} was not found", reference.memory_id))?;
+
+    let scope_matches = match memory.0.as_str() {
+        "global" => memory.1.is_none(),
+        "project" => memory.1.as_deref() == Some(&project_id.to_string()),
+        "objective" => memory.1.as_deref() == Some(&objective_id.to_string()),
+        "task" => memory.1.as_deref() == Some(&task_id.to_string()),
+        _ => false,
+    };
+    if !scope_matches
+        || memory
+            .11
+            .is_some_and(|freshness_repo_id| freshness_repo_id != project_id)
+    {
+        return Err(format!(
+            "activation memory {} is outside the delegation project/task scope",
+            reference.memory_id
+        ));
+    }
+    if memory.2 != "accepted"
+        || !memory.4
+        || memory.5.is_some_and(|valid_from| valid_from > now)
+        || memory.6.is_some_and(|valid_until| valid_until <= now)
+        || memory.7.is_some()
+        || memory.8.is_some()
+        || !memory.12
+        || !memory.13
+    {
+        return Err(format!(
+            "activation memory {} is stale, inactive, superseded, invalidated, or unaccepted",
+            reference.memory_id
+        ));
+    }
+    if memory.9 != reference.content_hash {
+        return Err(format!(
+            "activation memory {} content hash is no longer current",
+            reference.memory_id
+        ));
+    }
+    if memory.3 == "cold" {
+        return Err(format!(
+            "COLD activation memory {} cannot be injected automatically",
+            reference.memory_id
+        ));
+    }
+    if !matches!(memory.3.as_str(), "hot" | "warm") {
+        return Err(format!(
+            "activation memory {} has an unsupported temperature",
+            reference.memory_id
+        ));
+    }
+
+    match reference.delivery.as_str() {
+        "transferred" => {
+            let transfer_id = reference.transfer_id.expect("validated transfer ID");
+            let transfer_matches = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM context_transfers
+                       WHERE id = ?1 AND run_id = ?2 AND receiver_scope_key = ?3
+                         AND memory_id = ?4 AND content_hash = ?5
+                     )",
+                    params![
+                        transfer_id,
+                        run_id,
+                        receiver_scope_key,
+                        reference.memory_id,
+                        reference.content_hash
+                    ],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(sqlite_error)?;
+            if !transfer_matches {
+                return Err(format!(
+                    "activation memory {} has no current transfer for this run and receiver scope",
+                    reference.memory_id
+                ));
+            }
+        }
+        "already_known" => {
+            let known = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM memory_known_by
+                       WHERE memory_id = ?1 AND receiver_scope_key = ?2 AND content_hash = ?3
+                     )",
+                    params![
+                        reference.memory_id,
+                        receiver_scope_key,
+                        reference.content_hash
+                    ],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(sqlite_error)?;
+            if !known {
+                return Err(format!(
+                    "activation memory {} is not known by this receiver scope",
+                    reference.memory_id
+                ));
+            }
+        }
+        _ => unreachable!("delivery mode is validated before reference validation"),
+    }
+
+    if memory.3 == "hot" {
+        let hot_budget = transaction
+            .query_row(
+                "SELECT hot_budget_bytes FROM memory_scope_budgets WHERE scope_key = ?1",
+                params![memory.10],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .unwrap_or(DEFAULT_HOT_BUDGET_BYTES);
+        let hot_bytes: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(SUM(length(CAST(m.body AS BLOB))), 0)
+                 FROM memories m LEFT JOIN projects p ON p.id = m.freshness_repo_id
+                 WHERE m.scope_key = ?1 AND m.temperature = 'hot' AND m.active = 1
+                   AND m.review_state = 'accepted' AND m.superseded_by_id IS NULL
+                   AND m.invalidated_at IS NULL
+                   AND (m.valid_from IS NULL OR m.valid_from <= ?2)
+                   AND (m.valid_until IS NULL OR m.valid_until > ?2)
+                   AND (m.freshness_repo_id IS NULL OR
+                        (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                   AND (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                        SELECT 1 FROM project_graphify_snapshots g
+                        WHERE g.project_id = m.freshness_repo_id
+                          AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                          AND g.status = 'available'))",
+                params![memory.10, now],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if hot_bytes > hot_budget {
+            return Err(format!(
+                "activation HOT memory scope {} exceeds its {hot_budget}-byte budget ({hot_bytes} bytes)",
+                memory.10
             ));
         }
     }

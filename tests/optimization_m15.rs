@@ -388,7 +388,7 @@ fn run_attribution_and_deduplicated_telemetry_are_append_only_and_survive_reopen
         })
         .unwrap();
     assert_eq!(
-        schema_version, 10,
+        schema_version, 11,
         "M15 should not add a duplicate schema authority"
     );
 }

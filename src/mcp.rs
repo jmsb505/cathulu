@@ -1,4 +1,4 @@
-use crate::delegation::{DelegationTaskPacket, WorkerReport};
+use crate::delegation::{ActivationMemoryReference, DelegationTaskPacket, WorkerReport};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::optimization::{
@@ -142,6 +142,19 @@ struct PrepareDelegationArgs {
     requested_effort: Option<String>,
     #[serde(default)]
     external_correlation: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RecordDelegationActivationArgs {
+    delegation_id: i64,
+    receiver_scope_type: String,
+    receiver_scope_id: String,
+    disposition: String,
+    memory_tools_available: bool,
+    retrieval_completed: bool,
+    #[serde(default)]
+    memory_references: Vec<ActivationMemoryReference>,
+    idempotency_key: String,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct DelegationIdArgs {
@@ -308,6 +321,8 @@ struct SearchMemoryArgs {
     receiver_scope_id: Option<String>,
     #[serde(default = "default_memory_search_limit")]
     limit: i64,
+    #[serde(default)]
+    delegation_id: Option<i64>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ConsolidateMemoriesArgs {
@@ -635,6 +650,28 @@ impl CathuluServer {
     }
 
     #[tool(
+        description = "Record an append-only memory activation receipt for a hierarchy-aware Project Manager or Worker before dispatch. Each referenced memory must be current, in scope, and either transferred to or already known by the exact logical receiver. Use no_relevant_memory only after memory retrieval completed successfully and returned no candidates."
+    )]
+    fn record_delegation_activation(
+        &self,
+        Parameters(a): Parameters<RecordDelegationActivationArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_delegation_activation(
+                a.delegation_id,
+                &a.receiver_scope_type,
+                &a.receiver_scope_id,
+                &a.disposition,
+                a.memory_tools_available,
+                a.retrieval_completed,
+                &a.memory_references,
+                &a.idempotency_key,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
         description = "Record that the owner dispatched a prepared delegation using native Codex. This does not start or control a worker."
     )]
     fn mark_delegation_dispatched(
@@ -903,17 +940,38 @@ impl CathuluServer {
         &self,
         Parameters(a): Parameters<SearchMemoryArgs>,
     ) -> CallToolResult {
-        self.store
-            .search_memory_candidates(
+        let result = match self.store.search_memory_candidates(
+            &a.scope_type,
+            a.scope_id.as_deref(),
+            &a.query,
+            &a.receiver_scope_type,
+            a.receiver_scope_id.as_deref(),
+            a.limit,
+        ) {
+            Ok(result) => result,
+            Err(error) => return tool_error(error),
+        };
+        if let Some(delegation_id) = a.delegation_id {
+            let references = result
+                .hot
+                .iter()
+                .chain(result.warm.iter())
+                .chain(result.already_known.iter())
+                .map(|memory| (memory.memory_id, memory.content_hash.clone()))
+                .collect::<Vec<_>>();
+            if let Err(error) = self.store.record_delegation_memory_retrieval(
+                delegation_id,
                 &a.scope_type,
                 a.scope_id.as_deref(),
-                &a.query,
                 &a.receiver_scope_type,
-                a.receiver_scope_id.as_deref(),
-                a.limit,
-            )
-            .map(success)
-            .unwrap_or_else(tool_error)
+                a.receiver_scope_id.as_deref().unwrap_or_default(),
+                "search_memory_candidates",
+                &references,
+            ) {
+                return tool_error(error);
+            }
+        }
+        success(result)
     }
 
     #[tool(
