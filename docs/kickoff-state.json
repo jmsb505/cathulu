@@ -3,7 +3,7 @@
   "phase": "CHECKPOINTED",
   "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
   "last_updated": "2026-10-21",
-  "repository_revision": "185741d9cb2d3a223cf0ba5603e1961042a1d608",
+  "repository_revision": "e29c90f16f78b04c71ea231f2878d31f6cc91d88",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -65,6 +65,7 @@
       "type": "RUNTIME",
       "locator": "scripts/phase1-m4-integration-smoke.ps1 and isolated M5 test run",
       "date": "2026-10-21",
+      "revision": "e29c90f16f78b04c71ea231f2878d31f6cc91d88",
       "scope": "Disposable Git/SQLite integration passed through MCP, Tauri dashboard IPC, Windows desktop startup, process restarts, QA and Git freshness reconciliation"
     }
   ],
@@ -263,5 +264,5 @@
     "completed_passes": [1],
     "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
   },
-  "next_action": "M5 combined integration validation passed locally and is ready for publication. Start Phase 3 M6 delegation contracts using docs/plans/PLAN-002-phase3-codex-delegation.md. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
+  "next_action": "M1-M5 are validated and published to main at e29c90f16f78b04c71ea231f2878d31f6cc91d88. Start Phase 3 M6 delegation contracts using docs/plans/PLAN-002-phase3-codex-delegation.md. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
 }

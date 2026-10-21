@@ -1,6 +1,6 @@
 # PLAN-002 — Phase 3 Codex-native delegation
 
-Status: READY; M5 integration is locally validated and awaiting publication; M6 has not started.
+Status: READY; M5 integration is published to `main` at `e29c90f`; M6 has not started.
 Created: 2026-10-21
 Last updated: 2026-10-21
 
@@ -14,7 +14,7 @@ The first two phases now provide local project/workflow state, quality gates, me
 
 ## Current state
 
-- M1-M4 are published to `main`; M5 adds a repeatable disposable Windows integration smoke and has passed locally on `codex/phase2-integration-validation`.
+- M1-M5 are published to `main`; M5 adds a repeatable disposable Windows integration smoke and is published on `codex/phase2-integration-validation` and `main`.
 - Cathulu already records objectives, tasks, runs, immutable events, QA checks, evidence artifacts, and context transfers through SQLite-backed semantic MCP tools.
 - Codex remains the owner of agent execution, worktrees, approvals, and the user-facing conversation.
 - Current official Codex documentation confirms main-session model/reasoning settings, global subagent defaults, explicit spawn overrides, and custom-agent files with per-role `model` and `model_reasoning_effort`. It documents no API for Cathulu to change the currently running Codex turn. See [ADR-0002](../decisions/ADR-0002-cathulu-hosted-agent-selectors.md).
@@ -242,7 +242,7 @@ Use additive SQLite migrations and preserve prior schema versions. Delegation/re
 
 - [x] Current Codex documentation checked for model/effort and custom-agent per-role settings.
 - [x] M5 combined M1-M4 integration gate passed locally on Windows.
-- [ ] Publish M5 integration closeout and this plan after docs and checks pass.
+- [x] Publish M5 integration closeout and this plan after docs and checks pass.
 - [ ] Implement and validate M6.
 - [ ] Implement and validate M7.
 - [ ] Implement and validate M8.

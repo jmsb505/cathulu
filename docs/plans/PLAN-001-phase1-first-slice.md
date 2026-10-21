@@ -1,6 +1,6 @@
 # PLAN-001 — Phase 1 first vertical slice
 
-Status: M1-M5 IMPLEMENTED/VALIDATED; M1-M4 are published to `main`; M5 combined integration closeout is validated locally and pending publication.
+Status: M1-M5 IMPLEMENTED, VALIDATED, AND PUBLISHED; M5 checkpoint `e29c90f16f78b04c71ea231f2878d31f6cc91d88` is on `main`.
 Created: 2026-10-20
 Last updated: 2026-10-21
 
@@ -334,6 +334,8 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 - [x] Published M4 checkpoint `185741d9cb2d3a223cf0ba5603e1961042a1d608` to `origin/main` with a normal fast-forward push; verified the resulting remote SHA.
 - [ ] Owner-controlled Codex MCP/hook trust smoke remains unverified; Cathulu has not changed user Codex configuration.
 - [x] M5 combined M1-M4 validation passed: actual MCP writes, one shared SQLite database, Tauri dashboard IPC read, Windows desktop start, restart persistence, verified QA run, canonical memory/provenance/transfer, known-by omission, and Git refresh were exercised using disposable data.
+- [x] Published M5 checkpoint `e29c90f16f78b04c71ea231f2878d31f6cc91d88` to `origin/main` with a normal fast-forward push; verified `main` and the milestone branch resolve to the same SHA.
+- [x] GitHub reports no status checks or workflow runs for M5; local workspace, frontend, Windows build, and integration smoke checks are the available gate.
 
 ## Implementation discoveries / decisions
 
@@ -355,4 +357,4 @@ M1 stores only the project registry and latest Git snapshot. Keep database migra
 
 ## Completion evidence
 
-M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke passed before checkpoint `185741d` was fast-forwarded to `main`. M5 now passes the combined MCP→SQLite→Tauri IPC path, Windows desktop start, MCP restart reads, verified run/QA, memory provenance and transfer, known-by omission, and Git reconciliation using disposable fixtures. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The owner-controlled live Codex MCP/hook trust smoke remains optional and unverified. M5's integration harness and documentation are pending publication.
+M1's build, automated test seams, and isolated Windows startup checks passed before publishing `5f43dcb` to `main`. M2's formatting, seven Rust tests, three React tests, frontend build, Windows release build, isolated runtime/database smoke, and dashboard preview/focus check passed; the implementation and documentation follow-up are published at `a3ca960` and `2c05089`. M3's formatting, 11 Rust tests, three React tests, frontend build, Windows release build, failure-rollback/idempotency/privacy/restart tests, and isolated runtime/database smoke passed before the validated checkpoint `1d445f6` was fast-forwarded to `main`. M4's formatting, 17 Rust tests, three React tests, frontend build, Rust CLI and Tauri Windows release builds, local Gardener/GC preview, and isolated desktop/database smoke passed before checkpoint `185741d` was fast-forwarded to `main`. M5 passes the combined MCP→SQLite→Tauri IPC path, Windows desktop start, MCP restart reads, verified run/QA, memory provenance and transfer, bounded HOT context, known-by omission, and Git reconciliation using disposable fixtures. Checkpoint `e29c90f16f78b04c71ea231f2878d31f6cc91d88` is published to `main`; GitHub reports no status checks or workflow runs for it. Semantic indexing, Graphify invalidation, raw telemetry compaction, automatic aggregate refresh, and adaptive policy changes remain deferred until measured retrieval gaps, snapshot sources, or sufficient comparable run data exist. The owner-controlled live Codex MCP/hook trust smoke remains optional and unverified.
