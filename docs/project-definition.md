@@ -1,10 +1,10 @@
 # Cathulu project definition
 
-Status: NORMATIVE for product boundaries. Initial definition recorded 2026-10-20 from `CATHULU_PROJECT_KICKOFF.md` and refined through 2026-10-21 with the owner's platform, selector-surface, and managed-memory decisions.
+Status: NORMATIVE for product boundaries. Initial definition recorded 2026-10-20 from `CATHULU_PROJECT_KICKOFF.md` and refined through 2026-10-21 with the owner's platform, selector-surface, managed-memory, and optional specialist-model decisions.
 
 ## Purpose
 
-Cathulu is a fully local desktop application that adds durable portfolio state, managed memory, workflow history, quality evidence, and observability around the Codex app. It should become better informed over time without proportional growth in active context. The owner continues to work through Codex. Cathulu is not a second chat surface or a general-purpose agent runtime.
+Cathulu is a local-first desktop application and evidence layer around the Codex app. Its control plane, SQLite authority, memory, and evidence references remain local. Optional specialist calls may use a remote provider only when explicitly configured and only with the minimum sanitized input required; all specialist capabilities default to disabled. Cathulu adds durable portfolio state, managed memory, workflow history, quality evidence, and observability around Codex. It should become better informed over time without proportional growth in active context. The owner continues to work through Codex. Cathulu is not a second chat surface or a general-purpose agent runtime.
 
 The product question is whether durable, selectively disclosed state improves verified software work, or achieves equivalent verified quality with less context reconstruction and resource use, compared with ordinary Codex use.
 
@@ -49,10 +49,11 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - A custom agent/worker runtime or permanent model processes.
 - Cathulu spawning, steering, cancelling, or accepting changes from native Codex workers, or creating/moving/removing/merging their worktrees; Cathulu records structured packets, reconciles existing worktree evidence, and records lifecycle telemetry while Codex remains the execution owner.
 - Durable Sub-Overseers before measured repeated cross-project reconstruction.
-- Graphify integration, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, cloud services, and reinforcement learning.
+- Hosted Cathulu control-plane/storage services, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, and reinforcement learning. Explicit, minimized calls to optional remote specialist providers are a separate Phase 9 experiment governed by [ADR-0007](decisions/ADR-0007-optional-specialist-model-optimization.md).
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
 - Advanced convergence and adaptive routing before trustworthy run evidence exists.
 - Model/reasoning selectors in the first increment. M9 implements the later settings surface outside the read-only dashboard. Project/user/profile writes require a per-preview target choice and explicit apply; export-only remains available. Cathulu uses only the local CLI's whitelisted model/effort options, does not infer account availability, and does not claim runtime effectiveness.
+- Optional specialist DecisionModel and ContextModel providers remain a proposed Phase 9 optimization only. They do not replace Codex, become required dependencies, or run by default. Shadow evaluation and an explicit, reversible approval precede any active workflow treatment. Their provider settings remain separate from the M9 Codex model/effort selectors.
 
 ## Domain terms and invariants
 
@@ -64,16 +65,18 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 - **Memory class:** the kind of information (`working`, `canonical`, `episodic`, `evidence`, or `aggregate`).
 - **Memory temperature:** retrieval readiness (`hot`, `warm`, or `cold`), independent of class. HOT is bounded per logical scope; WARM is selective; COLD is not automatically injected.
 - **Canonical memory:** a distilled durable knowledge claim with a stable identity, content hash, temporal validity, provenance, and explicit supersession history. It supplements and links to authoritative domain records; it does not copy their mutable state.
+- **DecisionModel:** an optional provider-neutral interface for bounded choices over compact structured state, with explicit escape outputs. It does not own execution or truth.
+- **ContextModel:** an optional provider-neutral interface for classifying, extracting, compressing, or summarizing selected existing information while retaining source references. Its output is a projection, not authority.
 - **Candidate success:** an agent's report that work appears complete; it is not a terminal verified outcome.
 - **Verified success:** a terminal result with acceptance criteria and mandatory quality gates recorded as passing.
 
 Invariants:
 
-1. Codex remains the execution and conversation surface; Cathulu stores state and evidence and does not run agents.
+1. Codex remains the primary reasoning, coding, planning, debugging, and conversation system; Cathulu stores state and evidence and does not run agents. Optional specialists may only support bounded decisions or transform existing information.
 2. Events are append-only. Decisions and workflow versions are immutable; supersession creates a new record. Mutable current state is a transactional projection of events and domain operations.
 3. No agent report, timeout, or budget limit can bypass mandatory quality gates.
 4. The portfolio dashboard has no write actions. Project and run state changes come from Codex-facing semantic operations; selector settings are a separate Cathulu configuration boundary and can write only after a reviewed diff and explicit user apply.
-5. Cathulu's database, MCP server, and local artifacts remain local. Raw transcripts, secrets, and prompt text are not retained by default.
+5. Cathulu's database, MCP server, memory, evidence references, and telemetry remain local. Remote specialist use is off by default, explicitly configured, visible in run attribution, and limited to minimum sanitized input. Full repositories, secrets, raw Cathulu memory, complete transcripts, and entire artifact stores are not sent by default.
 6. Context moves progressively from portfolio to project/scope to task and finally to exact evidence; raw transcripts are not propagated upward.
 7. Additional layers must earn their cost through measured improvement in verified outcomes.
 8. Raw experience becomes durable agent memory only after useful knowledge is extracted and its provenance retained; raw evidence may have temporary retention.
@@ -83,13 +86,14 @@ Invariants:
 12. SQLite remains authoritative. Search indexes return candidate IDs only, and COLD evidence is accessed only for explicit historical, audit, debugging, or evaluation needs.
 13. Unique important provenance is protected conservatively. Redundant evidence may be compacted only after its useful knowledge has been preserved; deletion is deterministic and reference-aware.
 14. Summaries are projections, not authority. Justified durable knowledge and unique provenance may remain indefinitely while active context stays bounded.
+15. Specialist models are optional optimization layers: deterministic Cathulu code is preferred for exact work, Codex remains primary for open reasoning and creation, and deterministic QA remains final. A specialist cannot mark success, bypass quality gates, or autonomously delete durable memory.
 
 ## Constraints and quality drivers
 
 | Priority | Driver | Architectural consequence | Intended evidence |
 | --- | --- | --- | --- |
 | 1 | Verified quality and correctness | Deterministic gates dominate agent self-report; retain provenance for each result. | Gate bypass tests, acceptance checks, and run evidence. |
-| 2 | Local privacy and authority | No hosted Cathulu service; local IPC/stdio; avoid prompt/transcript storage; keep Codex approvals in force. | Configuration review, permission-boundary tests, and inspection of stored payloads. |
+| 2 | Local privacy and authority | No hosted Cathulu control plane; local IPC/stdio and storage; remote specialist egress is explicit, minimized, and independently disableable; avoid prompt/transcript storage and keep Codex approvals in force. | Configuration review, permission-boundary tests, and inspection of stored payloads and egress inputs. |
 | 3 | Knowledge retention with bounded active context | Keep durable knowledge justified by evidence, compact redundant representation, and budget HOT context per scope. | Supersession/provenance tests, HOT-budget tests, known-by and transfer-ledger checks, growth and context-reuse measures. |
 | 4 | Durability and recovery | SQLite transactions, migrations, append-only events plus current-state projections, Git reconciliation after restart. | Migration, atomicity, restart, and recovery tests. |
 | 5 | Low operational and cognitive overhead | Reuse Codex-native agents, tools, MCP, hooks, Git and telemetry; defer speculative infrastructure. | Dependency and architecture review plus phased comparison against plain Codex. |
@@ -103,3 +107,6 @@ The first increment succeeds when a registered local repository survives restart
 Phase 1 success further requires durable objectives/tasks/decisions/workflows/runs, event and state integrity, QA evidence that gates `verified_success`, supported local Codex telemetry ingestion, dashboard visibility for blockers and failed QA, and restart recovery. Its memory foundation must also keep class separate from temperature, preserve stable identity/content hashes and provenance, support temporal validity/supersession and freshness, track known-by state and context transfers, and enforce bounded HOT scope budgets without deleting durable knowledge. Automatic consolidation, semantic indexing, adaptive policies, and evidence garbage collection are later capabilities, not Phase 1 entry conditions. Later evaluation compares Cathulu-assisted runs with ordinary Codex runs using verified success, regressions, rework, context reconstruction, tool/resource use, stalls, and human intervention.
 
 The exact first test seams and evaluation thresholds are selected in the implementation plan from the chosen public interfaces and measurable baseline. No vanity metric or model sentiment can substitute for deterministic evidence.
+
+The optional specialist-model layer succeeds only if comparable real runs show a useful reduction in context, repeated processing, agent activations, retrieval overhead, or latency while maintaining or improving verified task success, QA, convergence, regression rate, rework, and human intervention. The evaluation method and acceptable quality guard are declared from baseline evidence before a controlled active pilot. Unobservable measures remain unknown. Shadow agreement or a model's confidence alone is not proof of workflow value.
+
