@@ -515,8 +515,8 @@ function AgentActivityView({ snapshot, selectedRunId, onSelectRun, selectedProje
               })}</g>;
             })}
           </svg>
-          <div className={`hierarchy-node hierarchy-main ${run.status === "running" ? "state-active" : "state-finished"}`}>
-            <span className="hierarchy-avatar"><BrandMark /></span><span className="hierarchy-copy"><small>Main · coordinating</small><strong>Run {run.id}</strong></span><i className="node-state-mark" />
+          <div className="hierarchy-node hierarchy-main state-coordinator" role="group" aria-label="Main Overseer, global coordinator">
+            <span className="hierarchy-avatar"><BrandMark /></span><span className="hierarchy-copy"><small>Global · coordinating</small><strong>Main Overseer</strong></span>
           </div>
           {managers.map((manager, index) => {
             const x = `${((index + 1) * 100) / (managers.length + 1)}%`;

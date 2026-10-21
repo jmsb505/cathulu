@@ -46,6 +46,10 @@ describe("project activity graph", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: /Project Manager, Observed active: Coordinate PULSO/ })).toBeTruthy();
+    const main = screen.getByRole("group", { name: "Main Overseer, global coordinator" });
+    expect(main.className).toContain("state-coordinator");
+    expect(main.className).not.toContain("state-active");
+    expect(screen.queryByText("Run 10")).toBeNull();
     expect(screen.getByRole("button", { name: /Worker, Unobserved: Run QA/ })).toBeTruthy();
     expect(screen.getByLabelText("1 agents observed active")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Mecanografica proposals/ })).toBeTruthy();
@@ -91,6 +95,7 @@ describe("project activity graph", () => {
     expect(await screen.findByRole("button", { name: /Worker, Stopped: Run QA/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Mecanografica proposals/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: /Project Manager, Unobserved: Coordinate proposals/ })).toBeTruthy());
+    expect(screen.getByRole("group", { name: "Main Overseer, global coordinator" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Run QA/ })).toBeNull();
   });
 });

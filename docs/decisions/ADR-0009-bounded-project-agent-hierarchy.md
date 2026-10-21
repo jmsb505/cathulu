@@ -23,6 +23,7 @@ Owner
 ```
 
 - Main Overseer owns the conversation, priorities, task/run setup, dispatch, monitoring, evidence review, QA gate tracking, and escalation. It does not inspect repositories to implement, edit code, run project commands/tests, or commit project work.
+- There is one logical Main Overseer across the Cathulu portfolio. Codex chats are replaceable conversational sessions representing or resuming that role, not separate Main agents; opening a new chat does not create a new authority or a Main child. Cathulu state is the continuity source. The system does not currently authenticate chat identity or enforce single-session concurrency.
 - At most one Project Manager is assigned to a project within a single orchestration request. A Project Manager owns one project's planning and coordination and does not perform the implementation itself.
 - Each Project Manager assignment may dispatch at most two worker agents total, including replacement workers. Workers perform the repository work within the recorded project/task/path scope.
 - All three roles must use the existing local Cathulu MCP server. Before reasoning from project history or assigning work, each role loads relevant accepted HOT project memory, selectively searches WARM candidates, transfers only selected knowledge through `prepare_context_transfer`, and includes provenance-bearing memory/artifact references in handoffs. Empty retrieval is recorded explicitly. COLD evidence is not automatically injected.
@@ -54,6 +55,7 @@ The receipt does not authenticate which native Codex agent called MCP: Cathulu r
 
 - Existing M6-M9 delegation records remain valid and readable, with null parentage and no inferred PM assignment. New hierarchy-aware delegations have deterministic parent links and SQLite-enforced admission limits; legacy rows remain outside those new assignments.
 - Activity in the dashboard must be projected from actual runs, delegation relationships, and observed lifecycle events. Missing events stay visibly unknown; no progress or agent nodes are fabricated.
+- The Main node is a stable representation of the one logical coordinator across selected project/run views. It does not imply that each Codex chat or run created another Main agent, or that the coordinator performs repository implementation.
 - Memory transfer ledger entries and ready activation receipts are the auditable evidence that relevant Cathulu memory was selected and supplied. Missing or incomplete receipts block Cathulu's dispatch transition. Native agent behavior remains governed by the Codex runtime and role contract; the receipt does not prove the native caller identity or prevent work before dispatch is recorded.
 - The tested client/session supports nested spawning and Cathulu MCP reachability, but memory-tool parity and lifecycle correlation remain incomplete. If a future target client/configuration lacks the required capabilities, expose that gap and preserve the baseline workflow. Never let Main silently take over implementation or flatten the hierarchy.
 

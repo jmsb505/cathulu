@@ -12,6 +12,7 @@ M21 verified a Main → Project Manager → Worker spawn sequence and Cathulu MC
 ## Decision
 
 - Keep the main dashboard read-only and scoped to one selected project and run at a time. Stable project IDs, not display names, determine membership.
+- Render Main as the same logical portfolio-wide coordinator in every project/run view. Chat sessions are representations of that role; do not label or animate each run as a distinct Main agent.
 - Render the explicit Main run, Project Manager assignment, and `parentDelegationId` relationships as the activity graph. Unparented workers and unbound hook observations remain visibly separate from that hierarchy.
 - A dispatched assignment without linked `started` telemetry is unobserved. Only a linked start event on a running parent run may pulse as active; recorded stop, blocker, and failed-check evidence determines terminal/attention states.
 - Keep graph and activity as the primary view. Put repository and memory summaries in secondary views to keep the support surface compact.

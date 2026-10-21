@@ -5,6 +5,12 @@ Date: 2026-10-21
 Decision: [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md)
 Implementation plan: [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.md)
 
+## Logical identity and chat sessions
+
+Cathulu has one logical Main Overseer for the local portfolio. A Codex chat is a conversational session through which that same role is represented. The owner may start a new chat and designate it to continue as Main; it resumes the same Cathulu portfolio, project assignments, and evidence rather than creating another Main identity. Main does not spawn another Main. Project Managers are the only delegated coordination role, scoped to one project assignment.
+
+The dashboard's Main node represents this stable logical role; the selected project/run only changes the context shown beneath it. Cathulu does not currently authenticate Codex chat identity or enforce one active chat session, so concurrent sessions are not proof of separate Main roles and may still require owner coordination if they touch overlapping work.
+
 ## Agent responsibilities
 
 ### Main Overseer — coordinator only
