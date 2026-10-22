@@ -35,7 +35,7 @@ type WorkerReportRecord = {
   report: WorkerReportPayload;
   reportHash: string;
   reportedAt: number;
-  qualityCheckRefs: { qualityCheckId: number; checkKey: string; status: string }[];
+  qualityCheckRefs: { qualityCheckId: number; checkKey: string; mandatory: boolean; status: string }[];
   reviewHistory: { id: number; decision: string; note: string; createdAt: number }[];
 };
 type DelegationWorktreeState = {
@@ -153,7 +153,8 @@ type DashboardSnapshot = {
   memoryHealth: {
     hotBytes: number; hotScopeCount: number; largestScopeHotBytes: number;
     warmBytes: number; coldBytes: number; canonicalCount: number;
-    episodicCount: number; evidenceCount: number; candidateCount: number;
+    episodicCount: number; evidenceCount: number; workingCount: number; aggregateCount: number;
+    candidateCount: number;
     invalidatedCount: number; protectedArtifactCount: number;
     duplicateMemoryGroups: number; staleMemoryCount: number; reusedMemoryCount: number;
     contextTransferBytes: number; contextReintroducedBytes: number; contextReintroductionBasisPoints: number;
@@ -552,6 +553,64 @@ function agentRole(delegation: DelegationSnapshot) {
   return roleLabel(delegation.role);
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; value >= 1024 && index < units.length; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${unit}`;
+}
+
+function MemoryUsageOverview({ health }: { health: DashboardSnapshot["memoryHealth"] }) {
+  const classes = [
+    { key: "working", label: "Working", count: health.workingCount ?? 0 },
+    { key: "canonical", label: "Canonical", count: health.canonicalCount },
+    { key: "episodic", label: "Episodic", count: health.episodicCount },
+    { key: "evidence", label: "Evidence", count: health.evidenceCount },
+    { key: "aggregate", label: "Aggregate", count: health.aggregateCount ?? 0 },
+  ];
+  const temperatures = [
+    { key: "hot", label: "Hot", bytes: health.hotBytes },
+    { key: "warm", label: "Warm", bytes: health.warmBytes },
+    { key: "cold", label: "Cold", bytes: health.coldBytes },
+  ];
+  const classTotal = classes.reduce((total, item) => total + item.count, 0);
+  const temperatureTotal = temperatures.reduce((total, item) => total + item.bytes, 0);
+
+  return (
+    <section className="overview-panel memory-overview" aria-label="Stored memory usage">
+      <div className="overview-panel-heading"><span>Memory mix</span><small>{classTotal} stored records</small></div>
+      <div className="memory-metric-block">
+        <div className="memory-metric-label"><span>Memory class</span><small>Record count</small></div>
+        {classTotal > 0 ? <>
+          <div className="memory-stack" role="img" aria-label={classes.map((item) => `${item.label}: ${item.count}`).join(", ")}>
+            {classes.filter((item) => item.count > 0).map((item) => <i key={item.key} className={`memory-segment memory-${item.key}`} style={{ width: `${(item.count / classTotal) * 100}%` }} />)}
+          </div>
+          <ul className="memory-class-legend">
+            {classes.map((item) => <li key={item.key} title={`${item.count} ${item.label.toLowerCase()} memory records`}><i className={`memory-key memory-${item.key}`} /><span>{item.label}</span><b>{item.count}</b></li>)}
+          </ul>
+        </> : <p className="memory-empty">No memory records stored.</p>}
+      </div>
+      <div className="memory-metric-block temperature-block">
+        <div className="memory-metric-label"><span>Retrieval temperature</span><small>{formatBytes(temperatureTotal)} body bytes</small></div>
+        {temperatureTotal > 0 ? <>
+          <div className="memory-stack" role="img" aria-label={temperatures.map((item) => `${item.label}: ${formatBytes(item.bytes)}`).join(", ")}>
+            {temperatures.filter((item) => item.bytes > 0).map((item) => <i key={item.key} className={`memory-segment temperature-${item.key}`} style={{ width: `${(item.bytes / temperatureTotal) * 100}%` }} />)}
+          </div>
+          <ul className="temperature-legend">
+            {temperatures.map((item) => <li key={item.key} title={`${item.label} memory body bytes`}><i className={`memory-key temperature-${item.key}`} /><span>{item.label}</span><b>{formatBytes(item.bytes)}</b></li>)}
+          </ul>
+        </> : <p className="memory-empty">No memory body bytes recorded.</p>}
+      </div>
+      <small className="memory-footnote">Class counts include retained history; temperature measures stored body text only.</small>
+    </section>
+  );
+}
+
 function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
   const projectItems = projectMonitorItems(snapshot);
   const projectRoleRows = snapshot.logicalRoles
@@ -568,8 +627,8 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
         });
       const manager = managers[0] ?? null;
       const assigned = manager?.projectManagerAssignmentStatus === "active" ? manager : null;
-      const workers = assigned
-        ? snapshot.delegations.filter((delegation) => delegation.parentDelegationId === assigned.id && delegation.role === "worker")
+      const workers = manager
+        ? snapshot.delegations.filter((delegation) => delegation.parentDelegationId === manager.id && delegation.role === "worker")
         : [];
       const latestUpdate = assigned ? latestAgentUpdate(snapshot, assigned.id) : null;
       const state: AgentVisualState = item.state === "blocked" || item.state === "failed"
@@ -605,7 +664,10 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
     .filter((row): row is NonNullable<typeof row> => row !== null)
     .sort((left, right) => left.project.name.localeCompare(right.project.name));
   const mainRole = snapshot.logicalRoles.find((role) => role.roleKind === "main_overseer");
-  const allDelegations = projectRoleRows.flatMap((row) => [row.assigned, ...row.workers].filter((item): item is DelegationSnapshot => item !== null));
+  const allDelegations = projectRoleRows.flatMap((row) => [
+    row.assigned,
+    ...row.workers.filter((worker) => worker.parentDelegationId === row.assigned?.id),
+  ].filter((item): item is DelegationSnapshot => item !== null));
   const activeCount = allDelegations.filter((delegation) => agentState(delegation, snapshot.agentUpdates) === "active").length
     + projectRoleRows.reduce((total, row) => total + row.unlinkedHooks.filter((agent) => hookAgentState(agent, row.run?.status ?? "unknown") === "active").length, 0);
   const waitingCount = projectRoleRows.filter((row) => row.state === "waiting" && !row.assigned).length
@@ -621,15 +683,38 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
   const actions = attentionItems(snapshot, staleAgentAttentionItems(snapshot));
   const recentUpdateCount = snapshot.recentAgentUpdateCount;
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const selected = allDelegations.find((item) => item.id === Number(selectedAgentId)) ?? null;
+  const selected = snapshot.delegations.find((item) => item.id === Number(selectedAgentId)) ?? null;
   const selectedUpdate = selected ? latestAgentUpdate(snapshot, selected.id) : null;
+  const selectedUpdates = selected
+    ? snapshot.agentUpdates.filter((update) => update.delegationId === selected.id).sort((left, right) => right.createdAt - left.createdAt).slice(0, 5)
+    : [];
+  const selectedManager = selected?.parentDelegationId
+    ? snapshot.delegations.find((item) => item.id === selected.parentDelegationId) ?? null
+    : null;
+  const liveProjectCount = projectRoleRows.filter((row) => row.run?.status === "running").length;
+  useEffect(() => {
+    if (!selected) return;
+    const dossier = document.getElementById("graph-agent-dossier");
+    dossier?.focus({ preventScroll: true });
+    dossier?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "nearest",
+    });
+  }, [selected?.id]);
+
+  const closeDossier = () => {
+    if (!selected) return;
+    const triggerId = `graph-agent-node-${selected.id}`;
+    setSelectedAgentId(null);
+    window.requestAnimationFrame(() => document.getElementById(triggerId)?.focus());
+  };
   const logicalState = hasRunningProject
     ? staleCount > 0 && activeCount === 0 ? "review" : "live"
     : issueCount > 0 ? "danger" : projectRoleRows.length > 0 ? "good" : "quiet";
   const projectsWithUnlinkedHooks = projectRoleRows.filter((row) => row.unlinkedHooks.length > 0).length;
   const graphStageStyle = {
-    "--graph-stage-min-height": `${Math.max(360, 121 + projectRoleRows.length * 66 + (selected ? 64 : 0))}px`,
-    "--graph-stage-min-height-narrow": `${Math.max(340, 97 + projectRoleRows.length * 63 + projectsWithUnlinkedHooks * 20 + (selected ? 64 : 0))}px`,
+    "--graph-stage-min-height": `${Math.max(360, 121 + projectRoleRows.length * 66)}px`,
+    "--graph-stage-min-height-narrow": `${Math.max(340, 97 + projectRoleRows.length * 63 + projectsWithUnlinkedHooks * 20)}px`,
   } as CSSProperties;
 
   return (
@@ -646,6 +731,21 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           <span className="count-updates" title={`${recentUpdateCount} agent checkpoints recorded in the last hour`} aria-label={`${recentUpdateCount} agent checkpoints in the last hour`}><i />{recentUpdateCount}</span>
           <span className={issueCount ? "count-blocked has-issues" : "count-blocked"} title={`${issueCount} recorded action, blocker, or failed required-check signals`} aria-label={`${issueCount} recorded attention signals`}><i />{issueCount}</span>
         </div>
+      </div>
+
+      <div className="home-observability" aria-label="Workflow and memory overview">
+        <section className="overview-panel workflow-overview" aria-label="Current workflow process">
+          <div className="overview-panel-heading"><span>Workflow pulse</span><small>Latest recorded state</small></div>
+          <div className="workflow-metrics">
+            <div title="Repositories currently registered in Cathulu"><i className="metric-signal signal-neutral" /><b>{snapshot.projects.length}</b><span>Projects</span></div>
+            <div title="Projects whose latest recorded run is still open"><i className="metric-signal signal-live" /><b>{liveProjectCount}</b><span>Live</span></div>
+            <div title="Agents with a current recorded working signal"><i className="metric-signal signal-live" /><b>{activeCount}</b><span>Working</span></div>
+            <div title="Agent checkpoints recorded in the last hour"><i className="metric-signal signal-update" /><b>{recentUpdateCount}</b><span>Updates / h</span></div>
+            <div className={snapshot.pendingAgentActions.length ? "needs-owner" : ""} title="Open, explicitly recorded requests for owner input"><i className="metric-signal signal-attention" /><b>{snapshot.pendingAgentActions.length}</b><span>Needs you</span></div>
+            <div className={snapshot.failedChecks.length ? "has-failed-checks" : ""} title="Failed quality checks currently included in the dashboard snapshot"><i className="metric-signal signal-failure" /><b>{snapshot.failedChecks.length}</b><span>Failed checks</span></div>
+          </div>
+        </section>
+        <MemoryUsageOverview health={snapshot.memoryHealth} />
       </div>
 
       <div className={`agent-workspace ${actions.length || snapshot.agentUpdates.length || hasRunningProject ? "has-side-activity" : ""}`}>
@@ -676,7 +776,7 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           </section>}
         </aside>
 
-        <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${selected ? "has-selected-agent" : ""}`} style={graphStageStyle}>
+        <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""}`} style={graphStageStyle}>
         <div className="graph-role-tree">
           <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role coordinates project work; Codex Project Managers and Workers perform repository changes" aria-label={`One persistent logical Main Overseer role${hasRunningProject ? ", coordinating active project managers" : ""}`}>
             <span className={`graph-overseer-orbit ${hasRunningProject ? "is-active" : ""}`}><BrandMark /></span>
@@ -697,8 +797,11 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
                 <li className="graph-project-row" key={role.roleKey}>
                   <button
                     type="button"
+                    id={assigned ? `graph-agent-node-${assigned.id}` : undefined}
                     className={`graph-project-node state-${state} ${selected ? "is-selected" : ""}`}
                     onClick={() => assigned && setSelectedAgentId(selected ? null : String(assigned.id))}
+                    aria-expanded={selectedAgentId === String(assigned?.id)}
+                    aria-controls={selectedAgentId === String(assigned?.id) ? "graph-agent-dossier" : undefined}
                     title={`${roleTitle}${updateTitle}\nContext scope: ${role.memoryScopeKey}\nTool profile: ${role.toolProfileKey}; actual Codex chat availability is unobserved.`}
                     aria-label={`${roleTitle}${latestUpdate ? `; latest agent checkpoint ${latestUpdate.summary}, ${updateAge(latestUpdate.createdAt)}` : "; no agent checkpoint recorded"}; context scope ${role.memoryScopeKey}; tool profile ${role.toolProfileKey}; actual chat tool availability is unobserved`}
                   >
@@ -715,8 +818,11 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
                       <button
                         key={worker.id}
                         type="button"
+                        id={`graph-agent-node-${worker.id}`}
                         className={`graph-worker-node state-${agentState(worker, snapshot.agentUpdates)} ${selectedAgentId === String(worker.id) ? "is-selected" : ""}`}
                         onClick={() => setSelectedAgentId(selectedAgentId === String(worker.id) ? null : String(worker.id))}
+                        aria-expanded={selectedAgentId === String(worker.id)}
+                        aria-controls={selectedAgentId === String(worker.id) ? "graph-agent-dossier" : undefined}
                         title={`${project.name} · Worker ${index + 1} · ${worker.status} · ${worker.taskTitle}${latestAgentUpdate(snapshot, worker.id) ? ` · ${latestAgentUpdate(snapshot, worker.id)?.summary}` : " · no checkpoint recorded"}`}
                         aria-label={`${project.name} Worker ${index + 1}: ${agentState(worker, snapshot.agentUpdates)}${latestAgentUpdate(snapshot, worker.id) ? `; latest checkpoint ${latestAgentUpdate(snapshot, worker.id)?.summary}` : "; no checkpoint recorded"}`}
                       ><b>W</b><i /></button>
@@ -735,13 +841,69 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
             })}
           </ol> : <div className="graph-empty-state"><span className="graph-empty-orbit"><BrandMark /></span><small>No registered project roles</small></div>}
         </div>
-        {selected && <div className="graph-agent-detail">
-          <i className={`detail-state state-${agentState(selected, snapshot.agentUpdates)}`} />
-          <span><strong>{selectedUpdate?.summary ?? selected.taskTitle}</strong><small>{agentRole(selected)} · {selectedUpdate?.phase ?? selected.status}{selectedUpdate ? ` · ${updateAge(selectedUpdate.createdAt)}` : " · no checkpoint"}{selected.report ? ` · report ${selected.report.reviewStatus.replace(/_/g, " ")}` : ""}</small></span>
-          <button type="button" onClick={() => setSelectedAgentId(null)} aria-label="Close agent details"><Icon name="close" /></button>
-        </div>}
         </div>
       </div>
+      {selected && <section id="graph-agent-dossier" className="worker-dossier" tabIndex={-1} aria-label={`${agentRole(selected)} work details`}>
+        <header className="worker-dossier-heading">
+          <div className="dossier-identity">
+            <i className={`detail-state state-${agentState(selected, snapshot.agentUpdates)}`} aria-hidden="true" />
+            <span><small>{selected.projectName} · {agentRole(selected)} · Run {selected.runId}</small><h2>{selected.taskTitle}</h2></span>
+          </div>
+          <button type="button" className="dossier-close" onClick={closeDossier} aria-label="Close work details" title="Close work details"><Icon name="close" /></button>
+        </header>
+        <div className="dossier-status-line">
+          <span className={`dossier-status state-${agentState(selected, snapshot.agentUpdates)}`}>{selectedUpdate?.phase?.replace(/_/g, " ") ?? selected.status.replace(/_/g, " ")}</span>
+          <span>{selectedUpdate ? `Checkpoint ${updateAge(selectedUpdate.createdAt)}` : "No checkpoint recorded"}</span>
+          {selectedManager && <span>Child of {selectedManager.taskTitle}</span>}
+          {selected.report && <span className="dossier-report-status">Report {selected.report.reviewStatus.replace(/_/g, " ")}</span>}
+        </div>
+        <div className="worker-dossier-grid">
+          <section className="dossier-section dossier-latest-work">
+            <h3>Latest work signal</h3>
+            {selectedUpdate ? <p>{selectedUpdate.summary}</p> : <p className="dossier-empty">No progress checkpoint has been recorded for this assignment.</p>}
+            {selected.workerTelemetry && <small className="dossier-source-note">Hook observed {selected.workerTelemetry.events.length} event{selected.workerTelemetry.events.length === 1 ? "" : "s"}{selected.workerTelemetry.effectiveModel ? ` · ${selected.workerTelemetry.effectiveModel}` : ""}</small>}
+          </section>
+          <section className="dossier-section dossier-report">
+            <h3>Worker report <span>self-reported</span></h3>
+            {selected.report ? <>
+              <p>{selected.report.report.summary}</p>
+              <div className="dossier-outcome"><span>Outcome</span><strong>{selected.report.report.outcome.replace(/_/g, " ")}</strong></div>
+              <div className="dossier-subsection"><h4>Changed files · {selected.report.report.changedFiles.length}</h4>
+                {selected.report.report.changedFiles.length ? <ul className="dossier-path-list">{selected.report.report.changedFiles.slice(0, 6).map((path) => <li key={path} title={path}>{path}</li>)}</ul> : <p className="dossier-empty">No changed files reported.</p>}
+                {selected.report.report.changedFiles.length > 6 && <small>+{selected.report.report.changedFiles.length - 6} more files in the report</small>}
+              </div>
+              <div className="dossier-subsection"><h4>Checks reported · {selected.report.report.checkResults.length}</h4>
+                {selected.report.report.checkResults.length ? <ul className="dossier-check-list">{selected.report.report.checkResults.slice(0, 5).map((check, index) => <li key={`${check.name}-${index}`}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.name}</b><small>{check.summary}</small></span><strong>{check.status}</strong></li>)}</ul> : <p className="dossier-empty">No checks included in the worker report.</p>}
+              </div>
+              {selected.report.report.blockers.length > 0 && <div className="dossier-subsection dossier-blockers"><h4>Reported blockers · {selected.report.report.blockers.length}</h4><ul>{selected.report.report.blockers.slice(0, 4).map((blocker, index) => <li key={`${blocker}-${index}`}>{blocker}</li>)}</ul></div>}
+              {selected.report.report.commits.length > 0 && <div className="dossier-commits"><span>Reported commits</span>{selected.report.report.commits.slice(0, 3).map((commit) => <code key={commit}>{commit}</code>)}</div>}
+            </> : <p className="dossier-empty">No final Worker report is recorded.</p>}
+          </section>
+          <section className="dossier-section dossier-checkpoints">
+            <h3>Recent checkpoints <span>{selectedUpdates.length}</span></h3>
+            {selectedUpdates.length ? <ol>{selectedUpdates.map((update) => <li key={update.eventId}>
+              <i className={`checkpoint-mark checkpoint-${update.updateType}`} aria-hidden="true"><b /></i>
+              <span><strong>{update.phase?.replace(/_/g, " ") ?? update.updateType.replace(/_/g, " ")}</strong><small>{update.summary}</small></span>
+              <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
+            </li>)}</ol> : <p className="dossier-empty">No checkpoint history recorded.</p>}
+          </section>
+          <section className="dossier-section dossier-worktree">
+            <h3>Git / QA evidence <span>independent of report</span></h3>
+            {selected.worktree ? <>
+              <div className="dossier-fact-row"><span>Branch</span><b>{selected.worktree.branch ?? "Unknown"}</b></div>
+              <div className="dossier-fact-row"><span>Observed HEAD</span><b title={selected.worktree.observedHead ?? "No Git HEAD recorded"}>{selected.worktree.observedHead?.slice(0, 12) ?? "Not recorded"}</b></div>
+              <div className="dossier-fact-row"><span>Observed state</span><b>{selected.worktree.isClean === null ? "Not available" : selected.worktree.isClean ? "Clean" : "Changes present"}</b></div>
+              <div className="dossier-fact-row"><span>Reconciled</span><b>{selected.worktree.lastReconciledAt ? updateAge(selected.worktree.lastReconciledAt) : "Not reconciled"}</b></div>
+              {selected.worktree.reportVerification && <div className="dossier-verification"><b>{selected.worktree.reportVerification.status.replace(/_/g, " ")}</b><span>{selected.worktree.reportVerification.verifiedPaths.length} verified paths · {selected.worktree.reportVerification.unverifiedPaths.length} unverified</span></div>}
+              <div className="dossier-subsection"><h4>Observed changed paths · {selected.worktree.changedPaths.length}</h4>
+                {selected.worktree.changedPaths.length ? <ul className="dossier-path-list">{selected.worktree.changedPaths.slice(0, 6).map((path) => <li key={path} title={path}>{path}</li>)}</ul> : <p className="dossier-empty">No changed paths observed at the last reconciliation.</p>}
+                {selected.worktree.changedPaths.length > 6 && <small>+{selected.worktree.changedPaths.length - 6} more paths</small>}
+              </div>
+              {selected.report?.qualityCheckRefs.length ? <div className="dossier-subsection"><h4>Cathulu QA references</h4><ul className="dossier-check-list">{selected.report.qualityCheckRefs.slice(0, 5).map((check) => <li key={check.qualityCheckId}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.checkKey}</b><small>{check.mandatory ? "Required" : "Optional"} · recorded by Cathulu</small></span><strong>{check.status}</strong></li>)}</ul></div> : <p className="dossier-empty">No Cathulu QA references are linked to this report.</p>}
+            </> : <p className="dossier-empty">No worktree reconciliation is recorded for this assignment.</p>}
+          </section>
+        </div>
+      </section>}
     </section>
   );
 }
