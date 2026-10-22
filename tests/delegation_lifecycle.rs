@@ -131,6 +131,27 @@ fn tool_error(data_dir: &Path, name: &str, arguments: Value) -> Value {
     }
 }
 
+fn rollback_schema_twelve(database: &rusqlite::Connection) {
+    database
+        .execute_batch(
+            "DROP TRIGGER IF EXISTS projects_create_logical_pm;
+             DROP TRIGGER IF EXISTS logical_agent_role_identity_immutable;
+             DROP TRIGGER IF EXISTS project_manager_assignment_role_valid;
+             DROP TRIGGER IF EXISTS project_manager_assignment_role_immutable;
+             DROP INDEX IF EXISTS project_manager_assignments_role_idx;",
+        )
+        .expect("remove schema-twelve role triggers and indexes");
+    database
+        .execute_batch("ALTER TABLE project_manager_assignments DROP COLUMN logical_role_key;")
+        .expect("remove schema-twelve assignment binding for migration downgrade fixture");
+    database
+        .execute_batch(
+            "DROP TABLE logical_agent_roles;
+             DELETE FROM schema_migrations WHERE version = 12;",
+        )
+        .expect("remove schema-twelve role catalog");
+}
+
 fn hierarchy_packet() -> Value {
     json!({
         "schema_version": 1,
@@ -666,7 +687,7 @@ fn worker_parent_delegation_is_stored_and_returned_through_public_mcp() {
     activate_with_no_relevant_memory(
         &data_dir,
         manager_id,
-        "agent:hierarchy-manager",
+        "project-manager:1",
         "hierarchy-manager-activation",
     );
     call_tool(
@@ -831,7 +852,7 @@ fn project_manager_slot_is_unique_auditable_and_released_on_completion() {
     activate_with_no_relevant_memory(
         &data_dir,
         first_id,
-        "agent:hierarchy-slot-manager",
+        "project-manager:1",
         "hierarchy-slot-first-manager-activation",
     );
     call_tool(
@@ -1014,7 +1035,7 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
     activate_with_no_relevant_memory(
         &data_dir,
         manager_id,
-        "agent:hierarchy-worker-cap-manager",
+        "project-manager:1",
         "hierarchy-worker-cap-manager-activation",
     );
     call_tool(
@@ -1225,7 +1246,7 @@ fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
     activate_with_no_relevant_memory(
         &data_dir,
         manager_id,
-        "agent:hierarchy-parent-manager",
+        "project-manager:1",
         "hierarchy-parent-dispatch-manager-activation",
     );
     activate_with_no_relevant_memory(
@@ -1301,6 +1322,25 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
     );
     let manager_id = manager["id"].as_i64().expect("manager ID");
 
+    let wrong_scope_search = tool_error(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "project manager role memory",
+            "receiver_scope_type": "scope", "receiver_scope_id": "replacement-chat",
+            "limit": 10, "delegation_id": manager_id
+        }),
+    );
+    assert!(
+        wrong_scope_search
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("persistent role receiver scope"),
+        "PM retrieval must use the persistent role scope: {wrong_scope_search}"
+    );
+
     let missing = tool_error(
         &data_dir,
         "mark_delegation_dispatched",
@@ -1320,7 +1360,7 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "memory_tools_unavailable",
             false,
             false,
@@ -1348,7 +1388,7 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "no_relevant_memory",
             true,
             true,
@@ -1370,7 +1410,7 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         json!({
             "scope_type": "project", "scope_id": "1",
             "query": "hierarchy memory activation",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "limit": 10, "delegation_id": manager_id
         }),
     );
@@ -1380,7 +1420,7 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "no_relevant_memory",
             true,
             true,
@@ -1480,6 +1520,286 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
 }
 
 #[test]
+fn logical_roles_and_known_memory_survive_project_manager_reassignment() {
+    let root = unique_temp_dir("logical-agent-roles");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized role registry");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('role-project-a', 'C:/fixture/role-project-a', 'main', NULL, 0, '[]', 1, 1),
+                    ('role-project-b', 'C:/fixture/role-project-b', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("register projects through the normal project table");
+    drop(database);
+
+    let roles_response = run_initialized_server(
+        &data_dir,
+        &[
+            request(2, "resources/read", json!({ "uri": "cathulu://roles" })),
+            request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    let roles = resource_text(response(&roles_response, 2));
+    assert_eq!(roles.as_array().map(Vec::len), Some(3));
+    assert_eq!(
+        roles
+            .as_array()
+            .expect("role catalog")
+            .iter()
+            .filter(|role| role["roleKind"] == "main_overseer")
+            .count(),
+        1,
+        "only one persistent Main Overseer role exists"
+    );
+    assert_eq!(
+        roles
+            .as_array()
+            .expect("role catalog")
+            .iter()
+            .filter(|role| role["roleKind"] == "project_manager")
+            .count(),
+        2,
+        "each registered project has one persistent Project Manager role"
+    );
+    assert_eq!(roles[0]["roleKey"], json!("main-overseer"));
+    assert_eq!(roles[1]["roleKey"], json!("project-manager:1"));
+    assert_eq!(roles[1]["memoryScopeKey"], json!("project:1"));
+    assert_eq!(
+        roles[1]["receiverScopeKey"],
+        json!("scope:project-manager:1")
+    );
+    assert_eq!(roles[1]["toolProfileKey"], json!("project-manager-v1"));
+    assert_eq!(
+        resource_text(response(&roles_response, 3))["logicalRoles"],
+        roles,
+        "the dashboard snapshot uses the same authoritative role catalog"
+    );
+
+    let main_memory = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "global", "scope_id": null,
+            "memory_class": "canonical", "temperature": "hot", "kind": "constraint",
+            "body": "Main Overseer state belongs to the one persistent logical role.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "main-role-test" }],
+            "importance": 0.9, "confidence": 1.0, "active": true, "protected": false
+        }),
+    );
+    let main_memory_id = main_memory["id"].as_i64().expect("Main role memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": main_memory_id, "decision": "accepted" }),
+    );
+    let first_main_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": main_memory_id,
+            "sender_scope_type": "global", "sender_scope_id": null,
+            "receiver_scope_type": "scope", "receiver_scope_id": "main-overseer",
+            "retrieval_method": "hot"
+        }),
+    );
+    assert_eq!(first_main_transfer["action"], json!("full"));
+    let replacement_main_transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": main_memory_id,
+            "sender_scope_type": "global", "sender_scope_id": null,
+            "receiver_scope_type": "scope", "receiver_scope_id": "main-overseer",
+            "retrieval_method": "hot"
+        }),
+    );
+    assert_eq!(
+        replacement_main_transfer["action"],
+        json!("omitted_known"),
+        "a replacement Main chat reuses the same logical receiver scope"
+    );
+
+    let (_, first_task_id, first_run_id) =
+        create_task_and_run(&data_dir, 1, "first role activation");
+    let first_manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": first_task_id, "run_id": first_run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "persistent-role-first-assignment"
+        }),
+    );
+    let first_id = first_manager["id"].as_i64().expect("first PM assignment");
+    let memory = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "memory_class": "canonical", "temperature": "warm", "kind": "lesson",
+            "body": "This verified lesson remains known to the persistent Project Manager role.",
+            "sources": [{ "source_type": "human_instruction", "source_id": "logical-role-test" }],
+            "importance": 0.8, "confidence": 0.95, "active": true, "protected": false
+        }),
+    );
+    let memory_id = memory["id"].as_i64().expect("canonical memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": memory_id, "decision": "accepted" }),
+    );
+    let first_search = call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "verified lesson persistent project manager",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
+            "limit": 10, "delegation_id": first_id
+        }),
+    );
+    assert!(first_search["warm"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate["memoryId"] == json!(memory_id)));
+    let transfer = call_tool(
+        &data_dir,
+        "prepare_context_transfer",
+        json!({
+            "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
+            "run_id": first_run_id, "retrieval_method": "explicit", "token_count": 16
+        }),
+    );
+    let first_activation = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            first_id,
+            "project-manager:1",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "transferred",
+                "transfer_id": transfer["transferId"]
+            })],
+            "persistent-role-first-activation",
+        ),
+    );
+    assert_eq!(first_activation["status"], json!("ready"));
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": first_id }),
+    );
+    let completed = call_tool(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": first_id }),
+    );
+    assert_eq!(completed["logicalRoleKey"], json!("project-manager:1"));
+
+    let (_, second_task_id, second_run_id) =
+        create_task_and_run(&data_dir, 1, "replacement role activation");
+    let second_manager = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": second_task_id, "run_id": second_run_id,
+            "role": "sub_overseer", "task_packet": hierarchy_packet(),
+            "idempotency_key": "persistent-role-second-assignment"
+        }),
+    );
+    let second_id = second_manager["id"]
+        .as_i64()
+        .expect("replacement PM assignment");
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open reassigned PM role state");
+    let role_links: (i64, i64) = database
+        .query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT logical_role_key)
+             FROM project_manager_assignments WHERE project_id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read repeated assignment role links");
+    drop(database);
+    assert_eq!(
+        role_links,
+        (2, 1),
+        "replacement chat assignment reuses the same logical role"
+    );
+
+    let second_search = call_tool(
+        &data_dir,
+        "search_memory_candidates",
+        json!({
+            "scope_type": "project", "scope_id": "1",
+            "query": "verified lesson persistent project manager",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
+            "limit": 10, "delegation_id": second_id
+        }),
+    );
+    assert!(second_search["alreadyKnown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate["memoryId"] == json!(memory_id)));
+    let second_activation = call_tool(
+        &data_dir,
+        "record_delegation_activation",
+        activation_args(
+            second_id,
+            "project-manager:1",
+            "context_selected",
+            true,
+            true,
+            vec![json!({
+                "memory_id": memory_id,
+                "content_hash": memory["contentHash"],
+                "delivery": "already_known"
+            })],
+            "persistent-role-second-activation",
+        ),
+    );
+    assert_eq!(second_activation["status"], json!("ready"));
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": second_id }),
+    );
+    let final_snapshot = run_initialized_server(
+        &data_dir,
+        &[
+            request(2, "resources/read", json!({ "uri": "cathulu://roles" })),
+            request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+        ],
+    );
+    assert_eq!(resource_text(response(&final_snapshot, 2)), roles);
+    let dashboard = resource_text(response(&final_snapshot, 3));
+    let assignment = dashboard["delegations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|delegation| delegation["id"] == json!(second_id))
+        .expect("active PM assignment appears in the dashboard role projection");
+    assert_eq!(assignment["logicalRoleKey"], json!("project-manager:1"));
+    assert_eq!(
+        assignment["projectManagerAssignmentStatus"],
+        json!("active")
+    );
+    fs::remove_dir_all(root).expect("remove logical role fixture");
+}
+
+#[test]
 fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
     let root = unique_temp_dir("hierarchy-memory-transfer");
     let data_dir = root.join("data");
@@ -1538,7 +1858,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         json!({
             "scope_type": "project", "scope_id": "1",
             "query": "adapter contract stable request IDs",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "limit": 10, "delegation_id": manager_id
         }),
     );
@@ -1547,7 +1867,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1574,7 +1894,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "prepare_context_transfer",
         json!({
             "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "run_id": run_id, "retrieval_method": "explicit", "token_count": 12
         }),
     );
@@ -1583,7 +1903,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1606,7 +1926,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1626,7 +1946,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "prepare_context_transfer",
         json!({
             "memory_id": memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "run_id": run_id, "retrieval_method": "explicit", "token_count": 12
         }),
     );
@@ -1637,7 +1957,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         json!({
             "scope_type": "project", "scope_id": "1",
             "query": "adapter contract stable request IDs",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "limit": 10, "delegation_id": manager_id
         }),
     );
@@ -1646,7 +1966,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1687,7 +2007,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "prepare_context_transfer",
         json!({
             "memory_id": successor_id, "sender_scope_type": "project", "sender_scope_id": "1",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "run_id": run_id, "retrieval_method": "explicit", "token_count": 15
         }),
     );
@@ -1698,7 +2018,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         json!({
             "scope_type": "project", "scope_id": "1",
             "query": "adapter contract stable request IDs bounded retries",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "limit": 10, "delegation_id": manager_id
         }),
     );
@@ -1707,7 +2027,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1726,7 +2046,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1770,7 +2090,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1813,7 +2133,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "prepare_context_transfer",
         json!({
             "memory_id": hot_memory_id, "sender_scope_type": "project", "sender_scope_id": "1",
-            "receiver_scope_type": "scope", "receiver_scope_id": "agent:m23-pm",
+            "receiver_scope_type": "scope", "receiver_scope_id": "project-manager:1",
             "run_id": run_id, "retrieval_method": "explicit", "token_count": 8
         }),
     );
@@ -1831,7 +2151,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -1872,7 +2192,7 @@ fn activation_receipts_require_current_transfers_for_the_exact_receiver() {
         "record_delegation_activation",
         activation_args(
             manager_id,
-            "agent:m23-pm",
+            "project-manager:1",
             "context_selected",
             true,
             true,
@@ -2331,6 +2651,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
         .expect("open v5 database fixture");
+    rollback_schema_twelve(&database);
     database
         .execute_batch(
             "DROP TABLE delegation_activation_memory_refs;
@@ -2386,7 +2707,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -2443,6 +2764,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
 
     let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
         .expect("open version-ten fixture");
+    rollback_schema_twelve(&database);
     database
         .execute_batch(
             "DROP TABLE delegation_activation_memory_refs;
@@ -2472,7 +2794,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     let assignment_status: String = database
         .query_row(
             "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
@@ -2542,6 +2864,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
             [],
         )
         .expect("seed version-four memory state");
+    rollback_schema_twelve(&database);
     database
         .execute_batch(
             "DROP TABLE delegation_activation_memory_refs;
@@ -2621,7 +2944,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

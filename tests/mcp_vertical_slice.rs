@@ -313,7 +313,7 @@ fn register_reconcile_read_and_reopen_through_mcp() {
             .pointer("/result/resources")
             .and_then(Value::as_array)
             .map(Vec::len),
-        Some(2)
+        Some(3)
     );
 
     let registration = run_initialized_server(
@@ -330,6 +330,26 @@ fn register_reconcile_read_and_reopen_through_mcp() {
         .get("id")
         .and_then(Value::as_i64)
         .expect("registration returns a project ID");
+    let role_catalog = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": "cathulu://roles" }),
+        )],
+    );
+    let roles = resource_text(response(&role_catalog, 2));
+    assert_eq!(roles.as_array().map(Vec::len), Some(2));
+    assert_eq!(roles[0]["roleKey"], json!("main-overseer"));
+    assert_eq!(
+        roles[1]["roleKey"],
+        json!(format!("project-manager:{project_id}"))
+    );
+    assert_eq!(
+        roles[1]["memoryScopeKey"],
+        json!(format!("project:{project_id}"))
+    );
+
     let duplicate_registration = run_initialized_server(
         &data_dir,
         &[tool_call(2, "register_project", json!({ "path": repo }))],
@@ -872,6 +892,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
                 json!({ "uri": "cathulu://projects/1" }),
             ),
             request(3, "resources/read", json!({ "uri": "cathulu://dashboard" })),
+            request(4, "resources/read", json!({ "uri": "cathulu://roles" })),
         ],
     );
     let project = resource_text(response(&migrated, 2));
@@ -882,6 +903,11 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
     let dashboard = resource_text(response(&migrated, 3));
     assert_eq!(dashboard.pointer("/projects/0/id"), Some(&json!(1)));
     assert_eq!(dashboard.pointer("/memoryHealth/hotBytes"), Some(&json!(0)));
+    let roles = resource_text(response(&migrated, 4));
+    assert_eq!(roles.as_array().map(Vec::len), Some(2));
+    assert_eq!(roles[0]["roleKey"], json!("main-overseer"));
+    assert_eq!(roles[1]["roleKey"], json!("project-manager:1"));
+    assert_eq!(dashboard["logicalRoles"], roles);
     let migrated_database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
         .expect("open migrated database");
     let schema_version: i64 = migrated_database
@@ -889,7 +915,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 11);
+    assert_eq!(schema_version, 12);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");
@@ -2103,6 +2129,12 @@ fn codex_hook_events_are_sanitized_idempotent_and_recover_after_restart() {
     run_git(&repo, &["add", "README.md"]);
     run_git(&repo, &["commit", "--quiet", "-m", "second"]);
     let expected_head = current_head(&repo);
+    let reconciliation = tool_text(&call_tool(
+        &data_dir,
+        "reconcile_project",
+        json!({ "project_id": project_id }),
+    ));
+    assert_eq!(reconciliation.get("head"), Some(&json!(expected_head)));
 
     let tool_event = json!({
         "hook_event_name": "PostToolUse",
@@ -2719,6 +2751,12 @@ fn unsupported_or_unregistered_hook_events_are_ignored_without_partial_runs() {
         &["commit", "--quiet", "-m", "restart reconciliation"],
     );
     let expected_head = current_head(&repo);
+    let reconciliation = tool_text(&call_tool(
+        &data_dir,
+        "reconcile_project",
+        json!({ "project_id": project_id }),
+    ));
+    assert_eq!(reconciliation.get("head"), Some(&json!(expected_head)));
     fs::remove_dir_all(&removed_repo).expect("remove one registered repository");
 
     let dashboard = run_initialized_server(

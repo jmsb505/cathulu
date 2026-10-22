@@ -3,15 +3,55 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 
 const invokeMock = vi.mocked(invoke);
+const mainRole = {
+  roleKey: "main-overseer",
+  roleKind: "main_overseer",
+  projectId: null,
+  projectName: null,
+  memoryScopeKey: "global",
+  receiverScopeKey: "scope:main-overseer",
+  toolProfileKey: "main-overseer-v1",
+  createdAt: 1_800_000_000,
+};
+const emptyDashboardSnapshot = () => ({
+  logicalRoles: [mainRole],
+  projects: [],
+  objectives: [],
+  blockers: [],
+  recentRuns: [],
+  agentActivity: [],
+  delegations: [],
+  failedChecks: [],
+  memoryHealth: {
+    hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0,
+    canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0,
+    invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0,
+    staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0,
+    contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0,
+    contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0,
+    pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0,
+    orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0,
+  },
+});
 
 describe("dashboard and local Codex settings", () => {
   beforeEach(() => { cleanup(); invokeMock.mockReset(); });
 
   it("renders the snapshot returned by the Tauri command", async () => {
     invokeMock.mockResolvedValueOnce({
+      logicalRoles: [mainRole, {
+        roleKey: "project-manager:1",
+        roleKind: "project_manager",
+        projectId: 1,
+        projectName: "Atlas",
+        memoryScopeKey: "project:1",
+        receiverScopeKey: "scope:project-manager:1",
+        toolProfileKey: "project-manager-v1",
+        createdAt: 1_800_000_000,
+      }],
       projects: [{
         id: 1,
         name: "Atlas",
@@ -34,6 +74,7 @@ describe("dashboard and local Codex settings", () => {
         { id: 8, projectName: "Atlas", objectiveTitle: null, taskTitle: "Run migration", workflowKey: "migration", workflowVersion: 1, status: "failed", summary: "A required check failed.", startedAt: 1_800_000_108, finishedAt: 1_800_000_142 },
         { id: 9, projectName: "Atlas", objectiveTitle: null, taskTitle: null, workflowKey: null, workflowVersion: null, status: "inconclusive", summary: "Codex turn ended; Cathulu verification was not recorded.", startedAt: 1_800_000_107, finishedAt: 1_800_000_143 },
       ],
+      agentActivity: [],
       delegations: [{
         id: 12,
         projectName: "Atlas",
@@ -131,68 +172,31 @@ describe("dashboard and local Codex settings", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Atlas" })).toBeTruthy();
-    expect(screen.getByText("C:\\work\\atlas")).toBeTruthy();
-    expect(screen.getByText("main")).toBeTruthy();
-    expect(screen.getByText("work.txt")).toBeTruthy();
-    expect(screen.getByText("Ship memory foundations")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Recent runs" })).toBeTruthy();
-    expect(screen.getAllByText("windows release").length).toBe(2);
-    expect(screen.getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("failed").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/Codex turn ended; Cathulu verification was not recorded\./)).toBeTruthy();
-    expect(screen.getAllByText("inconclusive").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("heading", { name: "Quality watch" })).toBeTruthy();
-    expect(screen.getByText("integration")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Memory health" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Delegations & worker reports" })).toBeTruthy();
-    expect(screen.getByText("Implement worker reports")).toBeTruthy();
-    expect(screen.getByText("Reported · awaiting review")).toBeTruthy();
-    expect(screen.getByText("Worker-reported outcome: completed")).toBeTruthy();
-    expect(screen.getByText("Report Git verification")).toBeTruthy();
-    expect(screen.getByText("verified")).toBeTruthy();
-    expect(screen.getByText(/Observed worker/)).toBeTruthy();
-    expect(screen.getByText(/gpt-5-codex · effort unavailable/)).toBeTruthy();
-    expect(screen.getAllByText("Parent run blocked").length).toBe(2);
-    expect(screen.getByText("needs follow up")).toBeTruthy();
-    expect(screen.getByText("Resolve the schema mismatch before retrying.")).toBeTruthy();
-    expect(screen.getByText(/Parent-run verification still depends on its own mandatory checks\./)).toBeTruthy();
-    expect(screen.getByText("HOT scopes")).toBeTruthy();
-    expect(screen.getByText("Largest scope HOT")).toBeTruthy();
-    expect(screen.getByText("256 B")).toBeTruthy();
-    expect(screen.getByText("2.0 KiB")).toBeTruthy();
-    expect(screen.getByText("Invalidated")).toBeTruthy();
-    expect(screen.getByText("Protected artifacts")).toBeTruthy();
-    expect(screen.getByText(/12\.8%/)).toBeTruthy();
-    expect(screen.getByText("150.0%")).toBeTruthy();
-    expect(screen.getByText("75.0%")).toBeTruthy();
-    expect(screen.getByText("2.0 KiB")).toBeTruthy();
-    expect(screen.getByText("Resolve CI gate")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "Project activity graph" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "One persistent logical Main Overseer role" })).toBeTruthy();
+    const projectManager = screen.getByRole("button", { name: /Atlas · persistent Project Manager role/ });
+    expect(projectManager.getAttribute("aria-label")).toContain("context scope project:1");
+    expect(projectManager.getAttribute("aria-label")).toContain("tool profile project-manager-v1");
+    expect(screen.queryByRole("navigation", { name: "Dashboard views" })).toBeNull();
+    expect(screen.queryByText("Recent runs")).toBeNull();
     expect(invokeMock).toHaveBeenCalledWith("dashboard_snapshot");
-    expect(screen.getByRole("link", { name: "Cathulu home" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Codex settings" })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Cathulu activity" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Codex settings" })).toBeTruthy();
   });
 
   it("shows the empty state when no projects are registered", async () => {
-    invokeMock.mockResolvedValueOnce({
-      projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
-      memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
-    } as never);
+    invokeMock.mockResolvedValueOnce(emptyDashboardSnapshot() as never);
 
     render(<App />);
 
-    expect(await screen.findByText("A quiet starting point.")).toBeTruthy();
-    expect(screen.getByText("Register a repository through Codex to see its Git snapshot here.")).toBeTruthy();
-    expect(screen.getByText(/No worker handoffs yet\./)).toBeTruthy();
+    expect(await screen.findByRole("group", { name: "One persistent logical Main Overseer role" })).toBeTruthy();
+    expect(screen.getByText("No registered project roles")).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Dashboard views" })).toBeNull();
   });
 
   it("opens the separate local Codex settings surface and labels catalog availability as unverified", async () => {
     invokeMock
-      .mockResolvedValueOnce({
-        projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
-        memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
-      } as never)
+      .mockResolvedValueOnce(emptyDashboardSnapshot() as never)
       .mockResolvedValueOnce({
         catalog: {
           source: "bundled_local_codex_cli",
@@ -206,7 +210,7 @@ describe("dashboard and local Codex settings", () => {
       } as never);
 
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Codex settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Codex settings" }));
 
     expect(await screen.findByRole("heading", { name: "Codex settings" })).toBeTruthy();
     expect(await screen.findByText(/does not verify account or workspace availability/)).toBeTruthy();
@@ -241,10 +245,7 @@ describe("dashboard and local Codex settings", () => {
       runtimeEffectivenessVerified: false,
     });
     invokeMock
-      .mockResolvedValueOnce({
-        projects: [], objectives: [], blockers: [], recentRuns: [], delegations: [], failedChecks: [],
-        memoryHealth: { hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0, canonicalCount: 0, episodicCount: 0, evidenceCount: 0, candidateCount: 0, invalidatedCount: 0, protectedArtifactCount: 0, duplicateMemoryGroups: 0, staleMemoryCount: 0, reusedMemoryCount: 0, contextTransferBytes: 0, contextReintroducedBytes: 0, contextReintroductionBasisPoints: 0, contextAmplificationBasisPoints: 0, retrievalUsefulnessBasisPoints: 0, pendingMaintenanceProposals: 0, sqliteBytes: 0, sqliteGrowthBytes: 0, orphanedEvidenceCount: 0, duplicateArtifactGroups: 0, bytesCollected: 0 },
-      } as never)
+      .mockResolvedValueOnce(emptyDashboardSnapshot() as never)
       .mockResolvedValueOnce(selectorSnapshot() as never)
       .mockResolvedValueOnce(preference as never)
       .mockResolvedValueOnce(selectorSnapshot() as never)
@@ -270,7 +271,7 @@ describe("dashboard and local Codex settings", () => {
       .mockResolvedValueOnce(selectorSnapshot(true) as never);
 
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Codex settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Codex settings" }));
     await screen.findByRole("heading", { name: "Main Overseer" });
     fireEvent.click(screen.getAllByRole("button", { name: "Save preference" })[0]);
     expect(await screen.findByText(/saved in Cathulu/)).toBeTruthy();

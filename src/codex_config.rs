@@ -94,7 +94,9 @@ struct RawReasoningLevel {
 }
 
 pub fn load_bundled_codex_catalog() -> Result<CodexModelCatalog, String> {
-    let version_output = Command::new("codex")
+    let mut version_command = Command::new("codex");
+    crate::suppress_windows_console(&mut version_command);
+    let version_output = version_command
         .arg("--version")
         .output()
         .map_err(|_| "cannot start the local Codex CLI to read its version".to_string())?;
@@ -112,7 +114,9 @@ pub fn load_bundled_codex_catalog() -> Result<CodexModelCatalog, String> {
         return Err("the local Codex CLI returned an invalid version string".to_string());
     }
 
-    let output = Command::new("codex")
+    let mut catalog_command = Command::new("codex");
+    crate::suppress_windows_console(&mut catalog_command);
+    let output = catalog_command
         .args(["debug", "models", "--bundled"])
         .output()
         .map_err(|_| "cannot start the local Codex CLI model catalog command".to_string())?;

@@ -422,7 +422,9 @@ fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    crate::suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
@@ -436,7 +438,9 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 fn git_optional(root: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    crate::suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
@@ -456,7 +460,9 @@ fn is_commit(root: &Path, commit: &str) -> bool {
 }
 
 fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    crate::suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
