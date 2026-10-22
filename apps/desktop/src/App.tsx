@@ -167,7 +167,7 @@ type DashboardSnapshot = {
 
 type RunRecord = DashboardSnapshot["recentRuns"][number];
 type HookAgentRecord = DashboardSnapshot["agentActivity"][number];
-type ProjectMonitorState = "working" | "stale" | "blocked" | "failed" | "stopped" | "idle";
+type ProjectMonitorState = "working" | "stale" | "blocked" | "failed" | "inconclusive" | "complete" | "stopped" | "idle";
 type ProjectMonitorItem = {
   project: ProjectSnapshot;
   state: ProjectMonitorState;
@@ -176,6 +176,10 @@ type ProjectMonitorItem = {
   issueCount: number;
   attentionCount: number;
   staleAgentCount: number;
+  latestRun: RunRecord | null;
+  latestUpdate: AgentUpdateSnapshot | null;
+  pendingAction: PendingAgentAction | null;
+  failedCheckKeys: string[];
 };
 
 const AGENT_SIGNAL_FRESHNESS_SECONDS = 15 * 60;
@@ -194,7 +198,7 @@ function runTitle(run: RunRecord) {
 }
 
 function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] {
-  const priority: Record<ProjectMonitorState, number> = { working: 0, stale: 1, blocked: 2, failed: 3, stopped: 4, idle: 5 };
+  const priority: Record<ProjectMonitorState, number> = { working: 0, stale: 1, blocked: 2, failed: 3, inconclusive: 4, complete: 5, stopped: 6, idle: 7 };
   return snapshot.projects.map((project) => {
     const latestRun = snapshot.recentRuns
       .filter((run) => run.projectName === project.name)
@@ -203,7 +207,14 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
     const mandatoryFailures = latestRun
       ? snapshot.failedChecks.filter((check) => check.runId === latestRun.id && check.mandatory && check.status.toLowerCase() === "failed")
       : [];
-    const pendingActions = snapshot.pendingAgentActions.filter((action) => action.projectId === project.id);
+    const pendingActions = snapshot.pendingAgentActions
+      .filter((action) => action.projectId === project.id)
+      .sort((left, right) => right.createdAt - left.createdAt || right.eventId - left.eventId);
+    const latestUpdate = latestRun
+      ? snapshot.agentUpdates
+        .filter((update) => update.projectId === project.id && update.runId === latestRun.id)
+        .sort((left, right) => right.createdAt - left.createdAt || right.eventId - left.eventId)[0] ?? null
+      : null;
     const delegations = latestRun ? snapshot.delegations.filter((item) => item.runId === latestRun.id) : [];
     const managerIds = new Set(delegations
       .filter((delegation) => delegation.role === "sub_overseer" && delegation.projectManagerAssignmentStatus === "active")
@@ -231,9 +242,13 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
         ? "blocked"
         : latestRun?.status === "failed" || mandatoryFailures.length > 0
           ? "failed"
-          : latestRun
-            ? "stopped"
-            : "idle";
+          : latestRun?.status === "inconclusive"
+            ? "inconclusive"
+            : latestRun?.status === "verified_success"
+              ? "complete"
+              : latestRun
+                ? "stopped"
+                : "idle";
     const detail = pendingActions[0]?.ownerAction
       ?? (blockers.length > 0 && !latestRun
       ? blockers[0].title
@@ -250,6 +265,10 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
       issueCount: blockers.length + mandatoryFailures.length + pendingActions.length + staleAgentCount,
       attentionCount: pendingActions.length,
       staleAgentCount,
+      latestRun,
+      latestUpdate,
+      pendingAction: pendingActions[0] ?? null,
+      failedCheckKeys: mandatoryFailures.map((check) => check.checkKey),
     };
   }).sort((left, right) => {
     return priority[left.state] - priority[right.state] || left.project.name.localeCompare(right.project.name);
@@ -257,7 +276,11 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
 }
 
 function monitorStateLabel(state: ProjectMonitorState) {
-  return state === "working" ? "Working" : state === "stale" ? "No fresh signal" : state === "blocked" ? "Blocked" : state === "failed" ? "Failed" : state === "stopped" ? "Stopped" : "Idle";
+  return state === "working" ? "Working" : state === "stale" ? "No fresh signal" : state === "blocked" ? "Blocked" : state === "failed" ? "Failed" : state === "inconclusive" ? "Unverified" : state === "complete" ? "Verified" : state === "stopped" ? "Stopped" : "Idle";
+}
+
+function projectMonitorLabel(item: ProjectMonitorItem) {
+  return item.pendingAction ? "Needs you" : monitorStateLabel(item.state);
 }
 
 function roleLabel(role: string) {
@@ -908,11 +931,31 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
   );
 }
 
-function CompactProjectSignals({ snapshot, loading }: { snapshot: DashboardSnapshot | null; loading: boolean }) {
-  const items = snapshot ? projectMonitorItems(snapshot) : [];
+function CompactProjectSignals({
+  items,
+  loading,
+  selectedProjectId,
+  onSelect,
+}: {
+  items: ProjectMonitorItem[];
+  loading: boolean;
+  selectedProjectId: number | null;
+  onSelect: (projectId: number) => void;
+}) {
+  const stableItems = [...items].sort((left, right) => left.project.id - right.project.id);
   return (
-    <span className="monitor-project-signals" title={loading ? "Reading project activity" : `${items.length} project statuses`} aria-label={loading ? "Reading project activity" : `${items.length} project statuses`}>
-      {items.map((item) => <i key={item.project.id} className={`project-signal-dot state-${item.state}`} role="img" aria-label={`${item.project.name}: ${monitorStateLabel(item.state)}`} title={`${item.project.name}: ${monitorStateLabel(item.state)}`} />)}
+    <span className="monitor-project-signals" role="group" title={loading ? "Reading project activity" : `${stableItems.length} project statuses`} aria-label={loading ? "Reading project activity" : `${stableItems.length} project statuses`}>
+      {stableItems.map((item) => <button
+        key={item.project.id}
+        className={`project-signal-bubble state-${item.state} ${selectedProjectId === item.project.id ? "is-selected" : ""}`}
+        type="button"
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={() => onSelect(item.project.id)}
+        aria-label={`${item.project.name}: ${projectMonitorLabel(item)}. Show project details`}
+        aria-expanded={selectedProjectId === item.project.id}
+        aria-controls={`monitor-project-details-${item.project.id}`}
+        title={`${item.project.name} · ${monitorStateLabel(item.state)}`}
+      />)}
     </span>
   );
 }
@@ -921,7 +964,12 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
   const [expanded, setExpanded] = useState(false);
   const [pinned, setPinned] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const projectItems = snapshot ? projectMonitorItems(snapshot) : [];
+  const compactWidth = 174;
+  const compactHeight = 58;
+  const expandedWidth = 376;
+  const expandedHeight = 360;
 
   const togglePinned = async () => {
     try {
@@ -933,19 +981,22 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
     }
   };
 
-  const toggleExpanded = async () => {
-    const nextExpanded = !expanded;
+  const resizeMonitor = async (nextExpanded: boolean, projectId: number | null = null) => {
+    if (nextExpanded === expanded) {
+      if (projectId !== null) setExpandedProjectId(projectId);
+      return;
+    }
     try {
       const window = getCurrentWindow();
-      const nextWidth = nextExpanded ? 360 : 174;
-      const nextHeight = nextExpanded ? 268 : 58;
+      const nextWidth = nextExpanded ? expandedWidth : compactWidth;
+      const nextHeight = nextExpanded ? expandedHeight : compactHeight;
       const display = await currentMonitor();
       if (display) {
         const origin = display.position.toLogical(display.scaleFactor);
         const bounds = display.size.toLogical(display.scaleFactor);
         const current = (await window.outerPosition()).toLogical(display.scaleFactor);
-        const currentWidth = expanded ? 360 : 174;
-        const currentHeight = expanded ? 268 : 58;
+        const currentWidth = expanded ? expandedWidth : compactWidth;
+        const currentHeight = expanded ? expandedHeight : compactHeight;
         const maxX = Math.max(origin.x + 8, origin.x + bounds.width - nextWidth - 8);
         const maxY = Math.max(origin.y + 8, origin.y + bounds.height - nextHeight - 8);
         const x = Math.min(Math.max(current.x + currentWidth - nextWidth, origin.x + 8), maxX);
@@ -954,9 +1005,16 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
       }
       await window.setSize(new LogicalSize(nextWidth, nextHeight));
       setExpanded(nextExpanded);
+      setExpandedProjectId(nextExpanded ? projectId : null);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : "Could not resize the floating monitor.");
     }
+  };
+
+  const toggleExpanded = () => { void resizeMonitor(!expanded); };
+  const selectProject = (projectId: number) => { void resizeMonitor(true, projectId); };
+  const toggleProjectDetails = (projectId: number) => {
+    setExpandedProjectId((current) => current === projectId ? null : projectId);
   };
 
   const restoreDashboard = async () => {
@@ -983,30 +1041,57 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
       <section className="monitor-glass" aria-label="Cathulu floating monitor">
         <header className="monitor-header" onMouseDown={dragWindow}>
           <span className="monitor-brand" title="Cathulu"><BrandMark /></span>
-          <CompactProjectSignals snapshot={snapshot} loading={loading} />
+          <CompactProjectSignals items={projectItems} loading={loading} selectedProjectId={expandedProjectId} onSelect={selectProject} />
           <div className="monitor-actions">
             <button className={pinned ? "monitor-icon-button is-pinned" : "monitor-icon-button"} type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void togglePinned()} aria-label={pinned ? "Turn always on top off" : "Keep monitor always on top"} title={pinned ? "Always on top" : "Pin above other windows"}><Icon name="pin" /></button>
             <button className="monitor-icon-button" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void toggleExpanded()} aria-label={expanded ? "Collapse monitor" : "Expand monitor"} title={expanded ? "Collapse" : "Expand"}><Icon name={expanded ? "collapse" : "expand"} /></button>
             <button className="monitor-icon-button" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={closeWindow} aria-label="Close floating monitor" title="Close"><Icon name="close" /></button>
           </div>
         </header>
-        {expanded && <div className="monitor-project-board" aria-label="Project activity" aria-live="polite">
+        <div className="monitor-project-board" aria-label="Project activity" hidden={!expanded}>
             <div className="monitor-board-heading">
               <span>Projects</span>
               <button className="monitor-open" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void restoreDashboard()} aria-label="Open dashboard" title="Open dashboard"><Icon name="open" /></button>
             </div>
             {!snapshot ? <p className="monitor-error">{error ?? (loading ? "Reading local state…" : "No snapshot available")}</p> : projectItems.length === 0 ? <p className="monitor-empty">No registered projects</p> : projectItems.map((item) => (
-              <article className={`monitor-project-row state-${item.state} ${item.attentionCount ? "has-attention" : ""} ${item.staleAgentCount ? "has-stale" : ""}`} key={item.project.id} title={`${item.project.name} — ${item.attentionCount} owner actions; ${item.staleAgentCount} stale agent signals; ${monitorStateLabel(item.state)}: ${item.detail}`}>
-                <span className={`project-state-indicator state-${item.state}`} aria-hidden="true"><i />{item.state === "working" && <span className="project-activity-wave"><i /><i /><i /></span>}</span>
-                <span className="monitor-project-copy"><strong>{item.project.name}</strong><small>{item.detail}</small></span>
-                <span className="monitor-project-meta">
-                  {item.issueCount > 0 && <b className={`project-issue-count ${item.attentionCount ? "is-attention" : ""} ${item.staleAgentCount ? "is-stale" : ""}`} title={`${item.attentionCount} owner actions; ${item.staleAgentCount} stale agent signals; ${item.issueCount} total attention signals`}>{item.issueCount}</b>}
-                  {item.state === "working" && item.activeAgents > 0 && <b className="project-agent-count" title={`${item.activeAgents} active agents`}>{item.activeAgents}</b>}
-                  <span className={`project-state-label state-${item.state}`}>{monitorStateLabel(item.state)}</span>
-                </span>
-              </article>
+              <div className="monitor-project-entry" key={item.project.id}>
+                <button
+                  className={`monitor-project-row state-${item.state} ${item.attentionCount ? "has-attention" : ""} ${item.staleAgentCount ? "has-stale" : ""}`}
+                  type="button"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={() => toggleProjectDetails(item.project.id)}
+                  aria-expanded={expandedProjectId === item.project.id}
+                  aria-controls={`monitor-project-details-${item.project.id}`}
+                  aria-label={`${item.project.name}: ${projectMonitorLabel(item)}. ${item.detail}. ${expandedProjectId === item.project.id ? "Hide" : "Show"} project details`}
+                >
+                  <span className={`project-state-indicator state-${item.state}`} aria-hidden="true"><i />{item.state === "working" && <span className="project-activity-wave"><i /><i /><i /></span>}</span>
+                  <span className="monitor-project-copy"><strong>{item.project.name}</strong><small>{item.detail}</small></span>
+                  <span className="monitor-project-meta">
+                    {item.issueCount > 0 && <b className={`project-issue-count ${item.attentionCount ? "is-attention" : ""} ${item.staleAgentCount ? "is-stale" : ""}`} title={`${item.attentionCount} owner actions; ${item.staleAgentCount} stale agent signals; ${item.issueCount} total attention signals`}>{item.issueCount}</b>}
+                    {item.state === "working" && item.activeAgents > 0 && <b className="project-agent-count" title={`${item.activeAgents} active agents`}>{item.activeAgents}</b>}
+                    <span className={`project-state-label state-${item.state}`}>{projectMonitorLabel(item)}</span>
+                    <i className={`monitor-disclosure-chevron ${expandedProjectId === item.project.id ? "is-open" : ""}`} aria-hidden="true" />
+                  </span>
+                </button>
+                <div className="monitor-project-details" id={`monitor-project-details-${item.project.id}`} role="region" aria-label={`${item.project.name} latest activity`} hidden={expandedProjectId !== item.project.id}>
+                  {item.pendingAction && <section className="monitor-detail-attention">
+                    <small>Needs you</small>
+                    <strong>{item.pendingAction.ownerAction}</strong>
+                    <p>{item.pendingAction.summary}</p>
+                  </section>}
+                  {item.latestUpdate ? <section className="monitor-detail-checkpoint">
+                    <div><small>{item.latestUpdate.phase?.replace(/_/g, " ") ?? "Latest checkpoint"}</small><time dateTime={new Date(item.latestUpdate.createdAt * 1000).toISOString()}>{updateAge(item.latestUpdate.createdAt)}</time></div>
+                    <p>{item.latestUpdate.summary}</p>
+                  </section> : item.latestRun?.summary ? <section className="monitor-detail-checkpoint">
+                    <div><small>Latest run summary</small><span className="monitor-detail-state">{projectMonitorLabel(item)}</span></div>
+                    <p>{item.latestRun.summary}</p>
+                  </section> : <p className="monitor-detail-empty">No checkpoint recorded for this project.</p>}
+                  {item.failedCheckKeys.length > 0 && <p className="monitor-detail-failure"><strong>Required check failed</strong><span>{item.failedCheckKeys.slice(0, 2).join(" · ")}{item.failedCheckKeys.length > 2 ? ` · +${item.failedCheckKeys.length - 2}` : ""}</span></p>}
+                  {item.latestRun && <small className="monitor-detail-source">Run {item.latestRun.id}{item.activeAgents > 0 ? ` · ${item.activeAgents} active agent${item.activeAgents === 1 ? "" : "s"}` : ""}</small>}
+                </div>
+              </div>
             ))}
-        </div>}
+        </div>
         {actionError && <p className="monitor-error" role="status">{actionError}</p>}
       </section>
     </main>
