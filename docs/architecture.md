@@ -34,6 +34,10 @@ This hierarchy is separate from Phase 4 M10's evidence-gated cross-project scope
 
 M21 observed one Project Manager spawning one Worker and confirmed that Main, PM, and Worker could reach Cathulu MCP. The available memory tools differed: the PM could read `cathulu://dashboard` but did not have `read_memories`, while the Worker did. HOT/WARM memory was empty, and the run recorded “no relevant memory”; the current `prepare_context_transfer` operation cannot encode an empty transfer because it requires a memory ID. No hook event or parent-child telemetry edge surfaced, so the dashboard must continue to show hook coverage/relationships as unknown until observed. See the M21 evidence and the M22-M24 follow-up criteria in PLAN-006.
 
+### Live agent work and owner actions
+
+M28 extends the existing append-only SQLite event ledger with bounded, idempotent agent checkpoints and keyed owner-action requests. The dashboard snapshot exposes recent self-reported progress and unresolved requests alongside the existing hook, delegation, Git, artifact, and QA evidence. A self-reported checkpoint can update the activity visualization but cannot prove implementation or success. An owner action stays visible until the matching key is explicitly resolved. Working/waiting signals older than 15 minutes are shown as stale and unconfirmed, not as proof that an agent stopped. The Main Overseer reports the first project's useful update or attention request as it arrives, then continues monitoring the other projects rather than waiting at an all-project completion barrier. See [ADR-0012](decisions/ADR-0012-live-agent-progress-and-attention.md) and [PLAN-009](plans/PLAN-009-live-agent-observability.md).
+
 ## Phase 1 starting stack
 
 The repository was empty at kickoff, so the user's preferred stack applies. M1 implements this baseline; the Windows build, automated tests, and isolated startup check passed on 2026-10-20. See [PLAN-001](plans/PLAN-001-phase1-first-slice.md) for exact commands and limits.

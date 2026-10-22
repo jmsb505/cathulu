@@ -162,6 +162,20 @@ struct DelegationIdArgs {
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct RecordDelegationUpdateArgs {
+    delegation_id: i64,
+    update_type: String,
+    #[serde(default)]
+    phase: Option<String>,
+    summary: String,
+    #[serde(default)]
+    action_key: Option<String>,
+    #[serde(default)]
+    owner_action: Option<String>,
+    idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SubmitDelegationReportArgs {
     delegation_id: i64,
     worker_report: WorkerReport,
@@ -695,6 +709,27 @@ impl CathuluServer {
     }
 
     #[tool(
+        description = "Record a short, self-reported progress checkpoint or owner action for a dispatched Project Manager/Worker delegation. Use at meaningful state changes, not per tool call; during sustained work, report a brief checkpoint about every 10 minutes so the dashboard can distinguish recent activity from an unconfirmed signal. update_type is working, waiting, action_required, or action_resolved. For action_required, provide a stable action_key and the exact owner_action/question; clear it with action_resolved using the same key after the owner responds. This event is not proof of code changes or successful QA."
+    )]
+    fn record_delegation_update(
+        &self,
+        Parameters(a): Parameters<RecordDelegationUpdateArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_delegation_update(
+                a.delegation_id,
+                &a.update_type,
+                a.phase.as_deref(),
+                &a.summary,
+                a.action_key.as_deref(),
+                a.owner_action.as_deref(),
+                &a.idempotency_key,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
         description = "Complete a dispatched Project Manager assignment after every child worker has reported or been cancelled. This releases the project's active-manager slot and records an audit event."
     )]
     fn complete_project_manager_assignment(
@@ -1115,7 +1150,7 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             Resource::new("cathulu://dashboard", "Cathulu dashboard snapshot")
                 .with_description(
-                    "Read-only project, workflow, quality, worker-delegation, and memory-health summary.",
+                    "Read-only project and agent graph with recent self-reported progress checkpoints, unresolved owner actions, blockers, required quality failures, and memory-health summary.",
                 )
                 .with_mime_type("application/json"),
         ];

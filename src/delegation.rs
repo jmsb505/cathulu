@@ -142,6 +142,20 @@ pub struct DashboardDelegationSummary {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DelegationUpdateRecord {
+    pub event_id: i64,
+    pub delegation_id: i64,
+    pub run_id: i64,
+    pub update_type: String,
+    pub phase: Option<String>,
+    pub summary: String,
+    pub action_key: Option<String>,
+    pub owner_action: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DelegationRecord {
     pub id: i64,
     pub project_id: i64,
@@ -208,6 +222,222 @@ pub struct DelegationActivationReceipt {
 }
 
 impl Store {
+    pub fn record_delegation_update(
+        &self,
+        delegation_id: i64,
+        update_type: &str,
+        phase: Option<&str>,
+        summary: &str,
+        action_key: Option<&str>,
+        owner_action: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<DelegationUpdateRecord, String> {
+        if delegation_id <= 0 {
+            return Err("delegation ID must be positive".to_string());
+        }
+        let update_type = normalize_required("update type", update_type, 32)?.to_ascii_lowercase();
+        let event_type = match update_type.as_str() {
+            "working" => "agent_progress",
+            "waiting" => "agent_waiting",
+            "action_required" => "agent_action_required",
+            "action_resolved" => "agent_action_resolved",
+            _ => {
+                return Err(
+                    "update type must be working, waiting, action_required, or action_resolved"
+                        .to_string(),
+                )
+            }
+        };
+        let phase = normalize_optional("phase", phase, 32)?.map(|value| value.to_ascii_lowercase());
+        if phase.as_deref().is_some_and(|phase| {
+            !matches!(
+                phase,
+                "planning"
+                    | "investigating"
+                    | "implementing"
+                    | "verifying"
+                    | "reviewing"
+                    | "coordinating"
+            )
+        }) {
+            return Err("phase must be planning, investigating, implementing, verifying, reviewing, or coordinating".to_string());
+        }
+        let summary = normalize_update_text("summary", summary, 280)?;
+        let action_key = normalize_optional("action key", action_key, 80)?;
+        let owner_action = owner_action
+            .map(|value| normalize_update_text("owner action", value, 280))
+            .transpose()?;
+        match update_type.as_str() {
+            "action_required" => {
+                let key = action_key
+                    .as_deref()
+                    .ok_or_else(|| "action_required updates need an action key".to_string())?;
+                if !valid_action_key(key) {
+                    return Err(
+                        "action key may contain only ASCII letters, numbers, '-', '_', and '.'"
+                            .to_string(),
+                    );
+                }
+                if owner_action.is_none() {
+                    return Err(
+                        "action_required updates need the specific owner action or question"
+                            .to_string(),
+                    );
+                }
+            }
+            "action_resolved" => {
+                let key = action_key.as_deref().ok_or_else(|| {
+                    "action_resolved updates need the action key being closed".to_string()
+                })?;
+                if !valid_action_key(key) {
+                    return Err(
+                        "action key may contain only ASCII letters, numbers, '-', '_', and '.'"
+                            .to_string(),
+                    );
+                }
+                if owner_action.is_some() {
+                    return Err(
+                        "action_resolved updates cannot contain a new owner action".to_string()
+                    );
+                }
+            }
+            _ if action_key.is_some() || owner_action.is_some() => {
+                return Err(
+                    "action key and owner action are only valid for action_required updates"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+        let idempotency_key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let external_event_id = content_hash(&format!(
+            "delegation-update-v1\0{delegation_id}\0{idempotency_key}"
+        ));
+        let payload = json!({
+            "source": "agent_report",
+            "updateType": update_type,
+            "phase": phase,
+            "summary": summary,
+            "actionKey": action_key,
+            "ownerAction": owner_action,
+        });
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|error| format!("cannot serialize delegation update: {error}"))?;
+
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let (delegation_status, run_id): (String, i64) = transaction
+            .query_row(
+                "SELECT status, run_id FROM delegations WHERE id = ?1",
+                params![delegation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        if let Some((
+            event_id,
+            aggregate_type,
+            aggregate_id,
+            prior_type,
+            prior_payload,
+            created_at,
+        )) = transaction
+            .query_row(
+                "SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at
+                     FROM events WHERE external_event_id = ?1",
+                params![external_event_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            if aggregate_type != "delegation"
+                || aggregate_id != delegation_id.to_string()
+                || prior_type != event_type
+                || prior_payload != payload_json
+            {
+                return Err(
+                    "idempotency key was already used for a different delegation update"
+                        .to_string(),
+                );
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(DelegationUpdateRecord {
+                event_id,
+                delegation_id,
+                run_id,
+                update_type,
+                phase,
+                summary,
+                action_key,
+                owner_action,
+                created_at,
+            });
+        }
+
+        if delegation_status != "dispatched" {
+            return Err("agent updates require a dispatched delegation".to_string());
+        }
+
+        if update_type == "action_resolved" {
+            let latest_action_event: Option<String> = transaction
+                .query_row(
+                    "SELECT event_type FROM events
+                     WHERE aggregate_type = 'delegation' AND aggregate_id = ?1
+                       AND json_extract(payload_json, '$.actionKey') = ?2
+                       AND event_type IN ('agent_action_required', 'agent_action_resolved')
+                     ORDER BY id DESC LIMIT 1",
+                    params![delegation_id.to_string(), action_key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            if latest_action_event.as_deref() != Some("agent_action_required") {
+                return Err(
+                    "action_resolved must match an unresolved action request for this delegation"
+                        .to_string(),
+                );
+            }
+        }
+
+        let now = unix_time();
+        let event_id = append_external_event(
+            &transaction,
+            "delegation",
+            delegation_id,
+            event_type,
+            &external_event_id,
+            &payload,
+            now,
+        )?
+        .ok_or_else(|| "delegation update was not recorded".to_string())?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(DelegationUpdateRecord {
+            event_id,
+            delegation_id,
+            run_id,
+            update_type,
+            phase,
+            summary,
+            action_key,
+            owner_action,
+            created_at: now,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_delegation(
         &self,
@@ -2697,6 +2927,25 @@ fn normalize_required(name: &str, value: &str, max_chars: usize) -> Result<Strin
     let value = value.trim();
     validate_text(name, value, max_chars, true)?;
     Ok(value.to_string())
+}
+
+fn normalize_update_text(name: &str, value: &str, max_chars: usize) -> Result<String, String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    validate_text(name, &normalized, max_chars, true)?;
+    if value
+        .chars()
+        .any(|character| character.is_control() && !character.is_whitespace())
+    {
+        return Err(format!("{name} cannot contain control characters"));
+    }
+    Ok(normalized)
+}
+
+fn valid_action_key(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || b"-_.".contains(&character))
 }
 
 fn normalize_optional(

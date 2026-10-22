@@ -56,6 +56,39 @@ pub struct AgentActivitySummary {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentUpdateSummary {
+    pub event_id: i64,
+    pub project_id: i64,
+    pub project_name: String,
+    pub delegation_id: i64,
+    pub run_id: i64,
+    pub parent_delegation_id: Option<i64>,
+    pub role: String,
+    pub update_type: String,
+    pub phase: Option<String>,
+    pub summary: String,
+    pub action_key: Option<String>,
+    pub owner_action: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAgentActionSummary {
+    pub event_id: i64,
+    pub project_id: i64,
+    pub project_name: String,
+    pub delegation_id: i64,
+    pub run_id: i64,
+    pub role: String,
+    pub action_key: String,
+    pub summary: String,
+    pub owner_action: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct FailedCheckSummary {
     pub id: i64,
     pub run_id: i64,
@@ -106,6 +139,9 @@ pub struct DashboardSnapshot {
     pub blockers: Vec<BlockerSummary>,
     pub recent_runs: Vec<RunSummary>,
     pub agent_activity: Vec<AgentActivitySummary>,
+    pub agent_updates: Vec<AgentUpdateSummary>,
+    pub pending_agent_actions: Vec<PendingAgentActionSummary>,
+    pub recent_agent_update_count: i64,
     pub failed_checks: Vec<FailedCheckSummary>,
     pub delegations: Vec<DashboardDelegationSummary>,
     pub memory_health: MemoryHealthSummary,
@@ -248,6 +284,108 @@ impl Store {
             })
             .map_err(sqlite_error)?
             .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let agent_updates = connection
+            .raw()
+            .prepare(
+                "WITH relevant_runs AS (
+                   SELECT id FROM (
+                     SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10
+                   )
+                   UNION
+                   SELECT current.id FROM runs current
+                   WHERE NOT EXISTS (
+                     SELECT 1 FROM runs newer WHERE newer.project_id = current.project_id
+                       AND (newer.started_at > current.started_at
+                         OR (newer.started_at = current.started_at AND newer.id > current.id))
+                   )
+                 )
+                 SELECT e.id, d.project_id, p.name, d.id, d.run_id, d.parent_delegation_id, d.role,
+                        json_extract(e.payload_json, '$.updateType'),
+                        json_extract(e.payload_json, '$.phase'),
+                        json_extract(e.payload_json, '$.summary'),
+                        json_extract(e.payload_json, '$.actionKey'),
+                        json_extract(e.payload_json, '$.ownerAction'), e.created_at
+                 FROM events e
+                 JOIN delegations d ON e.aggregate_type = 'delegation' AND e.aggregate_id = CAST(d.id AS TEXT)
+                 JOIN projects p ON p.id = d.project_id
+                 WHERE e.event_type IN ('agent_progress', 'agent_waiting', 'agent_action_required', 'agent_action_resolved')
+                   AND (d.run_id IN (SELECT id FROM relevant_runs) OR EXISTS (
+                     SELECT 1 FROM project_manager_assignments active
+                     WHERE active.status = 'active'
+                       AND (active.manager_delegation_id = d.id OR d.parent_delegation_id = active.manager_delegation_id)
+                   ))
+                 ORDER BY e.id DESC LIMIT 100",
+            )
+            .map_err(sqlite_error)?
+            .query_map([], |row| {
+                Ok(AgentUpdateSummary {
+                    event_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    delegation_id: row.get(3)?,
+                    run_id: row.get(4)?,
+                    parent_delegation_id: row.get(5)?,
+                    role: row.get(6)?,
+                    update_type: row.get(7)?,
+                    phase: row.get(8)?,
+                    summary: row.get(9)?,
+                    action_key: row.get(10)?,
+                    owner_action: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let pending_agent_actions = connection
+            .raw()
+            .prepare(
+                "SELECT e.id, d.project_id, p.name, d.id, d.run_id, d.role,
+                       json_extract(e.payload_json, '$.actionKey'),
+                       json_extract(e.payload_json, '$.summary'),
+                       json_extract(e.payload_json, '$.ownerAction'), e.created_at
+                 FROM events e
+                 JOIN delegations d ON e.aggregate_type = 'delegation' AND e.aggregate_id = CAST(d.id AS TEXT)
+                 JOIN projects p ON p.id = d.project_id
+                 WHERE e.event_type = 'agent_action_required'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM events newer
+                     WHERE newer.aggregate_type = e.aggregate_type
+                       AND newer.aggregate_id = e.aggregate_id
+                       AND json_extract(newer.payload_json, '$.actionKey') = json_extract(e.payload_json, '$.actionKey')
+                       AND newer.event_type IN ('agent_action_required', 'agent_action_resolved')
+                       AND newer.id > e.id
+                   )
+                 ORDER BY e.id DESC LIMIT 100",
+            )
+            .map_err(sqlite_error)?
+            .query_map([], |row| {
+                Ok(PendingAgentActionSummary {
+                    event_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    delegation_id: row.get(3)?,
+                    run_id: row.get(4)?,
+                    role: row.get(5)?,
+                    action_key: row.get(6)?,
+                    summary: row.get(7)?,
+                    owner_action: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let recent_agent_update_count = connection
+            .raw()
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE event_type IN ('agent_progress', 'agent_waiting', 'agent_action_required', 'agent_action_resolved')
+                   AND created_at >= CAST(strftime('%s', 'now') AS INTEGER) - 3600",
+                [],
+                |row| row.get(0),
+            )
             .map_err(sqlite_error)?;
         let failed_checks = connection
             .raw()
@@ -435,6 +573,9 @@ impl Store {
             blockers,
             recent_runs,
             agent_activity,
+            agent_updates,
+            pending_agent_actions,
+            recent_agent_update_count,
             failed_checks,
             delegations,
             memory_health,
