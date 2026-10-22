@@ -23,6 +23,9 @@ const emptyDashboardSnapshot = () => ({
   blockers: [],
   recentRuns: [],
   agentActivity: [],
+  agentUpdates: [],
+  pendingAgentActions: [],
+  recentAgentUpdateCount: 0,
   delegations: [],
   failedChecks: [],
   memoryHealth: {
@@ -75,6 +78,9 @@ describe("dashboard and local Codex settings", () => {
         { id: 9, projectName: "Atlas", objectiveTitle: null, taskTitle: null, workflowKey: null, workflowVersion: null, status: "inconclusive", summary: "Codex turn ended; Cathulu verification was not recorded.", startedAt: 1_800_000_107, finishedAt: 1_800_000_143 },
       ],
       agentActivity: [],
+      agentUpdates: [],
+      pendingAgentActions: [],
+      recentAgentUpdateCount: 0,
       delegations: [{
         id: 12,
         projectName: "Atlas",

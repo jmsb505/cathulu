@@ -81,6 +81,33 @@ type DelegationSnapshot = {
   worktree: DelegationWorktreeState | null;
   workerTelemetry: DelegationWorkerTelemetry | null;
 };
+type AgentUpdateSnapshot = {
+  eventId: number;
+  projectId: number;
+  projectName: string;
+  delegationId: number;
+  runId: number;
+  parentDelegationId: number | null;
+  role: string;
+  updateType: "working" | "waiting" | "action_required" | "action_resolved";
+  phase: "planning" | "investigating" | "implementing" | "verifying" | "reviewing" | "coordinating" | null;
+  summary: string;
+  actionKey: string | null;
+  ownerAction: string | null;
+  createdAt: number;
+};
+type PendingAgentAction = {
+  eventId: number;
+  projectId: number;
+  projectName: string;
+  delegationId: number;
+  runId: number;
+  role: string;
+  actionKey: string;
+  summary: string;
+  ownerAction: string;
+  createdAt: number;
+};
 type LogicalAgentRole = {
   roleKey: string;
   roleKind: "main_overseer" | "project_manager";
@@ -118,6 +145,9 @@ type DashboardSnapshot = {
     lastEventAt: number;
     eventCount: number;
   }[];
+  agentUpdates: AgentUpdateSnapshot[];
+  pendingAgentActions: PendingAgentAction[];
+  recentAgentUpdateCount: number;
   delegations: DelegationSnapshot[];
   failedChecks: { id: number; runId: number; projectName: string; checkKey: string; mandatory: boolean; status: string; details: unknown; updatedAt: number }[];
   memoryHealth: {
@@ -136,14 +166,22 @@ type DashboardSnapshot = {
 
 type RunRecord = DashboardSnapshot["recentRuns"][number];
 type HookAgentRecord = DashboardSnapshot["agentActivity"][number];
-type ProjectMonitorState = "working" | "blocked" | "failed" | "stopped" | "idle";
+type ProjectMonitorState = "working" | "stale" | "blocked" | "failed" | "stopped" | "idle";
 type ProjectMonitorItem = {
   project: ProjectSnapshot;
   state: ProjectMonitorState;
   detail: string;
   activeAgents: number;
   issueCount: number;
+  attentionCount: number;
+  staleAgentCount: number;
 };
+
+const AGENT_SIGNAL_FRESHNESS_SECONDS = 15 * 60;
+
+function hasRecentAgentSignal(timestamp: number, now = Date.now()) {
+  return timestamp > 0 && now / 1000 - timestamp <= AGENT_SIGNAL_FRESHNESS_SECONDS;
+}
 
 function nativeRuntimeAvailable() {
   // Test harnesses may mock only `invoke`; the real browser import always exposes isTauri().
@@ -155,7 +193,7 @@ function runTitle(run: RunRecord) {
 }
 
 function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] {
-  const priority: Record<ProjectMonitorState, number> = { working: 0, blocked: 1, failed: 2, stopped: 3, idle: 4 };
+  const priority: Record<ProjectMonitorState, number> = { working: 0, stale: 1, blocked: 2, failed: 3, stopped: 4, idle: 5 };
   return snapshot.projects.map((project) => {
     const latestRun = snapshot.recentRuns
       .filter((run) => run.projectName === project.name)
@@ -164,7 +202,29 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
     const mandatoryFailures = latestRun
       ? snapshot.failedChecks.filter((check) => check.runId === latestRun.id && check.mandatory && check.status.toLowerCase() === "failed")
       : [];
-    const state: ProjectMonitorState = latestRun?.status === "running"
+    const pendingActions = snapshot.pendingAgentActions.filter((action) => action.projectId === project.id);
+    const delegations = latestRun ? snapshot.delegations.filter((item) => item.runId === latestRun.id) : [];
+    const managerIds = new Set(delegations
+      .filter((delegation) => delegation.role === "sub_overseer" && delegation.projectManagerAssignmentStatus === "active")
+      .map((delegation) => delegation.id));
+    const trackedAgents = delegations.filter((delegation) =>
+      managerIds.has(delegation.id) || (delegation.role === "worker" && delegation.parentDelegationId !== null && managerIds.has(delegation.parentDelegationId)),
+    );
+    const boundHookEventIds = new Set(delegations.flatMap((delegation) =>
+      delegation.workerTelemetry?.events.map((event) => event.eventId) ?? [],
+    ));
+    const hookAgents = latestRun
+      ? snapshot.agentActivity.filter((item) => item.runId === latestRun.id && !boundHookEventIds.has(item.id))
+      : [];
+    const activeAgents = trackedAgents.filter((item) => agentState(item, snapshot.agentUpdates) === "active").length
+      + hookAgents.filter((item) => hookAgentState(item, latestRun?.status ?? "unknown") === "active").length;
+    const staleAgentCount = trackedAgents.filter((item) => agentState(item, snapshot.agentUpdates) === "stale").length
+      + hookAgents.filter((item) => hookAgentState(item, latestRun?.status ?? "unknown") === "stale").length;
+    const state: ProjectMonitorState = pendingActions.length > 0
+      ? "blocked"
+      : latestRun?.status === "running" && staleAgentCount > 0 && activeAgents === 0
+        ? "stale"
+      : latestRun?.status === "running"
       ? "working"
       : latestRun?.status === "blocked" || (!latestRun && blockers.length > 0)
         ? "blocked"
@@ -173,21 +233,22 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
           : latestRun
             ? "stopped"
             : "idle";
-    const delegations = latestRun ? snapshot.delegations.filter((item) => item.runId === latestRun.id) : [];
-    const hookAgents = latestRun ? snapshot.agentActivity.filter((item) => item.runId === latestRun.id) : [];
-    const activeAgents = delegations.filter((item) => agentState(item) === "active").length
-      + hookAgents.filter((item) => hookAgentState(item, latestRun?.status ?? "unknown") === "active").length;
-    const detail = blockers.length > 0 && !latestRun
+    const detail = pendingActions[0]?.ownerAction
+      ?? (blockers.length > 0 && !latestRun
       ? blockers[0].title
+      : staleAgentCount > 0
+        ? `${staleAgentCount} agent signal${staleAgentCount === 1 ? "" : "s"} older than 15m; activity unconfirmed`
       : latestRun
         ? runTitle(latestRun)
-        : "No recorded work";
+        : "No recorded work");
     return {
       project,
       state,
       detail,
       activeAgents,
-      issueCount: blockers.length + mandatoryFailures.length,
+      issueCount: blockers.length + mandatoryFailures.length + pendingActions.length + staleAgentCount,
+      attentionCount: pendingActions.length,
+      staleAgentCount,
     };
   }).sort((left, right) => {
     return priority[left.state] - priority[right.state] || left.project.name.localeCompare(right.project.name);
@@ -195,7 +256,59 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
 }
 
 function monitorStateLabel(state: ProjectMonitorState) {
-  return state === "working" ? "Working" : state === "blocked" ? "Blocked" : state === "failed" ? "Failed" : state === "stopped" ? "Stopped" : "Idle";
+  return state === "working" ? "Working" : state === "stale" ? "No fresh signal" : state === "blocked" ? "Blocked" : state === "failed" ? "Failed" : state === "stopped" ? "Stopped" : "Idle";
+}
+
+function roleLabel(role: string) {
+  return role === "sub_overseer" ? "Project Manager" : role === "worker" ? "Worker" : role.replace(/_/g, " ");
+}
+
+function updateAge(timestamp: number, now = Date.now()) {
+  const minutes = Math.max(0, Math.floor((now / 1000 - timestamp) / 60));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function latestAgentUpdate(snapshot: DashboardSnapshot, delegationId: number) {
+  return snapshot.agentUpdates.find((update) => update.delegationId === delegationId) ?? null;
+}
+
+function attentionItems(
+  snapshot: DashboardSnapshot,
+  staleAgents: { key: string; source: string; title: string; detail: string; createdAt: number; priority: number }[] = [],
+) {
+  const actions = snapshot.pendingAgentActions.map((action) => ({
+    key: `agent-${action.eventId}`,
+    source: `${action.projectName} · ${roleLabel(action.role)}`,
+    title: action.ownerAction,
+    detail: action.summary,
+    createdAt: action.createdAt,
+    priority: 0,
+  }));
+  const blockedTasks = snapshot.blockers.map((blocker) => ({
+    key: `task-${blocker.id}`,
+    source: blocker.projectName,
+    title: blocker.title,
+    detail: "Blocked task recorded in Cathulu",
+    createdAt: blocker.updatedAt,
+    priority: 1,
+  }));
+  const failedChecks = snapshot.failedChecks
+    .filter((check) => check.mandatory && check.status.toLowerCase() === "failed")
+    .map((check) => ({
+      key: `check-${check.id}`,
+      source: `${check.projectName} · required check`,
+      title: check.checkKey.replace(/_/g, " "),
+      detail: "Required QA check failed",
+      createdAt: check.updatedAt,
+      priority: 2,
+    }));
+  return [...actions, ...blockedTasks, ...failedChecks, ...staleAgents]
+    .sort((left, right) => left.priority - right.priority || right.createdAt - left.createdAt)
+    .slice(0, 4);
 }
 
 function BrandMark() {
@@ -360,29 +473,83 @@ function SnapshotState({ loading, error }: { loading: boolean; error: string | n
   return <div className="snapshot-state"><h2>No snapshot yet</h2><p>Register a repository through Cathulu's local MCP server to see its current Git state here.</p></div>;
 }
 
-type AgentVisualState = "active" | "waiting" | "finished" | "blocked" | "unknown";
+type AgentVisualState = "active" | "waiting" | "stale" | "finished" | "blocked" | "unknown";
 
-function agentState(delegation: DelegationSnapshot): AgentVisualState {
+function agentState(delegation: DelegationSnapshot, updates: AgentUpdateSnapshot[] = []): AgentVisualState {
   const lastEvent = [...(delegation.workerTelemetry?.events ?? [])].sort((a, b) => a.createdAt - b.createdAt).at(-1);
+  const lastUpdate = updates.find((update) => update.delegationId === delegation.id);
   const status = delegation.status.toLowerCase();
   const outcome = delegation.report?.report.outcome.toLowerCase();
   if (["blocked", "failed", "cancelled"].includes(status) || outcome === "blocked" || delegation.report?.report.blockers.length) return "blocked";
-  if (lastEvent?.eventKind === "started" || ["active", "running"].includes(status)) return "active";
+  if (["failed", "blocked"].includes(delegation.parentRunStatus.toLowerCase())) return "blocked";
+  if (delegation.report || ["verified_success", "inconclusive", "cancelled"].includes(delegation.parentRunStatus.toLowerCase())) return "finished";
+  if (lastUpdate && (!lastEvent || lastUpdate.createdAt >= lastEvent.createdAt)) {
+    if (lastUpdate.updateType === "action_required") return "blocked";
+    if (!hasRecentAgentSignal(lastUpdate.createdAt)) return "stale";
+    if (lastUpdate.updateType === "waiting") return "waiting";
+    if (lastUpdate.updateType === "working" || lastUpdate.updateType === "action_resolved") return "active";
+  }
+  if (lastEvent?.eventKind === "started" || ["active", "running"].includes(status)) {
+    return hasRecentAgentSignal(Math.max(lastEvent?.createdAt ?? 0, delegation.updatedAt)) ? "active" : "stale";
+  }
   if (lastEvent?.eventKind === "stopped" || ["completed", "accepted", "reported"].includes(status) || delegation.report) return "finished";
-  if (["prepared", "dispatched", "pending", "waiting"].includes(status)) return "waiting";
+  if (["prepared", "dispatched", "pending", "waiting"].includes(status)) {
+    return hasRecentAgentSignal(delegation.updatedAt) ? "waiting" : "stale";
+  }
   return "unknown";
 }
 
 function hookAgentState(agent: HookAgentRecord, runStatus: string): AgentVisualState {
   if (agent.stoppedAt !== null) return "finished";
-  if (agent.startedAt !== null && runStatus === "running") return "active";
+  if (agent.startedAt !== null && runStatus === "running") {
+    return hasRecentAgentSignal(agent.lastEventAt) ? "active" : "stale";
+  }
   return "unknown";
 }
 
+function staleAgentAttentionItems(snapshot: DashboardSnapshot) {
+  const managerIds = new Set(snapshot.delegations
+    .filter((delegation) => delegation.role === "sub_overseer" && delegation.projectManagerAssignmentStatus === "active")
+    .map((delegation) => delegation.id));
+  const activeDelegations = snapshot.delegations.filter((delegation) =>
+    managerIds.has(delegation.id) || (delegation.role === "worker" && delegation.parentDelegationId !== null && managerIds.has(delegation.parentDelegationId)),
+  );
+  const delegationItems = activeDelegations
+    .filter((delegation) => agentState(delegation, snapshot.agentUpdates) === "stale")
+    .map((delegation) => {
+      const update = latestAgentUpdate(snapshot, delegation.id);
+      const lastSignalAt = Math.max(update?.createdAt ?? 0, delegation.updatedAt);
+      return {
+        key: `stale-delegation-${delegation.id}`,
+        source: `${delegation.projectName} · ${roleLabel(delegation.role)}`,
+        title: "No recent agent signal",
+        detail: `Last recorded signal ${updateAge(lastSignalAt)}; activity is unconfirmed, not verified stopped.`,
+        createdAt: lastSignalAt,
+        priority: 3,
+      };
+    });
+  const boundHookEventIds = new Set(snapshot.delegations.flatMap((delegation) =>
+    delegation.workerTelemetry?.events.map((event) => event.eventId) ?? [],
+  ));
+  const currentRuns = new Map(snapshot.recentRuns.filter((run) => run.status === "running").map((run) => [run.id, run]));
+  const hookItems = snapshot.agentActivity
+    .filter((agent) => currentRuns.has(agent.runId) && !boundHookEventIds.has(agent.id) && hookAgentState(agent, "running") === "stale")
+    .map((agent) => {
+      const run = currentRuns.get(agent.runId)!;
+      return {
+        key: `stale-hook-${agent.id}`,
+        source: `${run.projectName} · unlinked observed agent`,
+        title: "No recent hook activity",
+        detail: `Last observed ${updateAge(agent.lastEventAt)}; role association is unknown.`,
+        createdAt: agent.lastEventAt,
+        priority: 3,
+      };
+    });
+  return [...delegationItems, ...hookItems];
+}
+
 function agentRole(delegation: DelegationSnapshot) {
-  if (delegation.role === "sub_overseer") return "Project Manager";
-  if (delegation.role === "worker") return "Worker";
-  return delegation.role.replace(/_/g, " ");
+  return roleLabel(delegation.role);
 }
 
 function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
@@ -404,17 +571,25 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
       const workers = assigned
         ? snapshot.delegations.filter((delegation) => delegation.parentDelegationId === assigned.id && delegation.role === "worker")
         : [];
+      const latestUpdate = assigned ? latestAgentUpdate(snapshot, assigned.id) : null;
       const state: AgentVisualState = item.state === "blocked" || item.state === "failed"
         ? "blocked"
+        : item.state === "stale" && !assigned
+          ? "stale"
         : assigned
-          ? agentState(assigned)
+          ? agentState(assigned, snapshot.agentUpdates)
           : item.state === "working"
             ? "waiting"
             : "finished";
-      const statusLabel = item.state === "blocked" || item.state === "failed"
+      const statusLabel = item.state === "blocked" || item.state === "failed" || item.state === "stale"
         ? monitorStateLabel(item.state)
         : assigned
-          ? state === "active" ? "Working" : state === "blocked" ? "Blocked" : assigned.status === "prepared" ? "Preparing" : "Assigned"
+          ? latestUpdate?.updateType === "action_required" ? "Action needed"
+            : latestUpdate?.phase && state === "active" ? latestUpdate.phase.replace(/_/g, " ")
+              : state === "active" ? "Working"
+                : state === "blocked" ? "Blocked"
+                  : state === "waiting" ? "Waiting"
+                    : assigned.status === "prepared" ? "Preparing" : "Assigned"
           : item.state === "working" ? "No PM" : monitorStateLabel(item.state);
       const run = snapshot.recentRuns
         .filter((candidate) => candidate.projectName === project.name)
@@ -425,22 +600,32 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
       const unlinkedHooks = run
         ? snapshot.agentActivity.filter((activity) => activity.runId === run.id && !boundHookEventIds.has(activity.id))
         : [];
-      return { role, project, item, manager, assigned, workers, state, statusLabel, run, unlinkedHooks };
+      return { role, project, item, manager, assigned, workers, state, statusLabel, latestUpdate, run, unlinkedHooks };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null)
     .sort((left, right) => left.project.name.localeCompare(right.project.name));
   const mainRole = snapshot.logicalRoles.find((role) => role.roleKind === "main_overseer");
   const allDelegations = projectRoleRows.flatMap((row) => [row.assigned, ...row.workers].filter((item): item is DelegationSnapshot => item !== null));
-  const activeCount = allDelegations.filter((delegation) => agentState(delegation) === "active").length
+  const activeCount = allDelegations.filter((delegation) => agentState(delegation, snapshot.agentUpdates) === "active").length
     + projectRoleRows.reduce((total, row) => total + row.unlinkedHooks.filter((agent) => hookAgentState(agent, row.run?.status ?? "unknown") === "active").length, 0);
   const waitingCount = projectRoleRows.filter((row) => row.state === "waiting" && !row.assigned).length
-    + allDelegations.filter((delegation) => agentState(delegation) === "waiting").length;
-  const blockedAgentCount = allDelegations.filter((delegation) => agentState(delegation) === "blocked").length;
+    + allDelegations.filter((delegation) => agentState(delegation, snapshot.agentUpdates) === "waiting").length;
+  const staleCount = allDelegations.filter((delegation) => agentState(delegation, snapshot.agentUpdates) === "stale").length
+    + projectRoleRows.reduce((total, row) => total + row.unlinkedHooks.filter((agent) => hookAgentState(agent, row.run?.status ?? "unknown") === "stale").length, 0);
+  const actionDelegationIds = new Set(snapshot.pendingAgentActions.map((action) => action.delegationId));
+  const blockedAgentCount = allDelegations.filter((delegation) =>
+    agentState(delegation, snapshot.agentUpdates) === "blocked" && !actionDelegationIds.has(delegation.id),
+  ).length;
   const issueCount = projectRoleRows.reduce((total, row) => total + row.item.issueCount, 0) + blockedAgentCount;
-  const hasRunningProject = projectRoleRows.some((row) => row.run?.status === "running") || allDelegations.some((delegation) => agentState(delegation) === "active");
+  const hasRunningProject = projectRoleRows.some((row) => row.run?.status === "running") || allDelegations.some((delegation) => agentState(delegation, snapshot.agentUpdates) === "active");
+  const actions = attentionItems(snapshot, staleAgentAttentionItems(snapshot));
+  const recentUpdateCount = snapshot.recentAgentUpdateCount;
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const selected = allDelegations.find((item) => item.id === Number(selectedAgentId)) ?? null;
-  const logicalState = hasRunningProject ? "live" : issueCount > 0 ? "danger" : projectRoleRows.length > 0 ? "good" : "quiet";
+  const selectedUpdate = selected ? latestAgentUpdate(snapshot, selected.id) : null;
+  const logicalState = hasRunningProject
+    ? staleCount > 0 && activeCount === 0 ? "review" : "live"
+    : issueCount > 0 ? "danger" : projectRoleRows.length > 0 ? "good" : "quiet";
 
   return (
     <section className="agent-activity-view" aria-label="Project activity graph">
@@ -450,17 +635,44 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           <span>{projectRoleRows.length} persistent project role{projectRoleRows.length === 1 ? "" : "s"}</span>
         </div>
         <div className="graph-counts" aria-label="Current project activity counts">
-          <span className="count-active" title={`${activeCount} active agents`} aria-label={`${activeCount} active agents`}><i />{activeCount}</span>
-          <span className="count-waiting" title={`${waitingCount} waiting agents`} aria-label={`${waitingCount} waiting agents`}><i />{waitingCount}</span>
-          <span className={issueCount ? "count-blocked has-issues" : "count-blocked"} title={`${issueCount} recorded blockers or failed required checks`} aria-label={`${issueCount} recorded blockers or failed required checks`}><i />{issueCount}</span>
+          <span className="count-active" title={`${activeCount} agents with a current recorded working signal`} aria-label={`${activeCount} agents with a current recorded working signal`}><i />{activeCount}</span>
+          <span className="count-waiting" title={`${waitingCount} agents waiting for a recorded next step`} aria-label={`${waitingCount} agents waiting for a recorded next step`}><i />{waitingCount}</span>
+          <span className={`count-stale ${staleCount ? "has-stale" : ""}`} title={`${staleCount} agent signals older than 15 minutes; activity is unconfirmed, not verified stopped`} aria-label={`${staleCount} stale agent signals; activity is unconfirmed`}><i />{staleCount}</span>
+          <span className="count-updates" title={`${recentUpdateCount} agent checkpoints recorded in the last hour`} aria-label={`${recentUpdateCount} agent checkpoints in the last hour`}><i />{recentUpdateCount}</span>
+          <span className={issueCount ? "count-blocked has-issues" : "count-blocked"} title={`${issueCount} recorded action, blocker, or failed required-check signals`} aria-label={`${issueCount} recorded attention signals`}><i />{issueCount}</span>
         </div>
       </div>
 
+      {actions.length > 0 && <aside className={`graph-attention-panel ${snapshot.pendingAgentActions.length ? "has-owner-action" : ""}`} aria-label="Items needing attention">
+        <div className="graph-attention-heading" role="status" aria-live="polite" aria-atomic="true">
+          <span className="attention-beacon"><i /></span>
+          <strong>{snapshot.pendingAgentActions.length ? `${snapshot.pendingAgentActions.length} OWNER ACTION${snapshot.pendingAgentActions.length === 1 ? "" : "S"}` : "NEEDS ATTENTION"}</strong>
+        </div>
+        <ol>
+          {actions.slice(0, 3).map((action) => <li key={action.key}>
+            <span className="attention-copy"><b>{action.source}</b><strong>{action.title}</strong><small>{action.detail} · {updateAge(action.createdAt)}</small></span>
+            <i aria-hidden="true">›</i>
+          </li>)}
+        </ol>
+        {actions.length > 3 && <small className="attention-overflow">+{actions.length - 3} more recorded items</small>}
+      </aside>}
+
+      {(snapshot.agentUpdates.length > 0 || hasRunningProject) && <section className="graph-checkpoints" aria-label="Latest agent checkpoints">
+        <div className="graph-checkpoints-heading"><span>Agent activity</span><small>{recentUpdateCount} in the last hour</small></div>
+        {snapshot.agentUpdates.length ? <ol>
+          {snapshot.agentUpdates.slice(0, 3).map((update) => <li className={`checkpoint checkpoint-${update.updateType}`} key={update.eventId}>
+            <i className="checkpoint-mark" aria-hidden="true"><b /></i>
+            <span className="checkpoint-copy"><strong>{update.projectName} · {roleLabel(update.role)}{update.phase ? ` · ${update.phase}` : ""}</strong><small>{update.summary}</small></span>
+            <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
+          </li>)}
+        </ol> : <p className="checkpoint-empty">Waiting for the first recorded agent checkpoint.</p>}
+      </section>}
+
       <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${projectRoleRows.length > 5 ? "is-dense" : ""}`}>
         <div className="graph-role-tree">
-          <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role shared across replaceable Codex chats" aria-label="One persistent logical Main Overseer role">
+          <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role coordinates project work; Codex Project Managers and Workers perform repository changes" aria-label={`One persistent logical Main Overseer role${hasRunningProject ? ", coordinating active project managers" : ""}`}>
             <span className={`graph-overseer-orbit ${hasRunningProject ? "is-active" : ""}`}><BrandMark /></span>
-            <span className="graph-overseer-label"><small>ONE LOGICAL ROLE</small><strong>Main Overseer</strong></span>
+            <span className="graph-overseer-label"><small>{snapshot.pendingAgentActions.length ? "ACTION NEEDED" : hasRunningProject ? staleCount > 0 && activeCount === 0 ? "CHECK AGENT SIGNAL" : "COORDINATING" : "STANDING BY"}</small><strong>Main Overseer</strong></span>
             <span className="role-indicators">
               <i className="role-indicator is-configured" aria-label={`Main context scope: ${mainRole?.memoryScopeKey ?? "global"}`} title={`Shared context · ${mainRole?.memoryScopeKey ?? "global"}`}><b>C</b></i>
               <i className="role-indicator is-configured" aria-label={`Main tool profile: ${mainRole?.toolProfileKey ?? "main-overseer-v1"}; actual chat tools are not observable`} title={`Tool profile · ${mainRole?.toolProfileKey ?? "main-overseer-v1"}`}><b>T</b></i>
@@ -469,8 +681,9 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           </div>
 
           {projectRoleRows.length ? <ol className="graph-project-list" aria-label="Persistent Project Manager roles">
-            {projectRoleRows.map(({ role, project, item, assigned, workers, state, statusLabel, unlinkedHooks, run }) => {
+            {projectRoleRows.map(({ role, project, item, assigned, workers, state, statusLabel, latestUpdate, unlinkedHooks, run }) => {
               const roleTitle = `${project.name} · persistent Project Manager role · ${statusLabel}${assigned ? ` · ${assigned.taskTitle}` : ""}`;
+              const updateTitle = latestUpdate ? `\nLast agent checkpoint (${updateAge(latestUpdate.createdAt)}): ${latestUpdate.summary}` : "\nNo agent checkpoint has been recorded for this assignment.";
               const selected = assigned && selectedAgentId === String(assigned.id);
               return (
                 <li className="graph-project-row" key={role.roleKey}>
@@ -478,8 +691,8 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
                     type="button"
                     className={`graph-project-node state-${state} ${selected ? "is-selected" : ""}`}
                     onClick={() => assigned && setSelectedAgentId(selected ? null : String(assigned.id))}
-                    title={`${roleTitle}\nContext scope: ${role.memoryScopeKey}\nTool profile: ${role.toolProfileKey}; actual Codex chat availability is unobserved.`}
-                    aria-label={`${roleTitle}; context scope ${role.memoryScopeKey}; tool profile ${role.toolProfileKey}; actual chat tool availability is unobserved`}
+                    title={`${roleTitle}${updateTitle}\nContext scope: ${role.memoryScopeKey}\nTool profile: ${role.toolProfileKey}; actual Codex chat availability is unobserved.`}
+                    aria-label={`${roleTitle}${latestUpdate ? `; latest agent checkpoint ${latestUpdate.summary}, ${updateAge(latestUpdate.createdAt)}` : "; no agent checkpoint recorded"}; context scope ${role.memoryScopeKey}; tool profile ${role.toolProfileKey}; actual chat tool availability is unobserved`}
                   >
                     <i className={`project-state-indicator state-${state}`} aria-hidden="true"><i /></i>
                     <span className="graph-project-copy"><strong>{project.name}</strong><small>{statusLabel}</small></span>
@@ -494,14 +707,14 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
                       <button
                         key={worker.id}
                         type="button"
-                        className={`graph-worker-node state-${agentState(worker)} ${selectedAgentId === String(worker.id) ? "is-selected" : ""}`}
+                        className={`graph-worker-node state-${agentState(worker, snapshot.agentUpdates)} ${selectedAgentId === String(worker.id) ? "is-selected" : ""}`}
                         onClick={() => setSelectedAgentId(selectedAgentId === String(worker.id) ? null : String(worker.id))}
-                        title={`${project.name} · Worker ${index + 1} · ${worker.status} · ${worker.taskTitle}`}
-                        aria-label={`${project.name} Worker ${index + 1}: ${worker.status}`}
+                        title={`${project.name} · Worker ${index + 1} · ${worker.status} · ${worker.taskTitle}${latestAgentUpdate(snapshot, worker.id) ? ` · ${latestAgentUpdate(snapshot, worker.id)?.summary}` : " · no checkpoint recorded"}`}
+                        aria-label={`${project.name} Worker ${index + 1}: ${agentState(worker, snapshot.agentUpdates)}${latestAgentUpdate(snapshot, worker.id) ? `; latest checkpoint ${latestAgentUpdate(snapshot, worker.id)?.summary}` : "; no checkpoint recorded"}`}
                       ><b>W</b><i /></button>
                     ))}
                     {!workers.length && <span className="graph-worker-empty" title="No explicit child Worker delegation is recorded" aria-label="No child Worker delegation recorded">·</span>}
-                    {item.issueCount > 0 && <span className="graph-issue-count" title={`${item.issueCount} recorded blockers or mandatory failed checks`} aria-label={`${item.issueCount} blockers or failed required checks`}>{item.issueCount}</span>}
+                    {item.issueCount > 0 && <span className="graph-issue-count" title={`${item.issueCount} recorded action, blocker, or failed-required-check signals`} aria-label={`${item.issueCount} project attention signals`}>{item.issueCount}</span>}
                   </div>
                   {unlinkedHooks.length > 0 && <div className="graph-unlinked-cluster" role="group" aria-label={`${unlinkedHooks.length} observed agents with no recorded role link`}>
                     {unlinkedHooks.slice(0, 3).map((agent) => (
@@ -515,8 +728,8 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           </ol> : <div className="graph-empty-state"><span className="graph-empty-orbit"><BrandMark /></span><small>No registered project roles</small></div>}
         </div>
         {selected && <div className="graph-agent-detail">
-          <i className={`detail-state state-${agentState(selected)}`} />
-          <span><strong>{selected.taskTitle}</strong><small>{agentRole(selected)} · {selected.status}{selected.workerTelemetry?.effectiveModel ? ` · ${selected.workerTelemetry.effectiveModel}` : ""}{selected.report ? ` · report ${selected.report.reviewStatus.replace(/_/g, " ")}` : ""}</small></span>
+          <i className={`detail-state state-${agentState(selected, snapshot.agentUpdates)}`} />
+          <span><strong>{selectedUpdate?.summary ?? selected.taskTitle}</strong><small>{agentRole(selected)} · {selectedUpdate?.phase ?? selected.status}{selectedUpdate ? ` · ${updateAge(selectedUpdate.createdAt)}` : " · no checkpoint"}{selected.report ? ` · report ${selected.report.reviewStatus.replace(/_/g, " ")}` : ""}</small></span>
           <button type="button" onClick={() => setSelectedAgentId(null)} aria-label="Close agent details"><Icon name="close" /></button>
         </div>}
       </div>
@@ -612,11 +825,11 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
               <button className="monitor-open" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void restoreDashboard()} aria-label="Open dashboard" title="Open dashboard"><Icon name="open" /></button>
             </div>
             {!snapshot ? <p className="monitor-error">{error ?? (loading ? "Reading local state…" : "No snapshot available")}</p> : projectItems.length === 0 ? <p className="monitor-empty">No registered projects</p> : projectItems.map((item) => (
-              <article className={`monitor-project-row state-${item.state}`} key={item.project.id} title={`${item.project.name} — ${monitorStateLabel(item.state)}: ${item.detail}`}>
+              <article className={`monitor-project-row state-${item.state} ${item.attentionCount ? "has-attention" : ""} ${item.staleAgentCount ? "has-stale" : ""}`} key={item.project.id} title={`${item.project.name} — ${item.attentionCount} owner actions; ${item.staleAgentCount} stale agent signals; ${monitorStateLabel(item.state)}: ${item.detail}`}>
                 <span className={`project-state-indicator state-${item.state}`} aria-hidden="true"><i />{item.state === "working" && <span className="project-activity-wave"><i /><i /><i /></span>}</span>
                 <span className="monitor-project-copy"><strong>{item.project.name}</strong><small>{item.detail}</small></span>
                 <span className="monitor-project-meta">
-                  {item.issueCount > 0 && <b className="project-issue-count" title={`${item.issueCount} open issue${item.issueCount === 1 ? "" : "s"}`}>{item.issueCount}</b>}
+                  {item.issueCount > 0 && <b className={`project-issue-count ${item.attentionCount ? "is-attention" : ""} ${item.staleAgentCount ? "is-stale" : ""}`} title={`${item.attentionCount} owner actions; ${item.staleAgentCount} stale agent signals; ${item.issueCount} total attention signals`}>{item.issueCount}</b>}
                   {item.state === "working" && item.activeAgents > 0 && <b className="project-agent-count" title={`${item.activeAgents} active agents`}>{item.activeAgents}</b>}
                   <span className={`project-state-label state-${item.state}`}>{monitorStateLabel(item.state)}</span>
                 </span>

@@ -64,6 +64,23 @@ function Get-SourceFingerprint {
     }
 }
 
+function Remove-VersionJunction {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.LinkType -ne 'Junction') {
+        throw "Refusing to remove a non-junction version pointer: $Path"
+    }
+    $versionRootFull = [IO.Path]::GetFullPath($versionRoot).TrimEnd('\') + '\'
+    $targetFull = [IO.Path]::GetFullPath([string]$item.Target)
+    if (-not $targetFull.StartsWith($versionRootFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a junction outside the version directory: $Path -> $targetFull"
+    }
+    # Directory.Delete without recursion removes the junction itself, not its target.
+    [IO.Directory]::Delete($Path, $false)
+}
+
 $sourceFingerprint = Get-SourceFingerprint
 $currentBuildPath = Join-Path $versionRoot 'current-build.json'
 if (-not $BuildOnly -and (Test-Path -LiteralPath $currentBuildPath -PathType Leaf)) {
@@ -106,9 +123,11 @@ try {
         }
     }
 
-    $revision = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0) { $revision = 'unavailable' }
+    $revisionOutput = & git -C $repoRoot rev-parse HEAD 2>$null
+    $revisionExitCode = $LASTEXITCODE
+    $revision = if ($revisionExitCode -eq 0 -and $revisionOutput) { ([string]$revisionOutput).Trim() } else { 'unavailable' }
     $dirtyLines = @(& git -C $repoRoot status --porcelain 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the Git working-tree status for the build manifest.' }
     $manifest = [ordered]@{
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
         sourceFingerprint = $sourceFingerprint
@@ -189,10 +208,15 @@ try {
         throw
     }
 
-    if ($hadPreviousPointer -and (Test-Path -LiteralPath $previousPointer)) {
-        Remove-Item -LiteralPath $previousPointer
-    }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $versionRoot 'current-build.json') -Encoding utf8
+    if ($hadPreviousPointer -and (Test-Path -LiteralPath $previousPointer)) {
+        try {
+            Remove-VersionJunction -Path $previousPointer
+        }
+        catch {
+            Write-Warning "The matched build is published, but its old temporary junction could not be removed: $($_.Exception.Message)"
+        }
+    }
     Write-Host "Published matched build: $versionDirectory"
     Write-Host "Stable Codex path: $currentPointer\cathulu-mcp.exe"
     Write-Host "SHA-256 MCP:     $($manifest.mcpSha256)"
