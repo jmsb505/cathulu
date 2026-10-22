@@ -1,6 +1,6 @@
 # PLAN-011 — Worker work dossiers and home observability
 
-Status: M31 implementation and matched current build passed; native visual review and PR integration pending on `codex/m31-worker-memory-observability`  
+Status: M31 merged to `main` in PR #29; implementation and matched current build passed; native visual review remains pending
 Created: 2026-10-22  
 Last updated: 2026-10-22
 
@@ -122,12 +122,14 @@ Documentation updates:
 
 Applicable specialized skills: `ui-ux-research`, `ui-ux-pro-max`, `milestone-delivery`.
 
-Expected Git checkpoint: PR from `codex/m31-worker-memory-observability` to `main`; merge only after local builds and applicable repository checks pass.
+Expected Git checkpoint: Completed in [PR #29](https://github.com/jmsb505/cathulu/pull/29), merged to `main` at `9254a1fd14c26ad26e7b513108b4774a3aea6660`.
 
 ## Final integration validation
 
-- Verify frontend production build, matching Windows desktop/MCP build, clean diff checks, PR status, and main synchronization.
-- Do not restart or launch the MCP/dashboard as part of validation.
+- [x] Frontend production build, matching Windows desktop/MCP build, Rust formatting, and clean diff checks passed.
+- [x] PR #29 was mergeable, GitHub returned no configured status checks or workflow runs, and the PR merged successfully.
+- [x] Local `main` fast-forwarded to `9254a1fd14c26ad26e7b513108b4774a3aea6660`.
+- [ ] Native visual review remains pending. Validation did not launch the app or restart MCP.
 
 ## Rollback / recovery
 
@@ -140,6 +142,7 @@ Expected Git checkpoint: PR from `codex/m31-worker-memory-observability` to `mai
 - [x] Created milestone branch from clean `main` at `c1ac106`.
 - [x] Implement M1 source changes.
 - [x] Publish matched current Windows build from the milestone source.
+- [x] Merge M31 to `main` through PR #29 and fast-forward the local checkout.
 
 ## Implementation discoveries / decisions
 
@@ -154,4 +157,4 @@ Expected Git checkpoint: PR from `codex/m31-worker-memory-observability` to `mai
 - `scripts/build-current.ps1` passed and published the matched pair at `target/mcp-versions/226879C1CCB56BE45728EB1E`; stable MCP path: `target/mcp-current/cathulu-mcp.exe`.
 - SHA-256: MCP `5DFF139590BC26350E1DC83DB2D18E095E78735A6B940A48969E4224E4A1179C`; desktop `3C226D4464C608DF75FF2E23C87FB5F2F1802C49D6552A8F45510D382B4F2D74`.
 - No automated test suites were run. Native app visual review is pending; build validation did not launch the desktop or restart MCP.
-- PR integration remains pending.
+- PR #29 was merged at `9254a1fd14c26ad26e7b513108b4774a3aea6660`; the local checkout is synchronized to that `main` commit.
