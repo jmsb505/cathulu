@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Cathulu",
-        "width": 500,
-        "height": 580,
-        "minWidth": 420,
-        "minHeight": 460,
+        "width": 820,
+        "height": 760,
+        "minWidth": 560,
+        "minHeight": 540,
         "center": true,
         "focus": false,
         "resizable": true
