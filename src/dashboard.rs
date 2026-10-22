@@ -111,6 +111,8 @@ pub struct MemoryHealthSummary {
     pub canonical_count: i64,
     pub episodic_count: i64,
     pub evidence_count: i64,
+    pub working_count: i64,
+    pub aggregate_count: i64,
     pub candidate_count: i64,
     pub invalidated_count: i64,
     pub protected_artifact_count: i64,
@@ -438,7 +440,9 @@ impl Store {
                    SUM(CASE WHEN memory_class = 'episodic' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN memory_class = 'evidence' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN review_state = 'candidate' THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN invalidated_at IS NOT NULL THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN invalidated_at IS NOT NULL THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN memory_class = 'working' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN memory_class = 'aggregate' THEN 1 ELSE 0 END)
                  FROM memories",
                 [],
                 |row| {
@@ -451,6 +455,8 @@ impl Store {
                         canonical_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
                         episodic_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
                         evidence_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        working_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                        aggregate_count: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
                         candidate_count: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
                         invalidated_count: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
                         protected_artifact_count: 0,
