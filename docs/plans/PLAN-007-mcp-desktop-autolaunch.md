@@ -64,7 +64,7 @@ The configured M23 MCP executable starts independently from the Tauri desktop ap
 4. If the desktop binary is absent or cannot spawn, MCP still initializes normally and reports the dashboard issue only on stderr.
 5. The desktop reads the existing schema-11 database, applies additive migration 12, and renders the persistent role registry without destructive data changes.
 6. The Codex MCP config still names the current MCP executable; no previous build is selected.
-7. Tauri renders its window before repository reconciliation finishes; background Git commands do not open console windows on Windows.
+7. Tauri renders its window before repository reconciliation finishes; neither debug nor release desktop launches nor background Git/Codex commands open console windows on Windows. The MCP remains a headless stdio process.
 
 **Required validation:** frontend production build; locked Rust release builds for MCP and desktop; actual MCP initialize, `tools/list`, and dashboard-resource smoke exchange; Windows process/window smoke confirms first launch preserves the previously foreground process and repeated starts preserve the same dashboard process/window; read-only SQLite integrity/schema check.
 
@@ -131,3 +131,13 @@ The configured M23 MCP executable starts independently from the Tauri desktop ap
 ## Recovery
 
 If the dashboard fails to start, MCP remains usable. Rebuild both binaries from this plan's validated source into the configured directory. To revert the behavior, remove the MCP startup launch call and single-instance registration, then rebuild the same source revision; do not select an unrelated debug or stale executable.
+
+### Windowless debug desktop — 2026-10-22
+
+- A live Windows process snapshot showed twelve `target/debug/cathulu-desktop.exe` instances alongside multiple console hosts. The configured release desktop and MCP were separate processes.
+- Root cause: `main.rs` selected the Windows GUI subsystem only when `debug_assertions` was disabled. Debug desktop launches therefore used the console subsystem and opened terminal windows; their `devUrl` also displayed the localhost refusal page when the Vite server was no longer running.
+- Apply the Windows GUI subsystem to debug and release desktop builds. The desktop remains a GUI application in both configurations; the MCP continues to own only its stdio transport.
+- Rebuilt the debug desktop with `cargo build --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml --bin cathulu-desktop`; the build passed.
+- Rebuilt and published the matched pair with `scripts/build-current.ps1`. Version `4FF845CF2EA60E7545E73139` is selected by the unchanged `target/mcp-current` junction; source fingerprint `4FF845CF2EA60E7545E731391433413BFBE74D76A126504C0ADCB5018D49D915`, MCP SHA-256 `DD72005776635CEF1E9C504BDA9BC441904476D864C093E4C5883ED09CFA4A91`, desktop SHA-256 `F5946F7088939488A28FB960AE61F0B3CCCFFFB5C52E960686D22693821F56F4`, `custom-protocol` enabled.
+- Parsed the PE headers: both debug and release desktop executables use subsystem 2 (`Windows GUI`); the MCP executable remains subsystem 3 (`Windows console`) for stdio transport.
+- Sent normal close requests to five stale debug Cathulu windows and stopped seven additional stale debug processes with no main window. The post-cleanup snapshot showed zero `target/debug/cathulu-desktop.exe` and zero `OpenConsole.exe` processes, with one release desktop and four Codex-managed MCP processes remaining. Codex and the MCP processes were left running.
