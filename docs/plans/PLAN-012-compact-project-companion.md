@@ -1,6 +1,6 @@
 # PLAN-012 — Compact project companion
 
-Status: M32 implementation and matched Windows build passed; pull request and native visual review pending  
+Status: M32 merged in PR #31; native visual review pending
 Created: 2026-10-22  
 Last updated: 2026-10-22
 
@@ -126,7 +126,8 @@ Revert the M32 commit if build or desktop integration fails. This milestone chan
 - [x] Reviewed ADR-0008, PLAN-005, UX-M2, and the existing snapshot-backed monitor.
 - [x] Implement compact bubbles and project detail disclosures.
 - [x] Build and publish matched pair fingerprint `FBC933195F17AAEE0532F97440E94556D04110DC562BA044D2CDD24786A32025`.
-- [ ] Submit PR, pass required checks, and merge; keep native visual review pending.
+- [x] PR #31 merged to `main`; local `main` fast-forwarded to merge commit `3ca661de36e67b6b4440c419c082dfcc6bf216e8`. GitHub reported no commit statuses or workflow runs.
+- [ ] Native visual review in the desktop session remains pending.
 
 ## Implementation discoveries / decisions
 
@@ -136,4 +137,4 @@ Revert the M32 commit if build or desktop integration fails. This milestone chan
 
 ## Completion evidence
 
-Frontend build passed with `npm run build` in `apps/desktop`; `git diff --check` passed. The matched release pair is published at `target/mcp-current`, resolving to `target/mcp-versions/FBC933195F17AAEE0532F974`. MCP SHA-256: `5997BDD0C7EDCE1A36AE2C7FD53F9933FFC440A2E07C88D0C10612F1C8A8C4EA`; desktop SHA-256: `A5D9C836B1760FD6BE3C4955986506BB6C6F7D41C9F2F4593641E8DA8137FED3`. No app or MCP process was opened or restarted. PR and native visual smoke evidence remain pending.
+Frontend build passed with `npm run build` in `apps/desktop`; `git diff --check` passed. The matched release pair is published at `target/mcp-current`, resolving to `target/mcp-versions/FBC933195F17AAEE0532F974`. MCP SHA-256: `5997BDD0C7EDCE1A36AE2C7FD53F9933FFC440A2E07C88D0C10612F1C8A8C4EA`; desktop SHA-256: `A5D9C836B1760FD6BE3C4955986506BB6C6F7D41C9F2F4593641E8DA8137FED3`. PR #31 merged; GitHub returned no statuses or workflows for the commit. Local `main` is at merge commit `3ca661de36e67b6b4440c419c082dfcc6bf216e8`. No app or MCP process was opened or restarted. Native visual review is still pending.
