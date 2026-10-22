@@ -643,32 +643,35 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
         </div>
       </div>
 
-      {actions.length > 0 && <aside className={`graph-attention-panel ${snapshot.pendingAgentActions.length ? "has-owner-action" : ""}`} aria-label="Items needing attention">
-        <div className="graph-attention-heading" role="status" aria-live="polite" aria-atomic="true">
-          <span className="attention-beacon"><i /></span>
-          <strong>{snapshot.pendingAgentActions.length ? `${snapshot.pendingAgentActions.length} OWNER ACTION${snapshot.pendingAgentActions.length === 1 ? "" : "S"}` : "NEEDS ATTENTION"}</strong>
-        </div>
-        <ol>
-          {actions.slice(0, 3).map((action) => <li key={action.key}>
-            <span className="attention-copy"><b>{action.source}</b><strong>{action.title}</strong><small>{action.detail} · {updateAge(action.createdAt)}</small></span>
-            <i aria-hidden="true">›</i>
-          </li>)}
-        </ol>
-        {actions.length > 3 && <small className="attention-overflow">+{actions.length - 3} more recorded items</small>}
-      </aside>}
+      <div className={`agent-workspace ${actions.length || snapshot.agentUpdates.length || hasRunningProject ? "has-side-activity" : ""}`}>
+        <aside className="graph-side-rail" aria-label="Project attention and recent activity">
+          {actions.length > 0 && <section className={`graph-attention-panel ${snapshot.pendingAgentActions.length ? "has-owner-action" : ""}`} aria-label="Items needing attention">
+            <div className="graph-attention-heading" role="status" aria-live="polite" aria-atomic="true">
+              <span className="attention-beacon"><i /></span>
+              <strong>{snapshot.pendingAgentActions.length ? `${snapshot.pendingAgentActions.length} OWNER ACTION${snapshot.pendingAgentActions.length === 1 ? "" : "S"}` : "NEEDS ATTENTION"}</strong>
+            </div>
+            <ol>
+              {actions.slice(0, 3).map((action) => <li key={action.key}>
+                <span className="attention-copy"><b>{action.source}</b><strong>{action.title}</strong><small>{action.detail} · {updateAge(action.createdAt)}</small></span>
+                <i aria-hidden="true">›</i>
+              </li>)}
+            </ol>
+            {actions.length > 3 && <small className="attention-overflow">+{actions.length - 3} more recorded items</small>}
+          </section>}
 
-      {(snapshot.agentUpdates.length > 0 || hasRunningProject) && <section className="graph-checkpoints" aria-label="Latest agent checkpoints">
-        <div className="graph-checkpoints-heading"><span>Agent activity</span><small>{recentUpdateCount} in the last hour</small></div>
-        {snapshot.agentUpdates.length ? <ol>
-          {snapshot.agentUpdates.slice(0, 3).map((update) => <li className={`checkpoint checkpoint-${update.updateType}`} key={update.eventId}>
-            <i className="checkpoint-mark" aria-hidden="true"><b /></i>
-            <span className="checkpoint-copy"><strong>{update.projectName} · {roleLabel(update.role)}{update.phase ? ` · ${update.phase}` : ""}</strong><small>{update.summary}</small></span>
-            <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
-          </li>)}
-        </ol> : <p className="checkpoint-empty">Waiting for the first recorded agent checkpoint.</p>}
-      </section>}
+          {(snapshot.agentUpdates.length > 0 || hasRunningProject) && <section className="graph-checkpoints" aria-label="Latest agent checkpoints">
+            <div className="graph-checkpoints-heading"><span>Agent activity</span><small>{recentUpdateCount} in the last hour</small></div>
+            {snapshot.agentUpdates.length ? <ol>
+              {snapshot.agentUpdates.slice(0, 3).map((update) => <li className={`checkpoint checkpoint-${update.updateType}`} key={update.eventId}>
+                <i className="checkpoint-mark" aria-hidden="true"><b /></i>
+                <span className="checkpoint-copy"><strong>{update.projectName} · {roleLabel(update.role)}{update.phase ? ` · ${update.phase}` : ""}</strong><small>{update.summary}</small></span>
+                <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
+              </li>)}
+            </ol> : <p className="checkpoint-empty">Waiting for the first recorded agent checkpoint.</p>}
+          </section>}
+        </aside>
 
-      <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${projectRoleRows.length > 5 ? "is-dense" : ""}`}>
+        <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${selected ? "has-selected-agent" : ""}`}>
         <div className="graph-role-tree">
           <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role coordinates project work; Codex Project Managers and Workers perform repository changes" aria-label={`One persistent logical Main Overseer role${hasRunningProject ? ", coordinating active project managers" : ""}`}>
             <span className={`graph-overseer-orbit ${hasRunningProject ? "is-active" : ""}`}><BrandMark /></span>
@@ -732,6 +735,7 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           <span><strong>{selectedUpdate?.summary ?? selected.taskTitle}</strong><small>{agentRole(selected)} · {selectedUpdate?.phase ?? selected.status}{selectedUpdate ? ` · ${updateAge(selectedUpdate.createdAt)}` : " · no checkpoint"}{selected.report ? ` · report ${selected.report.reviewStatus.replace(/_/g, " ")}` : ""}</small></span>
           <button type="button" onClick={() => setSelectedAgentId(null)} aria-label="Close agent details"><Icon name="close" /></button>
         </div>}
+        </div>
       </div>
     </section>
   );
