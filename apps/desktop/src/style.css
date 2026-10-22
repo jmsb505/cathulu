@@ -928,23 +928,6 @@ html.monitor-document, html.monitor-document body, html.monitor-document #root {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
-@media (max-width: 450px) {
-  .support-main { padding-right: 6px; padding-left: 6px; }
-  .graph-overseer-label strong { font-size: 9px; }
-  .graph-role-tree { padding-right: 6px; padding-left: 6px; }
-  .graph-project-list { padding-left: 13px; }
-  .graph-project-list::before { left: 7px; }
-  .graph-project-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px; }
-  .graph-project-node { min-height: 40px; gap: 5px; padding: 4px 5px; }
-  .project-state-indicator { width: 17px; height: 17px; }
-  .graph-project-node strong { font-size: 7px; }
-  .graph-project-node small { font-size: 5px; }
-  .role-indicators { gap: 2px; }
-  .role-indicator { width: 15px; height: 15px; font-size: 5px; }
-  .graph-worker-cluster { gap: 2px; }
-  .graph-worker-node { width: 18px; height: 18px; }
-  .repository-signals { grid-template-columns: 1fr; }
-}
 @keyframes graph-flow { to { stroke-dashoffset: -26; } }
 @keyframes graph-breathe { 50% { opacity: .55; transform: scale(.92); } }
 @keyframes project-signal-pulse { 50% { opacity: .55; transform: scale(.78); } }
@@ -986,7 +969,7 @@ html.monitor-document, html.monitor-document body, html.monitor-document #root {
 .role-indicators { gap: 5px; }
 .role-indicator { width: 22px; height: 22px; border-radius: 6px; font-size: 9px; }
 .graph-status-dot { width: 8px; height: 8px; }
-.graph-project-list { min-height: 0; flex: 1 1 auto; gap: 8px; padding: 5px 2px 12px 20px; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: #46534c transparent; scrollbar-width: thin; }
+.graph-project-list { min-height: 0; flex: 1 1 auto; gap: 8px; padding: 5px 2px 12px 20px; overflow: visible; }
 .agent-graph-stage.has-selected-agent .graph-project-list { padding-bottom: 76px; }
 .graph-project-list::before { left: 10px; }
 .graph-project-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
@@ -1096,4 +1079,13 @@ html.monitor-document, html.monitor-document body, html.monitor-document #root {
 @media (prefers-reduced-motion: reduce) {
   .run-light.is-active, .graph-overseer-orbit.is-active, .graph-project-node.state-active .project-state-indicator > i,
   .graph-worker-node.state-active, .graph-unlinked-node.state-active { animation: none; }
+}
+
+/* Let the one dashboard page scroll instead of hiding persistent project roles inside the graph. */
+.agent-graph-stage { min-height: var(--graph-stage-min-height, 360px); }
+@media (max-height: 650px) {
+  .agent-graph-stage { min-height: var(--graph-stage-min-height, 360px); }
+}
+@media (max-width: 600px) {
+  .agent-graph-stage { min-height: var(--graph-stage-min-height-narrow, 340px); }
 }

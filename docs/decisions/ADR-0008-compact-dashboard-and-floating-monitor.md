@@ -19,7 +19,7 @@ Cathulu's desktop surface is a support dashboard used beside Codex. The previous
 6. Animate project indicators only for recorded runs whose status is `running`. Do not show synthetic percentage progress or model-generated status.
 7. Classify mandatory failed checks as blocking. Keep optional failures and inconclusive/not-run checks as review notes rather than presenting every returned row as a failed test.
 8. Add only scoped Tauri permissions required for creating the monitor, changing its topmost state and size, dragging, and restoring/focusing the main window. Do not expose new backend commands.
-9. Treat the main dashboard as a resizable side-by-side workspace, separate from the tiny floating monitor. Open it at 820 × 760 logical pixels, enforce a 560 × 540 minimum, let the graph grow with the available area, and place attention/activity beside the graph when there is room. Stack those areas at narrower widths and allow a single page scroll when the window height is constrained. Keep the dashboard readable at its supported minimum width rather than shrinking graph labels to fit.
+9. Treat the main dashboard as a resizable side-by-side workspace, separate from the tiny floating monitor. Open it at 820 × 760 logical pixels, enforce a 560 × 540 minimum, let the graph grow with the available area and number of registered project roles, and place attention/activity beside the graph when there is room. Stack those areas at narrower widths and allow a single page scroll when the window height is constrained. Keep all Project Manager roles visible without an inner graph scrollbar and preserve readable labels at narrow widths rather than shrinking text to fit.
 
 ## Alternatives considered
 
@@ -32,7 +32,7 @@ Cathulu's desktop surface is a support dashboard used beside Codex. The previous
 
 ## Consequences
 
-- The 820 × 760 main window is sized for use beside Codex and may be resized down to 560 × 540 logical pixels. The graph remains the primary surface, grows in large windows, and shares wide layouts with a readable activity/attention rail; narrower layouts stack those regions. There is no compact mode for the main dashboard; the 174 × 58 floating monitor serves that purpose.
+- The 820 × 760 main window is sized for use beside Codex and may be resized down to 560 × 540 logical pixels. The graph remains the primary surface, grows in large windows and with project count, and shares wide layouts with a readable activity/attention rail; narrower layouts stack those regions. All persistent project roles remain in the page flow, with one dashboard-level scroll when the graph or window is taller than the viewport. There is no compact mode for the main dashboard; the 174 × 58 floating monitor serves that purpose.
 - The activity graph is project-oriented, not chat- or run-oriented. It never creates extra Overseer nodes for additional chats or run history.
 - Raw sub-agent hook activity appears in the graph even when no Cathulu delegation was explicitly linked. Linked hook events appear once through their delegation. Existing data remains the only source for graph topology.
 - The monitor remains lightweight and can be toggled independently. Both windows poll the existing read-only snapshot; no new authority or persistence is introduced. Project state is reduced from each project's latest recorded run plus blockers and mandatory failed checks.

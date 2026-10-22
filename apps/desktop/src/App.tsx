@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor, getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { type ReactNode, useEffect, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import CodexSettings from "./CodexSettings";
 
 type ProjectSnapshot = {
@@ -626,6 +626,11 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
   const logicalState = hasRunningProject
     ? staleCount > 0 && activeCount === 0 ? "review" : "live"
     : issueCount > 0 ? "danger" : projectRoleRows.length > 0 ? "good" : "quiet";
+  const projectsWithUnlinkedHooks = projectRoleRows.filter((row) => row.unlinkedHooks.length > 0).length;
+  const graphStageStyle = {
+    "--graph-stage-min-height": `${Math.max(360, 121 + projectRoleRows.length * 66 + (selected ? 64 : 0))}px`,
+    "--graph-stage-min-height-narrow": `${Math.max(340, 97 + projectRoleRows.length * 63 + projectsWithUnlinkedHooks * 20 + (selected ? 64 : 0))}px`,
+  } as CSSProperties;
 
   return (
     <section className="agent-activity-view" aria-label="Project activity graph">
@@ -671,7 +676,7 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
           </section>}
         </aside>
 
-        <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${selected ? "has-selected-agent" : ""}`}>
+        <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""} ${selected ? "has-selected-agent" : ""}`} style={graphStageStyle}>
         <div className="graph-role-tree">
           <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role coordinates project work; Codex Project Managers and Workers perform repository changes" aria-label={`One persistent logical Main Overseer role${hasRunningProject ? ", coordinating active project managers" : ""}`}>
             <span className={`graph-overseer-orbit ${hasRunningProject ? "is-active" : ""}`}><BrandMark /></span>
