@@ -1,6 +1,6 @@
 # PLAN-010 — Responsive side-by-side support dashboard
 
-Status: M29 merged; M30 implementation and matched Windows build passed. Native visual resize review remains pending.
+Status: M29 and M30 are merged; frontend and matched Windows builds passed. Native visual resize review remains pending.
 Created: 2026-10-22
 Last updated: 2026-10-22
 
@@ -139,7 +139,7 @@ Documentation updates:
 
 Applicable specialized skills: `ui-ux-research`, `redesign-existing-projects`, `ui-ux-pro-max`, `implementation-plan`, `milestone-delivery`.
 
-Expected Git checkpoint: M29 was merged by PR #26. M30 is on `codex/m30-responsive-readability`, followed by a checked PR/merge to `main` if required checks allow.
+Expected Git checkpoint: M29 merged by PR #26; M30 merged by PR #27 as `bf84f5b2235e1eac4f57701ae628b115555db467`.
 
 ## Final integration validation
 
@@ -157,7 +157,7 @@ Revert the M29 commit to restore the prior window geometry and stacked layout. T
 - [x] Merge M29 responsive side-by-side window work to `main` through PR #26.
 - [x] Implement and build M30 responsive graph readability/visibility refinement.
 - [ ] Complete native visual resize review without interrupting the active MCP or Codex window.
-- [ ] Complete M30 Git progression.
+- [x] Complete M30 Git progression: PR #27 merged to `main` at `bf84f5b2235e1eac4f57701ae628b115555db467`.
 
 ## Implementation discoveries / decisions
 
