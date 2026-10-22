@@ -1,0 +1,12 @@
+{
+  "identifier": "dashboard-window",
+  "description": "Allows the main read-only dashboard to open and focus its floating monitor.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize"
+  ]
+}

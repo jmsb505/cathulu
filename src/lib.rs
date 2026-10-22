@@ -13,6 +13,7 @@ mod migrations;
 pub mod optimization;
 pub mod provider_adapters;
 mod provider_credentials;
+pub mod roles;
 mod sqlite;
 pub mod telemetry;
 pub mod workflow;
@@ -24,6 +25,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Prevent background CLI children from opening a console window on Windows.
+#[cfg(windows)]
+pub fn suppress_windows_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+pub fn suppress_windows_console(_: &mut Command) {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -497,7 +510,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 11 {
+        if version > 12 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -605,6 +618,14 @@ impl Store {
             }
             connection.execute("COMMIT")?;
         }
+        if version < 12 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_12) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
         Ok(())
     }
 
@@ -677,7 +698,9 @@ fn display_path(path: &Path) -> String {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -695,7 +718,9 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 fn git_optional(repo: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(repo)
         .args(args)

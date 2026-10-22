@@ -2,15 +2,23 @@
 
 Cathulu exposes local project, workflow, quality, evidence, and memory operations through an MCP stdio server. The server writes Cathulu's SQLite state and reads Git metadata; it does not modify repository contents. Keep MCP tools approval-gated in Codex.
 
-## 1. Build the server
+## Persistent Main and Project Manager roles
 
-From the repository root, run:
+Read `cathulu://roles` to get the authoritative logical-role catalog. It contains one `main-overseer` role and one `project-manager:<project_id>` role per registered project. Each record supplies the stable memory source scope, receiver/known-by scope, and versioned tool-profile key. `cathulu://dashboard` returns the same role catalog alongside current project, assignment, and worker evidence.
+
+A Codex chat is a temporary occupant of a logical role. A replacement Main chat resumes `main-overseer`; a replacement Project Manager chat resumes the existing PM role and assignment when one is active. It must reuse that role's memory receiver scope rather than making a chat-specific scope. For a PM, pass the raw ID (for example `project-manager:42`) with `receiver_scope_type: "scope"`; the persisted receiver key is `scope:project-manager:42`. Cathulu rejects new PM search receipts and activation receipts that use another receiver scope, and checks that a ready receipt matches the role before dispatch. This preserves known-by state across chats without replaying transcripts or duplicating role records.
+
+Only one PM task assignment can be active per project, and each assignment keeps the existing two-worker total. Finish or cancel the old assignment before preparing a new one; a replacement chat continuing the same assignment does not prepare a second PM seat. Workers remain task-scoped children. `tool_profile_key` names the role's intended tool contract; it does not confirm that a Codex chat has a particular MCP tool or native chat identity. Verify tool availability in the current Codex client and report unknown identity honestly.
+
+## 1. Build the matched server and dashboard
+
+From the repository root, use the canonical matched-release build. It builds the frontend and both release executables with `custom-protocol`, stages and hash-checks the pair, then publishes it to the stable directory already used by Codex:
 
 ```powershell
-cargo build --release --bin cathulu-mcp
+./scripts/build-current.ps1
 ```
 
-The executable is created at `target\release\cathulu-mcp.exe`.
+Codex should point to `target\mcp-current\cathulu-mcp.exe`. That path is a stable Windows junction to a versioned directory containing the matched `cathulu-mcp.exe` and `cathulu-desktop.exe`. `./scripts/build-current.ps1 -BuildOnly` builds and hashes a staged pair without advancing the junction. Each successful normal build advances the junction, so Codex's configured path stays fixed while subsequent starts load the latest pair. An already-running MCP process stays on its in-memory version until the Cathulu server is restarted from **Codex Settings → MCP servers → Cathulu → Restart**; do this when it will not interrupt active orchestration. The script never kills or restarts Codex and does not steal foreground focus.
 
 ## 2. Add the server to Codex
 
@@ -18,14 +26,14 @@ Open Codex Settings and select **Open config.toml**, or edit the Codex configura
 
 ```toml
 [mcp_servers.cathulu]
-command = "C:\\path\\to\\cathulu\\target\\release\\cathulu-mcp.exe"
+command = "C:\\path\\to\\cathulu\\target\\mcp-current\\cathulu-mcp.exe"
 args = []
 startup_timeout_sec = 20
 tool_timeout_sec = 60
 default_tools_approval_mode = "prompt"
 ```
 
-Restart Codex or reload MCP servers after saving. You can also use Codex's MCP settings interface when available.
+When Codex starts the MCP server, it schedules the matching sibling desktop executable in the background without taking keyboard focus; MCP stdio becomes ready immediately and does not wait for WebView startup. Repeated MCP starts leave the existing window as-is, including when it is minimized. Open it from the taskbar when you want to interact with the dashboard. Keep the two release executables from the same build together. Restart Codex or reload MCP servers after saving. You can also use Codex's MCP settings interface when available.
 
 ## 3. Optional local Codex activity hooks
 
@@ -135,13 +143,9 @@ MCP tool hooks use an already connected server. Review and trust the hook in Cod
 
 ### Required for Main Overseer, Project Managers, and Workers
 
-Follow the role and memory protocol in [agent-operating-contract.md](agent-operating-contract.md). Main Overseer coordinates only; it does not implement. Assign one Project Manager per active project, and limit each Project Manager assignment to two worker agents total. Prepare a `sub_overseer` delegation for the PM; this keeps the stored role compatible while creating an explicit Project Manager assignment and reserving that project's active-manager slot. Prepare each worker with `parent_delegation_id` set to that PM delegation. Before each PM or Worker dispatch, call `search_memory_candidates` with the prepared `delegation_id`, the project/objective/task scope, and that receiver's stable logical scope (`receiver_scope_type: "scope"`). This records a compact successful retrieval event and returns candidate IDs/hashes without bodies. Transfer only selected candidates with `prepare_context_transfer`; an unchanged known memory is recorded as `already_known`, while changed content is delivered as a delta. Then call `record_delegation_activation` with the search outcome and exact transfer/known-by references, or use `no_relevant_memory` with no references after a successful search. Call `mark_delegation_dispatched` only after the latest receipt is ready. A missing or incomplete receipt blocks dispatch. Do not inject COLD or stale memory automatically, replay transcripts, or treat a worker report as verified success.
+Follow the role and memory protocol in [agent-operating-contract.md](agent-operating-contract.md). Main Overseer coordinates only; it does not implement. Assign one Project Manager per active project, and limit each Project Manager assignment to two worker agents total. The Project Manager and every Worker must receive the current task/run IDs, use Cathulu MCP to read scoped memory and retrieve relevant WARM candidates, and record selected context with `prepare_context_transfer` before it is handed off. Include only relevant memory/artifact IDs in `prepare_delegation`; if retrieval finds nothing useful, state that explicitly. Do not inject COLD or stale memory automatically, replay transcripts, or treat a worker report as verified success.
 
-M21 repository-free probe confirmed this client can spawn a Worker from a Project Manager and that Main, PM, and Worker can reach Cathulu MCP. Tool availability differed by role: the PM could read `cathulu://dashboard`, but `read_memories` was unavailable in its tool context; the Worker successfully called `read_memories`. HOT/WARM memory was empty, and the run recorded no relevant memory for the PM. `prepare_context_transfer` requires a memory ID, so it cannot create an empty transfer receipt. M23 now requires an actual bounded `search_memory_candidates` call associated with the exact delegation run and receiver before a ready activation receipt can be recorded; a boolean claim or generic resource read is insufficient. The current client still needs a real PM activation attempt to demonstrate that the bounded search tool is available in that role. Until it succeeds, leave that PM prepared and blocked. No hook events or hook metadata surfaced; do not infer a hierarchy edge from agent names or nested spawn alone. See [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md) and [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.md).
-
-M22 admission checks are enforced transactionally in SQLite. A second hierarchy-aware PM cannot be prepared while the project slot is active. The PM's slot is released by `complete_project_manager_assignment` after every child is reported or cancelled, or by cancelling the PM when no child remains unfinished. A completed/cancelled PM cannot accept new children. The two-worker count includes every child delegation ever prepared for that PM, including cancelled or replaced workers. Legacy delegation rows remain readable and are not assigned inferred parents; only new hierarchy-aware PM records can own new worker children. Rejected over-cap attempts appear as `delegation_admission_rejected` events on the run. These records report native Codex handoffs; they do not spawn or control agents.
-
-M23 uses additive schema version 11. `search_memory_candidates` can receive a delegation ID and records only the run, source scope, receiver scope, result count, and a hash of returned IDs/hashes. `record_delegation_activation` stores an append-only receipt and memory references. Each reference must name current accepted, non-COLD knowledge in the same project/task scope and prove either a matching context transfer in this run to this receiver or a matching `memory_known_by` record. HOT references also pass the existing scope budget. A ready receipt must reference a successful bounded-search event for that delegation and receiver; incomplete receipts are preserved but cannot dispatch. The delegation resource exposes the latest receipt and its search event ID. Cathulu cannot inspect Codex's per-agent tool inventory or identify which native agent made an MCP call. The receipt therefore proves a scoped search was recorded, not which agent made it; the operating contract requires the receiver to perform the activation call, and a runtime probe must still confirm the correct role has the tool.
+M21's repository-free capability probe confirmed that the current client can spawn a Worker from a Project Manager and that Main, PM, and Worker can reach Cathulu MCP. Tool availability differed by role: the PM could read `cathulu://dashboard`, but `read_memories` was unavailable in its tool context; the Worker successfully called `read_memories`. HOT/WARM memory was empty, and the run recorded “no relevant memory” for the PM. `prepare_context_transfer` requires a memory ID, so it cannot currently create an empty transfer receipt. M23 must add a structured no-relevant-memory activation receipt and validate role-specific tool availability before memory-gated dispatch. No hook events or hook metadata surfaced in the probe; do not infer a hierarchy edge from agent names or nested spawn alone. See [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md) and [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.md).
 
 - `register_project` accepts a local Git repository path. It stores the canonical repository root and an initial branch, HEAD, dirty flag, and changed-path list.
 - `reconcile_project` refreshes the Git snapshot for a registered project ID.
@@ -164,15 +168,14 @@ M23 uses additive schema version 11. `search_memory_candidates` can receive a de
 - `associate_delegation_worker` explicitly binds a dispatched delegation to a recorded `SubagentStart` event from the same parent run. Later `SubagentStop` evidence attaches through hashed session/turn/agent identifiers. Requested model/effort stay separate from observed model; effort remains unknown unless a supported source is added.
 - Requested model/effort values are preferences only. Idempotency and optional external correlation values are SHA-256 hashed and the raw values are discarded. Effective model/effort values are not inferred.
 - `record_codex_hook_event` accepts only an allowlist of Codex lifecycle metadata. One observed session/turn maps to a run; stopping or interrupting it records an inconclusive outcome, never verified success. Subagent events attach only to an already-mapped parent run and never create a run from worker identity alone.
-- Memory tools create provenance-bearing candidates, review candidates, change temperature or scope activation, set a HOT byte budget, read scope memories, and prepare explicit context transfers. `search_memory_candidates` returns compact HOT/WARM candidate IDs and hashes; when used for a hierarchy delegation it records the successful retrieval event required by activation. A canonical memory requires a provenance source; current reads omit rejected, stale, superseded, and COLD memory by default.
-- `record_delegation_activation` records a revisioned ready/incomplete memory activation receipt for hierarchy-aware Project Managers and child Workers. Readiness requires a successful bounded search, plus current exact-scope transfer/known-by references or an explicit `no_relevant_memory` outcome; `mark_delegation_dispatched` rejects a missing or incomplete receipt.
+- Memory tools create provenance-bearing candidates, review candidates, change temperature or scope activation, set a HOT byte budget, read scope memories, and prepare explicit context transfers. A canonical memory requires a provenance source; current reads omit rejected, stale, superseded, and COLD memory by default.
 - Context transfers persist hashes, scope IDs, class/temperature, byte/token counts, retrieval method, and first-time/reintroduced state. The transfer ledger does not retain raw transferred bodies; the explicit transfer tool returns the body only when a full or delta transfer is requested.
 - Events are append-only. Decisions and workflow versions are immutable; new accepted decisions or workflow versions are created as new records.
 - `cathulu://projects` reads the portfolio snapshot.
 - `cathulu://projects/{id}` reads one project's snapshot.
 - `cathulu://dashboard` reads the compact dashboard snapshot.
 - `cathulu://runs/{id}`, `cathulu://decisions/{id}`, `cathulu://memories/{id}`, and `cathulu://transfers/{id}` read one durable record.
-- `cathulu://delegations/{id}` reads one structured task packet, its stable packet hash, requested settings, artifact/memory IDs, the latest activation receipt and search-event reference, append-only lifecycle history, any worker report and review history, the captured baseline and latest worktree verification, and explicitly associated worker telemetry. It does not return the absolute worktree path or raw hook identifiers.
+- `cathulu://delegations/{id}` reads one structured task packet, its stable packet hash, requested settings, artifact/memory IDs, append-only lifecycle history, any worker report and review history, the captured baseline and latest worktree verification, and explicitly associated worker telemetry. It does not return the absolute worktree path or raw hook identifiers.
 - `cathulu://objectives/{id}`, `cathulu://tasks/{id}`, `cathulu://dependencies/{id}`, and `cathulu://artifacts/{id}` read current domain records and protection metadata.
 - `cathulu://events/run/{id}` reads a run's append-only event history.
 
@@ -222,4 +225,3 @@ The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks
 By default the database is `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you set `CATHULU_DATA_DIR`, use the same absolute path in both the MCP server and desktop app environments. Otherwise the dashboard may open the default database while MCP writes to the override. Cathulu retains local domain state, bounded event metadata, distilled memory records, provenance links, and artifact references. Do not add secrets, raw prompts, or full transcripts. Detailed artifacts should remain local and be referenced by local paths or artifact identifiers.
 
 Codex uses `[mcp_servers.<name>]` tables in `config.toml` for local stdio servers. Review the current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) before changing this setup.
-

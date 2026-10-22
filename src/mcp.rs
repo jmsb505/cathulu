@@ -1108,6 +1108,11 @@ impl ServerHandler for CathuluServer {
             Resource::new("cathulu://projects", "Cathulu projects")
                 .with_description("Registered repositories and their latest Git snapshots.")
                 .with_mime_type("application/json"),
+            Resource::new("cathulu://roles", "Cathulu logical agent roles")
+                .with_description(
+                    "Persistent Main Overseer and per-project Project Manager identities, memory scopes, and versioned tool profiles. Task assignments and Codex chats are separate.",
+                )
+                .with_mime_type("application/json"),
             Resource::new("cathulu://dashboard", "Cathulu dashboard snapshot")
                 .with_description(
                     "Read-only project, workflow, quality, worker-delegation, and memory-health summary.",
@@ -1176,6 +1181,9 @@ impl ServerHandler for CathuluServer {
     ) -> Result<ReadResourceResponse, McpError> {
         let data = if request.uri == "cathulu://projects" {
             serde_json::to_string(&self.store.list_projects().map_err(internal_error)?)
+                .map_err(internal_error)?
+        } else if request.uri == "cathulu://roles" {
+            serde_json::to_string(&self.store.logical_agent_roles().map_err(internal_error)?)
                 .map_err(internal_error)?
         } else if request.uri == "cathulu://dashboard" {
             serde_json::to_string(&self.store.dashboard_snapshot().map_err(internal_error)?)
@@ -1349,7 +1357,6 @@ impl ServerHandler for CathuluServer {
 
 pub async fn run_stdio() -> Result<(), String> {
     let store = Store::open(default_data_dir()?)?;
-    report_startup_reconciliation(&store);
     let service = CathuluServer { store }
         .serve(rmcp::transport::stdio())
         .await
@@ -1359,20 +1366,6 @@ pub async fn run_stdio() -> Result<(), String> {
         .await
         .map_err(|error| format!("MCP stdio service stopped unexpectedly: {error}"))?;
     Ok(())
-}
-
-fn report_startup_reconciliation(store: &Store) {
-    match store.reconcile_registered_projects() {
-        Ok(report) => {
-            for failure in report.failures {
-                eprintln!(
-                    "Cathulu startup Git reconciliation skipped project {}: {}",
-                    failure.project_id, failure.message
-                );
-            }
-        }
-        Err(error) => eprintln!("Cathulu startup Git reconciliation failed: {error}"),
-    }
 }
 
 fn parse_resource_id(id: &str, uri: &str) -> Result<i64, McpError> {

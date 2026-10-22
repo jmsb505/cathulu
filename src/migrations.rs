@@ -790,3 +790,92 @@ BEGIN SELECT RAISE(ABORT, 'delegation activation memory references are append-on
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (11, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_12: &str = r#"
+CREATE TABLE logical_agent_roles (
+  role_key TEXT PRIMARY KEY,
+  role_kind TEXT NOT NULL CHECK(role_kind IN ('main_overseer', 'project_manager')),
+  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  memory_scope_key TEXT NOT NULL,
+  receiver_scope_key TEXT NOT NULL UNIQUE,
+  tool_profile_key TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  CHECK(
+    (role_kind = 'main_overseer'
+      AND role_key = 'main-overseer'
+      AND project_id IS NULL
+      AND memory_scope_key = 'global'
+      AND receiver_scope_key = 'scope:main-overseer'
+      AND tool_profile_key GLOB 'main-overseer-v[1-9]*')
+    OR
+    (role_kind = 'project_manager'
+      AND project_id IS NOT NULL
+      AND role_key = 'project-manager:' || project_id
+      AND memory_scope_key = 'project:' || project_id
+      AND receiver_scope_key = 'scope:project-manager:' || project_id
+      AND tool_profile_key GLOB 'project-manager-v[1-9]*')
+  )
+);
+
+CREATE UNIQUE INDEX logical_agent_single_main_idx
+  ON logical_agent_roles(role_kind) WHERE role_kind = 'main_overseer';
+CREATE UNIQUE INDEX logical_agent_one_pm_per_project_idx
+  ON logical_agent_roles(project_id) WHERE role_kind = 'project_manager';
+
+INSERT INTO logical_agent_roles
+  (role_key, role_kind, project_id, memory_scope_key, receiver_scope_key, tool_profile_key, created_at)
+VALUES
+  ('main-overseer', 'main_overseer', NULL, 'global', 'scope:main-overseer', 'main-overseer-v1',
+   CAST(strftime('%s','now') AS INTEGER));
+
+INSERT INTO logical_agent_roles
+  (role_key, role_kind, project_id, memory_scope_key, receiver_scope_key, tool_profile_key, created_at)
+SELECT 'project-manager:' || id, 'project_manager', id, 'project:' || id,
+       'scope:project-manager:' || id, 'project-manager-v1', registered_at
+FROM projects;
+
+CREATE TRIGGER logical_agent_role_identity_immutable
+BEFORE UPDATE OF role_key, role_kind, project_id, memory_scope_key, receiver_scope_key,
+                 created_at ON logical_agent_roles
+WHEN NEW.role_key IS NOT OLD.role_key
+  OR NEW.role_kind IS NOT OLD.role_kind
+  OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.memory_scope_key IS NOT OLD.memory_scope_key
+  OR NEW.receiver_scope_key IS NOT OLD.receiver_scope_key
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'logical agent role identity and memory scope are immutable'); END;
+
+CREATE TRIGGER projects_create_logical_pm AFTER INSERT ON projects
+BEGIN
+  INSERT INTO logical_agent_roles
+    (role_key, role_kind, project_id, memory_scope_key, receiver_scope_key, tool_profile_key, created_at)
+  VALUES ('project-manager:' || NEW.id, 'project_manager', NEW.id, 'project:' || NEW.id,
+          'scope:project-manager:' || NEW.id, 'project-manager-v1', NEW.registered_at);
+END;
+
+ALTER TABLE project_manager_assignments
+  ADD COLUMN logical_role_key TEXT REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT;
+
+UPDATE project_manager_assignments
+SET logical_role_key = 'project-manager:' || project_id;
+
+CREATE INDEX project_manager_assignments_role_idx
+  ON project_manager_assignments(logical_role_key, status, manager_delegation_id);
+
+CREATE TRIGGER project_manager_assignment_role_valid BEFORE INSERT ON project_manager_assignments
+WHEN NEW.logical_role_key IS NULL OR NOT EXISTS (
+  SELECT 1 FROM logical_agent_roles role
+  WHERE role.role_key = NEW.logical_role_key
+    AND role.role_kind = 'project_manager'
+    AND role.project_id = NEW.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'Project Manager assignment must occupy its project logical role'); END;
+
+CREATE TRIGGER project_manager_assignment_role_immutable
+BEFORE UPDATE OF logical_role_key ON project_manager_assignments
+WHEN NEW.logical_role_key IS NOT OLD.logical_role_key
+BEGIN SELECT RAISE(ABORT, 'Project Manager logical role binding is immutable'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (12, CAST(strftime('%s','now') AS INTEGER));
+"#;

@@ -20,7 +20,7 @@ OpenTelemetry export is not enabled by Cathulu. Its prompt redaction and exporte
 
 Hook configuration remains owner-controlled. The repository documents an optional snippet but does not edit global Codex configuration. Hooks must be reviewed and trusted in Codex. The local MCP server must already be connected; a missing server or unsupported event yields no telemetry and must not interrupt persistence or normal Codex work.
 
-On desktop and MCP process startup, Cathulu best-effort reconciles every registered Git repository. A failure for one missing/unavailable repository is reported to stderr and does not prevent reconciliation of other projects or startup. Its last known snapshot remains available for inspection.
+The desktop best-effort reconciles every registered Git repository after its state is managed, using a blocking worker so the initial window can render first. MCP startup does not run a second full scan; an explicit `reconcile_project` call remains available. A failure for one missing/unavailable repository is reported to stderr and does not block other project refreshes or startup. Its last known snapshot remains available for inspection.
 
 ## Consequences
 

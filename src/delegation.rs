@@ -122,12 +122,14 @@ pub struct WorkerReportReviewResult {
 #[serde(rename_all = "camelCase")]
 pub struct DashboardDelegationSummary {
     pub id: i64,
+    pub project_id: i64,
     pub project_name: String,
     pub task_title: String,
     pub run_id: i64,
     pub role: String,
     pub status: String,
     pub parent_delegation_id: Option<i64>,
+    pub logical_role_key: Option<String>,
     pub project_manager_assignment_status: Option<String>,
     pub activation_status: Option<String>,
     pub parent_run_status: String,
@@ -167,6 +169,7 @@ pub struct DelegationRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectManagerAssignmentRecord {
     pub manager_delegation_id: i64,
+    pub logical_role_key: String,
     pub project_id: i64,
     pub task_id: i64,
     pub run_id: i64,
@@ -406,12 +409,13 @@ impl Store {
             .map_err(sqlite_error)?;
         let id = transaction.last_insert_rowid();
         if role == "sub_overseer" {
+            let logical_role_key = format!("project-manager:{project_id}");
             transaction
                 .execute(
                     "INSERT INTO project_manager_assignments
-                     (manager_delegation_id, project_id, task_id, run_id, status, created_at)
-                     VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
-                    params![id, project_id, task_id, run_id, now],
+                     (manager_delegation_id, project_id, task_id, run_id, status, created_at, logical_role_key)
+                     VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6)",
+                    params![id, project_id, task_id, run_id, now, logical_role_key],
                 )
                 .map_err(sqlite_error)?;
         }
@@ -567,18 +571,19 @@ impl Store {
         connection
             .raw()
             .query_row(
-                "SELECT manager_delegation_id, project_id, task_id, run_id, status, created_at, closed_at
+                "SELECT manager_delegation_id, logical_role_key, project_id, task_id, run_id, status, created_at, closed_at
                  FROM project_manager_assignments WHERE manager_delegation_id = ?1",
                 params![manager_delegation_id],
                 |row| {
                     Ok(ProjectManagerAssignmentRecord {
                         manager_delegation_id: row.get(0)?,
-                        project_id: row.get(1)?,
-                        task_id: row.get(2)?,
-                        run_id: row.get(3)?,
-                        status: row.get(4)?,
-                        created_at: row.get(5)?,
-                        closed_at: row.get(6)?,
+                        logical_role_key: row.get(1)?,
+                        project_id: row.get(2)?,
+                        task_id: row.get(3)?,
+                        run_id: row.get(4)?,
+                        status: row.get(5)?,
+                        created_at: row.get(6)?,
+                        closed_at: row.get(7)?,
                     })
                 },
             )
@@ -681,6 +686,12 @@ impl Store {
             &transaction,
             receiver_scope_type,
             Some(&receiver_scope_id),
+        )?;
+        validate_logical_pm_receiver_scope(
+            &transaction,
+            delegation_id,
+            &delegation.0,
+            &receiver_scope_key,
         )?;
         let retrieval_event_id = append_event(
             &transaction,
@@ -872,6 +883,12 @@ impl Store {
             &transaction,
             receiver_scope_type,
             Some(&receiver_scope_id),
+        )?;
+        validate_logical_pm_receiver_scope(
+            &transaction,
+            delegation_id,
+            &delegation.0,
+            &receiver_scope_key,
         )?;
         let retrieval_event_id = if status == "ready" {
             transaction
@@ -1401,37 +1418,67 @@ impl Store {
         let rows = connection
             .raw()
             .prepare(
-                "SELECT d.id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
+                "WITH relevant_runs AS (
+                   SELECT r.id FROM runs r
+                   WHERE r.id IN (SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10)
+                      OR NOT EXISTS (
+                         SELECT 1 FROM runs newer
+                         WHERE newer.project_id = r.project_id
+                           AND (newer.started_at > r.started_at
+                                OR (newer.started_at = r.started_at AND newer.id > r.id))
+                      )
+                 ),
+                 relevant_delegations AS (
+                   SELECT d.id FROM delegations d JOIN relevant_runs rr ON rr.id = d.run_id
+                   UNION
+                   SELECT assignment.manager_delegation_id
+                   FROM project_manager_assignments assignment WHERE assignment.status = 'active'
+                   UNION
+                   SELECT child.id
+                   FROM project_manager_assignments assignment
+                   JOIN delegations child ON child.parent_delegation_id = assignment.manager_delegation_id
+                   WHERE assignment.status = 'active'
+                 )
+                 SELECT d.id, d.project_id, p.name, t.title, d.run_id, d.role, d.status, r.status, d.created_at,
                         MAX(d.updated_at, COALESCE(wr.reported_at, 0),
                             COALESCE((SELECT MAX(review.created_at) FROM worker_report_reviews review
                                       WHERE review.report_id = wr.id), 0)), d.parent_delegation_id,
-                        (SELECT assignment.status FROM project_manager_assignments assignment
-                         WHERE assignment.manager_delegation_id = d.id),
+                        COALESCE(assignment.status, parent_assignment.status),
                         (SELECT activation.status FROM delegation_activation_receipts activation
                          WHERE activation.delegation_id = d.id
-                         ORDER BY activation.revision DESC LIMIT 1)
+                         ORDER BY activation.revision DESC LIMIT 1),
+                        COALESCE(assignment.logical_role_key, parent_assignment.logical_role_key)
                  FROM delegations d
                  JOIN projects p ON p.id = d.project_id
                  JOIN tasks t ON t.id = d.task_id
                  JOIN runs r ON r.id = d.run_id
                  LEFT JOIN worker_reports wr ON wr.delegation_id = d.id
-                 ORDER BY 9 DESC, d.id DESC LIMIT ?1",
+                 LEFT JOIN project_manager_assignments assignment
+                   ON assignment.manager_delegation_id = d.id
+                 LEFT JOIN project_manager_assignments parent_assignment
+                   ON parent_assignment.manager_delegation_id = d.parent_delegation_id
+                 WHERE d.id IN (SELECT id FROM relevant_delegations)
+                 ORDER BY CASE WHEN assignment.status = 'active' OR parent_assignment.status = 'active'
+                               THEN 0 ELSE 1 END,
+                          10 DESC, d.id DESC LIMIT ?1",
             )
             .map_err(sqlite_error)?
-            .query_map(params![limit.clamp(1, 20) as i64], |row| {
+            .query_map(params![limit.clamp(1, 100) as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(7)?,
                     row.get::<_, i64>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             })
             .map_err(sqlite_error)?
@@ -1441,6 +1488,7 @@ impl Store {
             .map(
                 |(
                     id,
+                    project_id,
                     project_name,
                     task_title,
                     run_id,
@@ -1452,15 +1500,18 @@ impl Store {
                     parent_delegation_id,
                     project_manager_assignment_status,
                     activation_status,
+                    logical_role_key,
                 )| {
                     Ok(DashboardDelegationSummary {
                         id,
+                        project_id,
                         project_name,
                         task_title,
                         run_id,
                         role,
                         status,
                         parent_delegation_id,
+                        logical_role_key,
                         project_manager_assignment_status,
                         activation_status,
                         parent_run_status,
@@ -1656,6 +1707,10 @@ impl Store {
             .query_row(
                 "SELECT status, role, parent_delegation_id, run_id,
                         (SELECT assignment.status FROM project_manager_assignments assignment
+                         WHERE assignment.manager_delegation_id = delegations.id),
+                        (SELECT role.receiver_scope_key
+                         FROM project_manager_assignments assignment
+                         JOIN logical_agent_roles role ON role.role_key = assignment.logical_role_key
                          WHERE assignment.manager_delegation_id = delegations.id)
                  FROM delegations WHERE id = ?1",
                 params![id],
@@ -1666,13 +1721,21 @@ impl Store {
                         row.get::<_, Option<i64>>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("delegation {id} was not found"))?;
-        let (from_status, role, parent_delegation_id, run_id, assignment_status) = delegation_state;
+        let (
+            from_status,
+            role,
+            parent_delegation_id,
+            run_id,
+            assignment_status,
+            expected_receiver_scope,
+        ) = delegation_state;
         if from_status == to_status {
             transaction.commit().map_err(sqlite_error)?;
             return self
@@ -1693,10 +1756,10 @@ impl Store {
         if to_status == "dispatched" && hierarchy_aware {
             let activation = transaction
                 .query_row(
-                    "SELECT status, disposition FROM delegation_activation_receipts
+                    "SELECT status, disposition, receiver_scope_key FROM delegation_activation_receipts
                      WHERE delegation_id = ?1 ORDER BY revision DESC LIMIT 1",
                     params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
                 )
                 .optional()
                 .map_err(sqlite_error)?;
@@ -1705,10 +1768,23 @@ impl Store {
                     "memory_activation_missing",
                     format!("delegation {id} requires a memory activation receipt before dispatch"),
                 )),
-                Some((status, disposition)) if status != "ready" => Some((
+                Some((status, disposition, _)) if status != "ready" => Some((
                     "memory_activation_incomplete",
-                    format!("delegation {id} has an incomplete memory activation receipt ({disposition})"),
+                    format!(
+                        "delegation {id} has an incomplete memory activation receipt ({disposition})"
+                    ),
                 )),
+                Some((_, _, receiver_scope))
+                    if role == "sub_overseer"
+                        && expected_receiver_scope.as_deref() != Some(receiver_scope.as_str()) =>
+                {
+                    Some((
+                        "memory_activation_wrong_logical_role",
+                        format!(
+                            "delegation {id} activation does not use its persistent Project Manager role scope"
+                        ),
+                    ))
+                }
                 Some(_) => None,
             };
             if let Some((reason, message)) = rejection {
@@ -1837,7 +1913,9 @@ fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<Stri
         .optional()
         .map_err(sqlite_error)?
         .ok_or_else(|| format!("registered project {project_id} was not found"))?;
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    crate::suppress_windows_console(&mut command);
+    let output = command
         .arg("-C")
         .arg(project_path)
         .args(["rev-parse", "--verify", "HEAD"])
@@ -2580,6 +2658,37 @@ fn validate_text(name: &str, value: &str, max_chars: usize, required: bool) -> R
     }
     if value.chars().any(|character| character == '\0') {
         return Err(format!("{name} cannot contain a NUL character"));
+    }
+    Ok(())
+}
+
+fn validate_logical_pm_receiver_scope(
+    transaction: &Transaction<'_>,
+    delegation_id: i64,
+    delegation_role: &str,
+    receiver_scope_key: &str,
+) -> Result<(), String> {
+    if delegation_role != "sub_overseer" {
+        return Ok(());
+    }
+    let expected_scope = transaction
+        .query_row(
+            "SELECT role.receiver_scope_key
+             FROM project_manager_assignments assignment
+             JOIN logical_agent_roles role ON role.role_key = assignment.logical_role_key
+             WHERE assignment.manager_delegation_id = ?1 AND role.role_kind = 'project_manager'",
+            params![delegation_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| {
+            format!("Project Manager delegation {delegation_id} has no persistent logical role")
+        })?;
+    if receiver_scope_key != expected_scope {
+        return Err(format!(
+            "Project Manager memory must use its persistent role receiver scope {expected_scope}"
+        ));
     }
     Ok(())
 }

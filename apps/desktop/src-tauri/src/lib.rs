@@ -381,19 +381,29 @@ fn new_preview_id() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        // A second MCP process must never raise Cathulu over the user's active
+        // app. The existing window remains available from the taskbar.
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .setup(|app| {
             let data_dir = default_data_dir().map_err(std::io::Error::other)?;
             let store = Store::open(data_dir).map_err(std::io::Error::other)?;
-            let report = store
-                .reconcile_registered_projects()
-                .map_err(std::io::Error::other)?;
-            for failure in report.failures {
-                eprintln!(
-                    "Cathulu startup Git reconciliation skipped project {}: {}",
-                    failure.project_id, failure.message
-                );
-            }
+            let reconciliation_store = store.clone();
             app.manage(DesktopState::new(store));
+            let _startup_reconciliation = tauri::async_runtime::spawn_blocking(move || {
+                match reconciliation_store.reconcile_registered_projects() {
+                    Ok(report) => {
+                        for failure in report.failures {
+                            eprintln!(
+                                "Cathulu startup Git reconciliation skipped project {}: {}",
+                                failure.project_id, failure.message
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Cathulu startup Git reconciliation failed: {error}");
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

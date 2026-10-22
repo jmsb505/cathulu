@@ -23,11 +23,11 @@ The product question is whether durable, selectively disclosed state improves ve
 1. The owner gives the Main Overseer a task and the registered project or projects it concerns; projects remain independent unless the owner explicitly declares a cross-project task.
 2. Main reads a compact portfolio snapshot, selects the project task/run, loads relevant scoped HOT memory, searches WARM knowledge selectively, and prepares an auditable context transfer.
 3. Main assigns one Project Manager to each active project and does no implementation work. Each Project Manager uses Cathulu MCP, plans work within one project, and may dispatch at most two workers total for the assignment.
-4. Before each PM or Worker begins repository work, it records a bounded `search_memory_candidates` result for its delegation and logical receiver, transfers only selected Cathulu memory through the existing known-by and context-transfer ledger, and records a ready activation receipt or an explicit no-relevant-memory outcome. Workers perform scoped project work and submit evidence-backed reports; managers review those reports and return concise status to Main.
+4. Project Managers transfer only relevant Cathulu memory to workers using the existing known-by and context-transfer ledger. Workers perform scoped project work and submit evidence-backed reports; managers review those reports and return concise status to Main.
 5. Main checks current Cathulu state, blockers, worker reports, and required QA gates, then reports status or asks the owner for a decision. The read-only dashboard presents only persisted runs, delegations, events, and quality evidence.
 6. A run becomes `verified_success` only after its acceptance criteria and all mandatory deterministic gates pass. A timeout or missing evidence is `blocked` or `inconclusive`, never success.
 
-See the normative [agent operating contract](agent-operating-contract.md) and [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md). Nested Project Manager-to-Worker spawning and Cathulu MCP reachability have been observed in the current Codex client session, and Cathulu now validates parentage, capacity, and scoped activation evidence in SQLite. M21 found that the Project Manager lacked `read_memories`, so role-specific tool parity still needs a fresh runtime probe. Activation evidence records a declared receiver scope and successful search but cannot identify the native agent that called MCP. Hook-backed live activity also remains unverified.
+See the normative [agent operating contract](agent-operating-contract.md) and [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md). The native Codex runtime must support nested Project Manager-to-Worker spawning and inherited Cathulu MCP access before the hierarchy is described as operational.
 
 The dashboard's first views are Overview, Activity, Project/Scope, and Evidence. The first increment needs only the project registry and Git state path, with the other views introduced as their supporting state exists.
 
@@ -113,5 +113,4 @@ Phase 1 success further requires durable objectives/tasks/decisions/workflows/ru
 The exact first test seams and evaluation thresholds are selected in the implementation plan from the chosen public interfaces and measurable baseline. No vanity metric or model sentiment can substitute for deterministic evidence.
 
 The optional specialist-model layer succeeds only if comparable real runs show a useful reduction in context, repeated processing, agent activations, retrieval overhead, or latency while maintaining or improving verified task success, QA, convergence, regression rate, rework, and human intervention. The evaluation method and acceptable quality guard are declared from baseline evidence before a controlled active pilot. Unobservable measures remain unknown. Shadow agreement or a model's confidence alone is not proof of workflow value.
-
 

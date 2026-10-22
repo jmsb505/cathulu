@@ -33,15 +33,24 @@ Implementation plan: [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.m
 - Do not claim a task is verified because a model or agent reports success. Deterministic QA and the owner's required review remain authoritative.
 - Do not write canonical knowledge directly from an unverified hypothesis. Report a reusable lesson with its source run/artifact references for Project Manager review.
 
+## Persistent logical role identity
+
+- A Codex chat is a temporary activation of a Cathulu role, not the role's identity. Starting a replacement Main or Project Manager chat must resume the existing logical role; do not create a new role, memory scope, or known-by identity for a new chat.
+- At the start of a Main activation, read `cathulu://roles` and `cathulu://dashboard`. Use the single `main-overseer` role, its global memory scope, receiver scope `scope:main-overseer`, and its tool-profile key. Use the same receiver scope for later Main activations so unchanged context remains known.
+- At the start of a Project Manager activation, identify the registered project and its `project-manager:<project_id>` role from `cathulu://roles`. Keep the existing project memory source scope, and use the role's stable receiver scope (`scope:project-manager:<project_id>`) for retrieval, context transfer, and activation evidence across chats.
+- Only one Project Manager assignment may be active for a project at a time. Complete or cancel the current assignment before preparing a replacement assignment. A replacement chat that resumes an active assignment uses that assignment and its persistent role; it does not create another parallel PM seat.
+- Tool-profile keys describe the role's expected tool contract. They do not prove that the current Codex chat actually has those tools. Confirm availability in the current client before dispatching work, and report unavailable tools as a blocker rather than claiming the profile granted access.
+- Cathulu does not receive a trustworthy native Codex chat identity. Do not label a chat as the unique current occupant unless the client provides observable identity evidence. The stable role and assignment records are authoritative; chat identity remains unknown.
+
 ## Required Cathulu memory workflow
 
 Every role, including Main Overseer, Project Manager, and Worker, follows this sequence for each project assignment:
 
 1. Confirm the Cathulu project, objective/task, and run IDs. Reconcile the registered repository when fresh Git state is needed.
-2. Before a PM or Worker begins repository work, use `search_memory_candidates` with its prepared `delegation_id`, the project/objective/task scope, and its own stable logical receiver scope. This bounded call returns HOT/WARM candidate IDs and hashes and records the successful search against that receiver. `read_memories` or a generic resource read alone does not satisfy activation.
-3. Select only relevant candidates. Use `prepare_context_transfer` to the same receiver scope, passing the active run ID. This records the transfer and known-by state; repeated content is omitted and changed content is a delta.
-4. Record `context_selected` with the current transfer/known-by references, or `no_relevant_memory` with no references after a successful bounded search. The parent records native dispatch only after the latest activation receipt is `ready`; missing or incomplete receipts block that Cathulu transition.
-5. Keep HOT context bounded, retrieve WARM history selectively, and do not load the archive or inject COLD evidence automatically.
+2. Read current accepted project-scope memory with `read_memories`. Keep HOT memory bounded to the role's scope.
+3. For additional history, call `search_memory_candidates` first. Select only relevant WARM candidates; do not load the archive or inject COLD evidence automatically.
+4. Deliver selected memory with `prepare_context_transfer`, using the role's stable receiver scope from `cathulu://roles` and the active run ID. Pass only the returned full body or delta to the receiver. This records known-by state across chat replacement and avoids resending unchanged content.
+5. Put the task's relevant memory IDs and artifact IDs in the delegation packet. If no memory is relevant, state that explicitly in the packet instead of inventing references.
 6. On resumption, reload the compact current snapshot and request only changed or relevant context. Do not replay the conversation transcript as memory.
 7. After work, preserve exact results as evidence. Suggest canonical or episodic promotion only for durable, verified knowledge, retaining provenance and freshness. Project Manager reviews the suggestion; no agent deletes evidence.
 
@@ -51,12 +60,10 @@ The authoritative records and tools are in SQLite through the local Cathulu MCP 
 
 For every agent activation:
 
-1. Main Overseer starts or selects the project's auditable Cathulu run and prepares one `sub_overseer` delegation with the objective, allowed scope, acceptance criteria, constraints, relevant memory/artifact IDs, and report fields. This reserves the project's active Project Manager slot.
-2. Main Overseer performs the native Codex spawn with instructions to run the bounded memory activation first. The Project Manager calls `search_memory_candidates` for its delegation and receiver scope, transfers only selected context, and records a ready activation receipt. Main records `mark_delegation_dispatched` only after that receipt is ready; the Project Manager must not start repository work before activation.
-3. Project Manager prepares up to two `worker` delegations with `parent_delegation_id` set to its delegation ID, spawns each Worker for its bounded activation step, and requires each Worker to search, transfer selected context, and record a ready receipt before recording dispatch. The limit includes cancelled or replaced worker delegations.
+1. Main Overseer starts or selects the project's auditable Cathulu run and prepares one `sub_overseer` delegation with the objective, allowed scope, acceptance criteria, constraints, relevant memory/artifact IDs, and report fields.
+2. Main Overseer records dispatch and sends the exact task packet and context transfer to the Project Manager.
+3. Project Manager may prepare up to two `worker` delegations under its own assignment, transfer only the required project memory to each worker, and record each native Codex dispatch.
 4. Workers submit structured reports and evidence references. Project Manager reviews those reports and passes a concise, source-linked result to Main Overseer.
-5. After every child has reported or been cancelled, Project Manager records `complete_project_manager_assignment`; cancelling a PM is allowed only after no child remains unfinished. Main Overseer checks the Cathulu run, required QA gates, blockers, and project status, then reports the result to the owner.
+5. Main Overseer checks the Cathulu run, required QA gates, blockers, and project status, then reports the result to the owner.
 
-Cathulu records and validates this evidence; it does not itself spawn, steer, or terminate Codex agents. A receipt proves that a successful bounded search was recorded for the delegation's logical receiver, but Cathulu cannot inspect the native caller identity or the Codex tool list. The receiver must perform its own activation call, and native per-agent MCP availability still requires a runtime probe before a workflow is described as operational. The dispatch gate is an auditable workflow control, not a security boundary against a caller that deliberately records another agent's activation. Hook events are observations, not a complete authorization boundary. If required manager-to-worker spawning or memory tools are unavailable, do not flatten the hierarchy by having Main perform implementation work.
-
-
+Cathulu records and validates this evidence; it does not itself spawn, steer, or terminate Codex agents. Native nested spawning and per-agent MCP availability must be verified in the current Codex client before a workflow is described as running. Hook events are observations, not a complete authorization boundary. If the required manager-to-worker spawn path is unavailable, do not flatten the hierarchy by having Main spawn implementation workers directly.

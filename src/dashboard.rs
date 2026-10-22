@@ -1,4 +1,6 @@
-use crate::{delegation::DashboardDelegationSummary, ProjectSnapshot, Store};
+use crate::{
+    delegation::DashboardDelegationSummary, roles::LogicalAgentRole, ProjectSnapshot, Store,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -36,6 +38,20 @@ pub struct RunSummary {
     pub summary: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivitySummary {
+    /// First stored hook event ID; stable for this observed agent within the run.
+    pub id: i64,
+    pub run_id: i64,
+    pub agent_type: String,
+    pub model: Option<String>,
+    pub started_at: Option<i64>,
+    pub stopped_at: Option<i64>,
+    pub last_event_at: i64,
+    pub event_count: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -84,10 +100,12 @@ pub struct MemoryHealthSummary {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
+    pub logical_roles: Vec<LogicalAgentRole>,
     pub projects: Vec<ProjectSnapshot>,
     pub objectives: Vec<ObjectiveSummary>,
     pub blockers: Vec<BlockerSummary>,
     pub recent_runs: Vec<RunSummary>,
+    pub agent_activity: Vec<AgentActivitySummary>,
     pub failed_checks: Vec<FailedCheckSummary>,
     pub delegations: Vec<DashboardDelegationSummary>,
     pub memory_health: MemoryHealthSummary,
@@ -96,8 +114,9 @@ pub struct DashboardSnapshot {
 impl Store {
     pub fn dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let connection = self.connection()?;
+        let logical_roles = self.logical_agent_roles()?;
         let projects = self.list_projects()?;
-        let delegations = self.dashboard_delegations(10)?;
+        let delegations = self.dashboard_delegations(100)?;
         let objectives = connection
             .raw()
             .prepare(
@@ -153,7 +172,15 @@ impl Store {
                  LEFT JOIN tasks t ON t.id = r.task_id
                  LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
                  LEFT JOIN workflows w ON w.id = v.workflow_id
-                 ORDER BY r.started_at DESC, r.id DESC LIMIT 10",
+                 WHERE r.id IN (
+                     SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10
+                 ) OR NOT EXISTS (
+                     SELECT 1 FROM runs newer
+                     WHERE newer.project_id = r.project_id
+                       AND (newer.started_at > r.started_at
+                            OR (newer.started_at = r.started_at AND newer.id > r.id))
+                 )
+                 ORDER BY r.started_at DESC, r.id DESC",
             )
             .map_err(sqlite_error)?
             .query_map([], |row| {
@@ -173,13 +200,70 @@ impl Store {
             .map_err(sqlite_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sqlite_error)?;
+        let agent_activity = connection
+            .raw()
+            .prepare(
+                "SELECT MIN(h.event_id), h.run_id, h.agent_id_hash, MAX(h.agent_type),
+                        MAX(h.model_slug), MIN(CASE WHEN h.event_kind = 'started' THEN h.created_at END),
+                        MAX(CASE WHEN h.event_kind = 'stopped' THEN h.created_at END),
+                        MAX(h.created_at), COUNT(*)
+                 FROM codex_subagent_hook_events h
+                 WHERE (h.run_id IN (
+                     SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10
+                 ) OR EXISTS (
+                     SELECT 1 FROM runs current
+                     WHERE current.id = h.run_id
+                       AND NOT EXISTS (
+                           SELECT 1 FROM runs newer
+                           WHERE newer.project_id = current.project_id
+                             AND (newer.started_at > current.started_at
+                                  OR (newer.started_at = current.started_at AND newer.id > current.id))
+                       )
+                 ))
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM delegation_worker_bindings b
+                     JOIN delegations d ON d.id = b.delegation_id
+                     WHERE d.run_id = h.run_id
+                       AND b.session_hash = h.session_hash
+                       AND b.turn_hash = h.turn_hash
+                       AND b.agent_id_hash = h.agent_id_hash
+                   )
+                 GROUP BY h.run_id, h.agent_id_hash
+                 ORDER BY MAX(h.created_at) DESC, MIN(h.event_id) DESC
+                 LIMIT 100",
+            )
+            .map_err(sqlite_error)?
+            .query_map([], |row| {
+                Ok(AgentActivitySummary {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    agent_type: row.get(3)?,
+                    model: row.get(4)?,
+                    started_at: row.get(5)?,
+                    stopped_at: row.get(6)?,
+                    last_event_at: row.get(7)?,
+                    event_count: row.get(8)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
         let failed_checks = connection
             .raw()
             .prepare(
                 "SELECT q.id, q.run_id, p.name, q.check_key, q.mandatory, q.status, q.details_json, q.updated_at
                  FROM quality_checks q JOIN runs r ON r.id = q.run_id JOIN projects p ON p.id = r.project_id
                  WHERE q.status IN ('failed', 'inconclusive')
-                 ORDER BY q.updated_at DESC, q.id DESC LIMIT 20",
+                   AND (r.id IN (
+                       SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 10
+                   ) OR NOT EXISTS (
+                       SELECT 1 FROM runs newer
+                       WHERE newer.project_id = r.project_id
+                         AND (newer.started_at > r.started_at
+                              OR (newer.started_at = r.started_at AND newer.id > r.id))
+                   ))
+                 ORDER BY q.updated_at DESC, q.id DESC LIMIT 100",
             )
             .map_err(sqlite_error)?
             .query_map([], |row| {
@@ -345,10 +429,12 @@ impl Store {
             memory_health.bytes_collected = snapshot.bytes_collected;
         }
         Ok(DashboardSnapshot {
+            logical_roles,
             projects,
             objectives,
             blockers,
             recent_runs,
+            agent_activity,
             failed_checks,
             delegations,
             memory_health,
