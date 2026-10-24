@@ -36,4 +36,4 @@ GitHub reported `main` unprotected, no repository rulesets and zero Actions work
 
 ## Delivery record
 
-Local validation passed on the integration branch. The PR URL and checkpoint reference are added after push; GitHub's PR state is authoritative for the merge outcome. Final local synchronization uses a fast-forward to the observed remote merge commit and a clean working-tree check. Source/build evidence above is separate from loaded-process, live-provider and product-benefit evidence.
+Validated source checkpoint `74afc1fd56a105fd80cc345e239db55eb9d0f444` was committed and pushed on `codex/sync-pending-work-20261025`, then submitted as [PR #33](https://github.com/jmsb505/cathulu/pull/33). This delivery-record update is a documentation-only follow-up on the same PR. GitHub's PR state is authoritative for the final merge outcome; it is not inferred from submission. Final local synchronization uses a fast-forward to the observed remote merge commit and a clean working-tree check. Source/build evidence above is separate from loaded-process, live-provider and product-benefit evidence.

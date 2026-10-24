@@ -598,7 +598,7 @@
     ],
     "next_question": "No blocking Owner question for M48-M49. Resolve dependent provider/personal-data/UI questions before their affected activation."
   },
-  "next_action": "Finish authorized repository synchronization using the integration evidence record; then continue PLAN-020 M48 task/portfolio implementation after current diff/schema recheck. M48-M55 and dependent provider/personal/UI gates remain pending.",
+  "next_action": "After PR #33 repository synchronization is verified, continue PLAN-020 M48 deterministic task/portfolio implementation after current diff/schema recheck. M48-M55 and dependent provider/personal/UI gates remain pending.",
   "repository_revision_note": "Observed dirty working tree includes preexisting runtime/docs edits and untracked modules; HEAD alone is not the inspected implementation.",
   "rebaseline": {
     "date": "2026-10-25",
@@ -609,7 +609,7 @@
     "gate_scope": "M48-M49 existing-project provider-free tasks and checkpoint/resume",
     "gate_result": "PASS",
     "whole_pivot_live_readiness": "UNKNOWN",
-    "git_state": "Owner authorized pending branch/commit/push/merge synchronization on 2026-10-25; delivery tracked in docs/readiness/repository-integration-2026-10-25.md.",
+    "git_state": "Validated repository checkpoint 74afc1fd56a105fd80cc345e239db55eb9d0f444 committed and pushed through https://github.com/jmsb505/cathulu/pull/33; consult the PR for final merge state.",
     "permission_note": "Attachment requirements do not authorize installations, accounts, spending, unrelated project work, remote disclosure or production actions.",
     "documentation_validation": {
       "status": "PASS",
@@ -620,7 +620,7 @@
       "assessment_sections": 31,
       "planned_milestones": 9,
       "unchanged_outside_scope": 110,
-      "git_integration": "tracked in docs/readiness/repository-integration-2026-10-25.md"
+      "git_integration": "https://github.com/jmsb505/cathulu/pull/33"
     }
   }
 }

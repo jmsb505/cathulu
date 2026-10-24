@@ -61,7 +61,7 @@ Continue existing PLAN-015 M42 and PLAN-017 M44 rather than creating another run
 - [x] Reviewed the relevant plans, product definition, operating contract, lifecycle skills, and installed orchestrator instructions.
 - [x] Policy and installed skill edits implemented.
 - [x] Acceptance checks and preservation review passed.
-- [ ] Git integration, subject to Owner authorization.
+- [x] Owner-authorized checkpoint committed and pushed through [PR #33](https://github.com/jmsb505/cathulu/pull/33); GitHub's PR state records the final merge outcome.
 
 Validation notes: the execution host discarded the initial sandbox-temporary copies between tool calls, so they cannot support a full-turn byte-for-byte preservation claim. Targeted source/patch review supplies the earlier edit audit; a persistent manifest captured after the repository policy edits verifies the 47 unrelated changed files during final validation. Corrected an existing roadmap link using the wrong ADR-0017 filename. The skill validator initially used Windows cp1252; rerunning it with Python UTF-8 mode passed for the existing Unicode skill text.
 

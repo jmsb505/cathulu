@@ -242,7 +242,7 @@ M47: remove only this turn's added sections/new documents using its patch, prese
 
 ## Progress and implementation discoveries
 
-- M47 source inspection/design and local documentation validation passed; executable pivot work has not started. Git integration remains pending, so M47 is not marked merged/fully delivered.
+- M47 source inspection/design and local documentation validation passed; executable pivot work has not started. The Owner-authorized source checkpoint was committed, pushed and submitted in [PR #33](https://github.com/jmsb505/cathulu/pull/33); GitHub's PR state records the final merge outcome.
 - SQLite, FTS5, logical identity, report reviews and durable event routing already exist; the pivot should extend them.
 - Existing optional provider adapters are specialist APIs, not agent providers.
 - Current writer-workspace allocation and fresh-session known-by semantics are migration gaps.
