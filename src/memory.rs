@@ -138,7 +138,178 @@ pub struct MemoryRetrievalResult {
     pub hot_budget_bytes: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMemoryReview {
+    pub run_id: i64,
+    pub project_id: i64,
+    pub disposition: String,
+    pub reason_code: String,
+    pub memory_ids: Vec<i64>,
+    pub recorded_at: i64,
+}
+
 impl Store {
+    /// Record the required memory review for an open project run without retaining
+    /// memory bodies, prompts, transcripts, or raw tool output in the event ledger.
+    pub fn record_project_memory_review(
+        &self,
+        run_id: i64,
+        disposition: &str,
+        reason_code: &str,
+        memory_ids: &[i64],
+    ) -> Result<ProjectMemoryReview, String> {
+        if !matches!(disposition, "knowledge_saved" | "no_durable_change") {
+            return Err(
+                "memory review disposition must be knowledge_saved or no_durable_change"
+                    .to_string(),
+            );
+        }
+        let allowed_reason = match disposition {
+            "knowledge_saved" => matches!(
+                reason_code,
+                "project_profile_initialized" | "durable_knowledge_updated"
+            ),
+            "no_durable_change" => matches!(
+                reason_code,
+                "existing_knowledge_remains_current" | "task_produced_no_reusable_knowledge"
+            ),
+            _ => false,
+        };
+        if !allowed_reason {
+            return Err("memory review reason code is not valid for its disposition".to_string());
+        }
+        if memory_ids.len() > 32 {
+            return Err("a project memory review may reference at most 32 memories".to_string());
+        }
+        if disposition == "knowledge_saved" && memory_ids.is_empty() {
+            return Err("knowledge_saved requires at least one accepted memory ID".to_string());
+        }
+        if disposition == "no_durable_change" && !memory_ids.is_empty() {
+            return Err("no_durable_change must not include memory IDs".to_string());
+        }
+        let mut sorted_memory_ids = memory_ids.to_vec();
+        sorted_memory_ids.sort_unstable();
+        if sorted_memory_ids.iter().any(|id| *id <= 0)
+            || sorted_memory_ids.windows(2).any(|pair| pair[0] == pair[1])
+        {
+            return Err("memory review IDs must be positive and unique".to_string());
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        let (project_id, run_status): (i64, String) = transaction
+            .query_row(
+                "SELECT project_id, status FROM runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("run {run_id} was not found"))?;
+        let payload = serde_json::json!({
+            "projectId": project_id,
+            "disposition": disposition,
+            "reasonCode": reason_code,
+            "memoryIds": sorted_memory_ids
+        });
+        if let Some((existing_payload, recorded_at)) = transaction
+            .query_row(
+                "SELECT payload_json, created_at FROM events
+                 WHERE aggregate_type = 'run' AND aggregate_id = ?1 AND event_type = 'project_memory_reviewed'
+                 ORDER BY id LIMIT 1",
+                params![run_id.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            let existing: serde_json::Value = serde_json::from_str(&existing_payload)
+                .map_err(|error| format!("stored project memory review is invalid: {error}"))?;
+            if existing == payload {
+                transaction.commit().map_err(sqlite_error)?;
+                return Ok(ProjectMemoryReview {
+                    run_id,
+                    project_id,
+                    disposition: disposition.to_string(),
+                    reason_code: reason_code.to_string(),
+                    memory_ids: sorted_memory_ids,
+                    recorded_at,
+                });
+            }
+            return Err(format!("run {run_id} already has a different memory review"));
+        }
+
+        if run_status != "running" {
+            return Err(format!("run {run_id} is not open for memory review"));
+        }
+        let run_event_id: i64 = transaction
+            .query_row(
+                "SELECT id FROM events
+                 WHERE aggregate_type = 'run' AND aggregate_id = ?1 AND event_type = 'run_started'
+                 ORDER BY id LIMIT 1",
+                params![run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("run {run_id} has no start event"))?;
+
+        let current_summaries = current_project_summary_ids(&transaction, project_id, now())?;
+        let mut has_pre_run_summary = false;
+        for memory_id in &current_summaries {
+            if project_summary_accepted_before_run(&transaction, *memory_id, run_event_id)? {
+                has_pre_run_summary = true;
+                break;
+            }
+        }
+
+        match disposition {
+            "knowledge_saved" => {
+                for memory_id in &sorted_memory_ids {
+                    validate_project_review_memory(&transaction, *memory_id, project_id, now())?;
+                }
+                let has_current_summary = current_summaries
+                    .iter()
+                    .any(|id| sorted_memory_ids.contains(id));
+                if current_summaries.is_empty() || (!has_pre_run_summary && !has_current_summary) {
+                    return Err("the first project memory review must include an accepted, current canonical project summary".to_string());
+                }
+                if !has_pre_run_summary && reason_code != "project_profile_initialized" {
+                    return Err("the first project profile must use reason_code project_profile_initialized".to_string());
+                }
+                if has_pre_run_summary && reason_code == "project_profile_initialized" {
+                    return Err("project_profile_initialized is only valid when this run creates the first current project summary".to_string());
+                }
+            }
+            "no_durable_change" => {
+                if !has_pre_run_summary {
+                    return Err("no_durable_change requires a current accepted canonical project summary that existed before this run".to_string());
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let recorded_at = now();
+        crate::events::append_event(
+            &transaction,
+            "run",
+            run_id,
+            "project_memory_reviewed",
+            &payload,
+            recorded_at,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(ProjectMemoryReview {
+            run_id,
+            project_id,
+            disposition: disposition.to_string(),
+            reason_code: reason_code.to_string(),
+            memory_ids: sorted_memory_ids,
+            recorded_at,
+        })
+    }
+
     pub fn create_memory(&self, input: &MemoryCreateInput) -> Result<MemoryRecord, String> {
         validate_memory_input(input)?;
         let body = input.body.trim();
@@ -1214,6 +1385,161 @@ fn validate_memory_input(input: &MemoryCreateInput) -> Result<(), String> {
     }
     if input.sources.len() > 32 || input.artifact_ids.len() > 64 {
         return Err("memory provenance exceeds the per-record reference limit".to_string());
+    }
+    Ok(())
+}
+
+fn current_project_summary_ids(
+    transaction: &Transaction<'_>,
+    project_id: i64,
+    current_time: i64,
+) -> Result<Vec<i64>, String> {
+    let scope_key = format!("project:{project_id}");
+    let mut statement = transaction
+        .prepare(
+            "SELECT m.id
+             FROM memories m
+             LEFT JOIN memory_sources s ON s.memory_id = m.id
+             LEFT JOIN projects p ON p.id = m.freshness_repo_id
+             WHERE m.scope_key = ?1 AND m.memory_class = 'canonical' AND m.kind = 'summary'
+               AND m.review_state = 'accepted' AND m.temperature IN ('hot', 'warm')
+               AND m.superseded_by_id IS NULL AND m.invalidated_at IS NULL
+               AND (m.valid_from IS NULL OR m.valid_from <= ?2)
+               AND (m.valid_until IS NULL OR m.valid_until > ?2)
+               AND (m.freshness_repo_id IS NULL OR
+                    (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+               AND (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                    SELECT 1 FROM project_graphify_snapshots g
+                    WHERE g.project_id = m.freshness_repo_id
+                      AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                      AND g.status = 'available'))
+             GROUP BY m.id
+             HAVING COUNT(s.source_id) > 0
+               AND SUM(CASE WHEN s.source_type <> 'event' THEN 1 ELSE 0 END) > 0
+             ORDER BY m.id DESC",
+        )
+        .map_err(sqlite_error)?;
+    let rows = statement
+        .query_map(params![scope_key, current_time], |row| row.get::<_, i64>(0))
+        .map_err(sqlite_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+}
+
+fn project_summary_accepted_before_run(
+    transaction: &Transaction<'_>,
+    memory_id: i64,
+    run_started_event_id: i64,
+) -> Result<bool, String> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM events e
+               WHERE e.aggregate_type = 'memory' AND e.aggregate_id = CAST(?1 AS TEXT)
+                 AND e.event_type = 'memory_reviewed'
+                 AND json_extract(e.payload_json, '$.decision') = 'accepted'
+                 AND e.id < ?2
+             )",
+            params![memory_id, run_started_event_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
+}
+
+fn validate_project_review_memory(
+    transaction: &Transaction<'_>,
+    memory_id: i64,
+    project_id: i64,
+    current_time: i64,
+) -> Result<(), String> {
+    let (
+        scope_key,
+        memory_class,
+        review_state,
+        temperature,
+        superseded_by,
+        invalidated_at,
+        valid_from,
+        valid_until,
+        source_count,
+        non_event_source_count,
+    ): (
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+    ) = transaction
+        .query_row(
+            "SELECT m.scope_key, m.memory_class, m.review_state, m.temperature,
+                    m.superseded_by_id, m.invalidated_at, m.valid_from, m.valid_until,
+                    COUNT(s.source_id),
+                    SUM(CASE WHEN s.source_type <> 'event' THEN 1 ELSE 0 END)
+             FROM memories m LEFT JOIN memory_sources s ON s.memory_id = m.id
+             WHERE m.id = ?1 GROUP BY m.id",
+            params![memory_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(9)?.unwrap_or(0),
+                ))
+            },
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| format!("project memory {memory_id} was not found"))?;
+
+    if scope_key != format!("project:{project_id}") {
+        return Err(format!(
+            "memory {memory_id} is outside run project {project_id}"
+        ));
+    }
+    if !matches!(memory_class.as_str(), "canonical" | "episodic")
+        || review_state != "accepted"
+        || temperature == "cold"
+        || superseded_by.is_some()
+        || invalidated_at.is_some()
+        || valid_from.is_some_and(|from| from > current_time)
+        || valid_until.is_some_and(|until| until <= current_time)
+        || source_count == 0
+        || non_event_source_count == 0
+    {
+        return Err(format!(
+            "memory {memory_id} must be accepted, current, non-COLD, project-scoped, and source-backed"
+        ));
+    }
+    let freshness_current: bool = transaction
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM memories m
+               LEFT JOIN projects p ON p.id = m.freshness_repo_id
+               WHERE m.id = ?1
+                 AND (m.freshness_repo_id IS NULL OR
+                      (p.id IS NOT NULL AND m.freshness_git_commit IS p.git_head))
+                 AND (json_extract(m.freshness_basis_json, '$.graphSnapshot') IS NULL OR EXISTS(
+                      SELECT 1 FROM project_graphify_snapshots g
+                      WHERE g.project_id = m.freshness_repo_id
+                        AND g.snapshot_id = json_extract(m.freshness_basis_json, '$.graphSnapshot')
+                        AND g.status = 'available'))
+             )",
+            params![memory_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
+    if !freshness_current {
+        return Err(format!("memory {memory_id} has a stale freshness basis"));
     }
     Ok(())
 }

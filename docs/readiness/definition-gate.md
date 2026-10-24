@@ -1,5 +1,33 @@
 # Definition gate
 
+## Pivot first-slice definition — 2026-10-25
+
+Scope: PLAN-020 M48-M49, provider-free planning state for existing registered projects and checkpoint/resume.
+Overall: **PASS** for this bounded definition/planning handoff.
+Unresolved blocking rows: none for this scope. This is not whole-pivot integration readiness, implementation evidence, or permission to activate providers, collect personal information or resume desktop work.
+
+| ID | Status | Blocking | Evidence | Owner / next action | Dependent scope |
+| --- | --- | --- | --- | --- | --- |
+| purpose | PASS | true | [Current purpose](../project-definition.md#purpose), [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md) | Owner direction recorded; development implements | M48-M49 |
+| actors-workflows | PASS | true | [Pivot scope](../project-definition.md#pivot-scope-and-invariants), assessment sections 14 and 28 | Development; preserve Owner command/agent proposal separation | M48-M49 |
+| scope-mvp | PASS | true | [Assessment](../pivot-migration.md) sections 12, 14, 28 and 31; [PLAN-020](../plans/PLAN-020-mixed-provider-personal-project-os.md) M48-M49 | Development; existing-project slice without providers/UI/personal collection | M48-M49 |
+| domain-invariants | PASS | true | Assessment sections 12-14 and 18; existing [workflow](../../src/workflow.rs) / [schema](../../src/migrations.rs) | Development; preserve IDs, objective ownership, QA, immutable checkpoints and audited transitions | M48-M49 |
+| drivers | PASS | true | Assessment section 7; [project quality drivers](../project-definition.md#constraints-and-quality-drivers) retained under ADR-0022 | Development; prove provider absence, integrity and restart rather than invent benefit thresholds | M48-M49 |
+| architecture | PASS | true | Assessment sections 2, 7, 12-14; [Store](../../src/lib.rs), [MCP](../../src/mcp.rs) | Development; extend current in-process Rust/SQLite seams | M48-M49 |
+| security-baseline | PASS | true | Assessment sections 17, 18, 22-24; [operating contract](../agent-operating-contract.md), [capability tests](../../tests/role_capabilities.rs) | Development; test scope denial, revision/acceptance guards and no new provider disclosure | M48-M49 |
+| integrations | PASS | true | Existing local SQLite/Git/MCP seams in assessment section 2; no provider integration required by first slice | Development; public MCP fixture validation, providers absent | M48-M49 |
+| feasibility | PASS | true | Existing task/decision/event/schema code and restart fixture in [MCP tests](../../tests/mcp_vertical_slice.rs); assessment sections 22 and 28 | Development; recheck dirty diffs/schema version before isolated migrations; no new external prerequisite | M48-M49 |
+| validation | PASS | true | Assessment section 27 and PLAN-020 M48-M49 acceptance/validation | Development; populated migration, failure/recovery, permission and zero-provider proofs | M48-M49 |
+| documentation-profile | PASS | true | [Authority map](../README.md), [profile](../pivot-migration.md#development-skills--tooling-profile), [state](../kickoff-state.json), ADR-0022 and PLAN-020 | Development; keep evidence and intended design separate | Planning handoff |
+
+All 11 scoped criteria PASS by the definition-gate aggregation rule. This establishes a coherent design and validation strategy, not passing future tests. M47's documentation checks and Git integration state are recorded in PLAN-020.
+
+Deferred dependency gates remain unresolved in the single [kickoff question ledger](../kickoff-state.json): Claude installation/subscription-safe configuration/permissions (P-Q1), personal collection/disclosure (P-Q2), broader repository identity (P-Q3), actual current dispatcher observations (P-Q4), and desktop resumption (P-Q5). Their affected scopes remain pending. The Owner resolved P-Q6's integration authorization through the subsequent push/merge request; delivery evidence is in the [repository integration record](repository-integration-2026-10-25.md). Whole mixed-provider live readiness is **UNKNOWN**; this bounded PASS does not promote it. PLAN-015 M42 and PLAN-017 M44 retain their own acceptance criteria and evidence status.
+
+## Historical initial definition — 2026-10-20
+
+The record below is preserved as dated initial-kickoff evidence. Its empty-repository feasibility premise and Codex-only first increment are not current runtime observations or the active pivot definition.
+
 Date: 2026-10-20
 Scope: Cathulu product definition and first coherent Phase 1 increment
 Overall: **PASS**

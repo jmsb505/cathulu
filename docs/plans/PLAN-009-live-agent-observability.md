@@ -146,7 +146,7 @@ All new records use the existing append-only events table. UI projections and th
 - The existing event table already has append-only triggers, aggregate indexing, and unique external event IDs. This supports progress/action history without a schema migration.
 - The dashboard remains SQLite-backed and read-only. Only a narrow typed MCP operation writes progress events.
 - Progress statements remain explicitly self-reported; hook events and deterministic QA/Git facts keep their existing authority.
-- A 15-minute freshness threshold changes only the visual state of old signals; it never asserts that an agent stopped. Main uses first-completion/attention monitoring and checks snapshots during longer tasks.
+- A 15-minute freshness threshold changes only the visual state of old signals; it never asserts that an agent stopped. M28 used first-completion/attention monitoring and snapshot checks while Main remained active; the owner later clarified that this is insufficient. PLAN-015 replaces that scheduling behavior, not the freshness or evidence model.
 - The Windows matched pair is published at `target/mcp-versions/585CAB4839C1DA70182E9852`; the stable Codex path is `target/mcp-current`.
 - Source fingerprint: `585CAB4839C1DA70182E98525A7D635B2005A80DC5B3C6B08B6E66EE8A9D6EDC`.
 - Source revision: `453b006eaa791ed8365e96ea4b3af1dd4e9597a6` with `workingTreeDirty: true` at build time.
@@ -156,3 +156,7 @@ All new records use the existing append-only events table. UI projections and th
 ## Completion evidence
 
 M28 acceptance criteria and the matched local build gate passed on 2026-10-22. The built pair is published behind `target/mcp-current`. Runtime reconnection and native visual smoke remain pending; no user-visible window was opened during the build.
+
+## Scheduling follow-up
+
+M28's first-update-then-monitor instruction still requires Main to remain active while other agents work. The owner clarified that this does not meet the intended behavior. Keep M28's event ledger and visual evidence; use [PLAN-015](PLAN-015-event-driven-role-orchestration.md) for asynchronous dispatch, passive routine updates, and event-triggered short Main turns. This follow-up is not implemented by M28.

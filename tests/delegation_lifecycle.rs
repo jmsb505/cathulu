@@ -1,3 +1,4 @@
+use cathulu_core::Store;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
@@ -44,6 +45,7 @@ fn run_initialized_server(data_dir: &Path, requests: &[Value]) -> Vec<Value> {
     messages.extend_from_slice(requests);
     let mut child = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"))
         .env("CATHULU_DATA_DIR", data_dir)
+        .env("CATHULU_ROLE_DISPATCHER_ENABLED", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -94,7 +96,7 @@ fn resource_text(response: &Value) -> Value {
     let text = response
         .pointer("/result/contents/0/text")
         .and_then(Value::as_str)
-        .expect("resource result has text content");
+        .unwrap_or_else(|| panic!("resource result has no text content: {response}"));
     serde_json::from_str(text).expect("resource text is JSON")
 }
 
@@ -132,9 +134,38 @@ fn tool_error(data_dir: &Path, name: &str, arguments: Value) -> Value {
 }
 
 fn rollback_schema_twelve(database: &rusqlite::Connection) {
+    // These fixtures remove older tables to exercise upgrades with populated legacy data.
+    // Remove later dependents and migration markers too, or Store would mistake the
+    // partially downgraded fixture for an already current database.
     database
         .execute_batch(
-            "DROP TRIGGER IF EXISTS projects_create_logical_pm;
+            "DROP TABLE IF EXISTS owner_approval_relays;
+             DROP TABLE IF EXISTS main_overseer_capability;
+             DROP TABLE IF EXISTS role_turn_inbox_events;
+             DROP TABLE IF EXISTS role_turn_inbox;
+             DROP TABLE IF EXISTS role_event_cursor;
+             DROP TABLE IF EXISTS role_thread_capabilities;
+             DROP TABLE IF EXISTS role_dispatch_events;
+             DROP TABLE IF EXISTS role_dispatch_outbox;
+             DROP TABLE IF EXISTS role_thread_bindings;
+             DROP TABLE IF EXISTS role_dispatcher_lease;
+             DELETE FROM schema_migrations WHERE version >= 14;
+             DROP TRIGGER IF EXISTS owner_approval_requests_no_update;
+             DROP TRIGGER IF EXISTS owner_approval_requests_no_delete;
+             DROP TRIGGER IF EXISTS owner_approval_decisions_no_update;
+             DROP TRIGGER IF EXISTS owner_approval_decisions_no_delete;
+             DROP TABLE IF EXISTS owner_approval_decisions;
+             DROP TABLE IF EXISTS owner_approval_requests;
+             DROP TRIGGER IF EXISTS role_work_plans_no_update;
+             DROP TRIGGER IF EXISTS role_work_plans_no_delete;
+             DROP TRIGGER IF EXISTS role_work_plan_reviews_no_update;
+             DROP TRIGGER IF EXISTS role_work_plan_reviews_no_delete;
+             DROP TABLE IF EXISTS role_work_plan_reviews;
+             DROP TABLE IF EXISTS delegation_work_plan_refs;
+             DROP TABLE IF EXISTS role_work_plans;
+             ALTER TABLE worker_report_reviews DROP COLUMN reviewer_role;
+             DELETE FROM schema_migrations WHERE version = 13;
+             DROP TRIGGER IF EXISTS projects_create_logical_pm;
              DROP TRIGGER IF EXISTS logical_agent_role_identity_immutable;
              DROP TRIGGER IF EXISTS project_manager_assignment_role_valid;
              DROP TRIGGER IF EXISTS project_manager_assignment_role_immutable;
@@ -164,6 +195,99 @@ fn hierarchy_packet() -> Value {
         "referenced_artifact_ids": [],
         "requested_report_fields": ["summary", "changed_paths", "checks", "blockers"]
     })
+}
+
+fn main_workflow_brief(label: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "desired_outcome": format!("Complete the bounded {label} project task."),
+        "phases": ["Inspect current state", "Perform scoped work", "Verify and report"],
+        "project_boundary": ["Work only in the registered project repository"],
+        "dependencies": [],
+        "acceptance_criteria": ["Provide source-backed evidence and deterministic QA results"],
+        "owner_approval_gates": ["Escalate credentials, destructive changes, and out-of-scope work"],
+        "known_risks": []
+    })
+}
+
+fn record_project_manager_plan(data_dir: &Path, manager_id: i64, tasks: &[(&str, Value)]) -> Value {
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open PM planning fixture");
+    let (project_id, run_id): (i64, i64) = database
+        .query_row(
+            "SELECT project_id, run_id FROM delegations WHERE id = ?1",
+            [manager_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read PM assignment scope");
+    drop(database);
+    let plan = json!({
+        "schema_version": 1,
+        "summary": "Decompose the project brief into reviewable work and report verified outcomes.",
+        "manager_actions": ["Coordinate the project and review each Worker report"],
+        "worker_tasks": tasks.iter().map(|(key, packet)| json!({
+            "task_key": key,
+            "task_packet": packet
+        })).collect::<Vec<_>>()
+    });
+    let recorded = call_tool(
+        data_dir,
+        "record_role_work_plan",
+        json!({
+            "project_id": project_id,
+            "run_id": run_id,
+            "plan_level": "project_manager",
+            "manager_delegation_id": manager_id,
+            "plan": plan,
+            "idempotency_key": format!("test-pm-plan-{manager_id}")
+        }),
+    );
+    let plan_id = recorded["id"].as_i64().expect("PM work plan ID");
+    call_tool(
+        data_dir,
+        "review_role_work_plan",
+        json!({
+            "plan_id": plan_id,
+            "reviewer_role": "main_overseer",
+            "decision": "accepted",
+            "note": "The scoped task breakdown matches the Main project brief.",
+            "idempotency_key": format!("test-main-plan-review-{manager_id}")
+        }),
+    );
+    recorded
+}
+
+fn submit_and_accept_project_manager_report(data_dir: &Path, manager_id: i64) {
+    call_tool(
+        data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": manager_id,
+            "worker_report": {
+                "schema_version": 1,
+                "summary": "The project plan was completed and reviewed against its acceptance criteria.",
+                "outcome": "completed",
+                "changed_files": [],
+                "commits": [],
+                "check_results": [],
+                "blockers": [],
+                "artifact_ids": [],
+                "quality_check_ids": []
+            },
+            "idempotency_key": format!("test-pm-report-{manager_id}")
+        }),
+    );
+    call_tool(
+        data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id": manager_id,
+            "reviewer_role": "main_overseer",
+            "decision": "accepted",
+            "note": "The Project Manager report is accepted as a report; deterministic QA remains authoritative.",
+            "idempotency_key": format!("test-main-pm-review-{manager_id}")
+        }),
+    );
 }
 
 fn activation_args(
@@ -238,6 +362,17 @@ fn create_task_and_run(data_dir: &Path, project_id: i64, label: &str) -> (i64, i
         json!({ "project_id": project_id, "objective_id": objective_id, "task_id": task_id }),
     );
     let run_id = run["id"].as_i64().expect("run ID");
+    call_tool(
+        data_dir,
+        "record_role_work_plan",
+        json!({
+            "project_id": project_id,
+            "run_id": run_id,
+            "plan_level": "main",
+            "plan": main_workflow_brief(label),
+            "idempotency_key": format!("test-main-plan-{run_id}")
+        }),
+    );
     (objective_id, task_id, run_id)
 }
 
@@ -505,6 +640,7 @@ fn worker_reports_are_bounded_idempotent_reviewable_and_do_not_bypass_parent_qua
 
     let review_args = json!({
         "delegation_id": delegation_id,
+        "reviewer_role": "main_overseer",
         "decision": "needs_follow_up",
         "note": "Attach the parent verification result before accepting.",
         "idempotency_key": "m7-review-attempt-1"
@@ -526,6 +662,7 @@ fn worker_reports_are_bounded_idempotent_reviewable_and_do_not_bypass_parent_qua
         "review_delegation_report",
         json!({
             "delegation_id": delegation_id,
+            "reviewer_role": "main_overseer",
             "decision": "accepted",
             "note": "Worker evidence reviewed; parent QA remains authoritative.",
             "idempotency_key": "m7-review-attempt-2"
@@ -550,6 +687,40 @@ fn worker_reports_are_bounded_idempotent_reviewable_and_do_not_bypass_parent_qua
     assert_eq!(
         before_finish_dashboard["delegations"][0]["report"]["reviewStatus"],
         json!("accepted")
+    );
+    let project_summary = call_tool(
+        &data_dir,
+        "create_memory",
+        json!({
+            "scope_type": "project",
+            "scope_id": project_ids[0].to_string(),
+            "memory_class": "canonical",
+            "temperature": "hot",
+            "kind": "summary",
+            "body": "Synthetic project context for the worker-report contract fixture.",
+            "sources": [{ "source_type": "project", "source_id": project_ids[0].to_string() }],
+            "artifact_ids": [],
+            "importance": 0.9,
+            "confidence": 0.95,
+            "active": true,
+            "protected": false
+        }),
+    );
+    let project_summary_id = project_summary["id"].as_i64().expect("summary memory ID");
+    call_tool(
+        &data_dir,
+        "review_memory_candidate",
+        json!({ "memory_id": project_summary_id, "decision": "accepted" }),
+    );
+    call_tool(
+        &data_dir,
+        "record_project_memory_review",
+        json!({
+            "run_id": parent_run_id,
+            "disposition": "knowledge_saved",
+            "reason_code": "project_profile_initialized",
+            "memory_ids": [project_summary_id]
+        }),
     );
     let finished = call_tool(
         &data_dir,
@@ -695,6 +866,11 @@ fn worker_parent_delegation_is_stored_and_returned_through_public_mcp() {
         "mark_delegation_dispatched",
         json!({ "delegation_id": manager_id }),
     );
+    record_project_manager_plan(
+        &data_dir,
+        manager_id,
+        &[("worker-one", task_packet.clone())],
+    );
 
     let worker = call_tool(
         &data_dir,
@@ -705,6 +881,7 @@ fn worker_parent_delegation_is_stored_and_returned_through_public_mcp() {
             "run_id": run_id,
             "role": "worker",
             "task_packet": task_packet,
+            "plan_task_key": "worker-one",
             "idempotency_key": "hierarchy-worker",
             "parent_delegation_id": manager_id
         }),
@@ -860,6 +1037,8 @@ fn project_manager_slot_is_unique_auditable_and_released_on_completion() {
         "mark_delegation_dispatched",
         json!({ "delegation_id": first_id }),
     );
+    record_project_manager_plan(&data_dir, first_id, &[]);
+    submit_and_accept_project_manager_report(&data_dir, first_id);
     let completed = call_tool(
         &data_dir,
         "complete_project_manager_assignment",
@@ -1043,19 +1222,29 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         "mark_delegation_dispatched",
         json!({ "delegation_id": manager_id }),
     );
+    let worker_packet = hierarchy_packet();
+    record_project_manager_plan(
+        &data_dir,
+        manager_id,
+        &[
+            ("first", worker_packet.clone()),
+            ("second", worker_packet.clone()),
+            ("third", worker_packet.clone()),
+        ],
+    );
 
-    let make_worker = |key: &str| {
+    let make_worker = |key: &str, task_key: &str| {
         call_tool(
             &data_dir,
             "prepare_delegation",
             json!({
                 "project_id": 1, "task_id": task_id, "run_id": run_id,
                 "role": "worker", "parent_delegation_id": manager_id,
-                "task_packet": hierarchy_packet(), "idempotency_key": key
+                "task_packet": hierarchy_packet(), "plan_task_key": task_key, "idempotency_key": key
             }),
         )
     };
-    let first = make_worker("hierarchy-worker-cap-first");
+    let first = make_worker("hierarchy-worker-cap-first", "first");
     let first_id = first["id"].as_i64().expect("first worker ID");
     call_tool(
         &data_dir,
@@ -1070,7 +1259,7 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-worker-cap-second"
+            "task_packet": hierarchy_packet(), "plan_task_key": "second", "idempotency_key": "hierarchy-worker-cap-second"
         }),
     );
     let second_args = tool_call(
@@ -1079,7 +1268,7 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-worker-cap-third"
+            "task_packet": hierarchy_packet(), "plan_task_key": "third", "idempotency_key": "hierarchy-worker-cap-third"
         }),
     );
     let first = std::thread::spawn(move || {
@@ -1125,7 +1314,9 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": rejected_key
+            "task_packet": hierarchy_packet(),
+            "plan_task_key": if rejected_key == "hierarchy-worker-cap-second" { "second" } else { "third" },
+            "idempotency_key": rejected_key
         }),
     );
     assert_eq!(
@@ -1197,6 +1388,7 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
         "cancel_delegation",
         json!({ "delegation_id": second_id }),
     );
+    submit_and_accept_project_manager_report(&data_dir, manager_id);
     let completed = call_tool(
         &data_dir,
         "complete_project_manager_assignment",
@@ -1208,7 +1400,7 @@ fn worker_limit_counts_cancelled_replacements_and_rejects_a_third() {
 }
 
 #[test]
-fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
+fn worker_task_cannot_be_prepared_until_main_accepts_the_dispatched_pm_plan() {
     let root = unique_temp_dir("hierarchy-parent-dispatch");
     let data_dir = root.join("data");
     run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
@@ -1233,58 +1425,49 @@ fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
         }),
     );
     let manager_id = manager["id"].as_i64().expect("manager ID");
-    let worker = call_tool(
+    let premature_worker = tool_error(
         &data_dir,
         "prepare_delegation",
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-parent-dispatch-worker"
+            "task_packet": hierarchy_packet(), "plan_task_key": "worker-one",
+            "idempotency_key": "hierarchy-parent-dispatch-worker-premature"
         }),
     );
-    let worker_id = worker["id"].as_i64().expect("worker ID");
+    assert!(premature_worker
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("record a work plan"));
     activate_with_no_relevant_memory(
         &data_dir,
         manager_id,
         "project-manager:1",
         "hierarchy-parent-dispatch-manager-activation",
     );
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    record_project_manager_plan(&data_dir, manager_id, &[("worker-one", hierarchy_packet())]);
+    let worker = call_tool(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": hierarchy_packet(), "plan_task_key": "worker-one",
+            "idempotency_key": "hierarchy-parent-dispatch-worker"
+        }),
+    );
+    let worker_id = worker["id"].as_i64().expect("worker ID");
     activate_with_no_relevant_memory(
         &data_dir,
         worker_id,
         "agent:hierarchy-parent-worker",
         "hierarchy-parent-dispatch-worker-activation",
-    );
-    let rejected = tool_error(
-        &data_dir,
-        "mark_delegation_dispatched",
-        json!({ "delegation_id": worker_id }),
-    );
-    let rejection_text = rejected
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    assert!(
-        rejection_text.contains("Project Manager must be dispatched"),
-        "unexpected rejection: {rejected}"
-    );
-    let worker_read = run_initialized_server(
-        &data_dir,
-        &[request(
-            2,
-            "resources/read",
-            json!({ "uri": format!("cathulu://delegations/{worker_id}") }),
-        )],
-    );
-    assert_eq!(
-        resource_text(response(&worker_read, 2))["status"],
-        json!("prepared")
-    );
-
-    call_tool(
-        &data_dir,
-        "mark_delegation_dispatched",
-        json!({ "delegation_id": manager_id }),
     );
     let dispatched = call_tool(
         &data_dir,
@@ -1293,6 +1476,387 @@ fn child_worker_cannot_dispatch_until_its_project_manager_is_dispatched() {
     );
     assert_eq!(dispatched["status"], json!("dispatched"));
     fs::remove_dir_all(root).expect("remove temporary test data");
+}
+
+#[test]
+fn role_workflow_plans_and_parent_reviews_gate_the_hierarchy() {
+    let root = unique_temp_dir("role-plan-review-gates");
+    let data_dir = root.join("data");
+    run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open initialized workflow-plan fixture");
+    database
+        .execute(
+            "INSERT INTO projects (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+             VALUES ('role-plan-fixture', 'C:/fixture/role-plan', 'main', NULL, 0, '[]', 1, 1)",
+            [],
+        )
+        .expect("seed project");
+    drop(database);
+    let objective = call_tool(
+        &data_dir,
+        "create_objective",
+        json!({ "project_id": 1, "title": "Enforce role planning" }),
+    );
+    let objective_id = objective["id"].as_i64().expect("objective ID");
+    let task = call_tool(
+        &data_dir,
+        "create_task",
+        json!({ "objective_id": objective_id, "title": "Plan and review role work" }),
+    );
+    let task_id = task["id"].as_i64().expect("task ID");
+    let run = call_tool(
+        &data_dir,
+        "start_run",
+        json!({ "project_id": 1, "objective_id": objective_id, "task_id": task_id }),
+    );
+    let run_id = run["id"].as_i64().expect("run ID");
+    let task_packet = hierarchy_packet();
+    let prepare_pm = |key: &str| {
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "sub_overseer", "task_packet": task_packet,
+            "idempotency_key": key
+        })
+    };
+    let missing_main_brief = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        prepare_pm("role-plan-pm-before-main"),
+    );
+    assert!(missing_main_brief
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("Main workflow brief"));
+    call_tool(
+        &data_dir,
+        "record_role_work_plan",
+        json!({
+            "project_id": 1, "run_id": run_id, "plan_level": "main",
+            "plan": main_workflow_brief("role-plan enforcement"),
+            "idempotency_key": "role-plan-main-brief"
+        }),
+    );
+    let manager = call_tool(&data_dir, "prepare_delegation", prepare_pm("role-plan-pm"));
+    let manager_id = manager["id"].as_i64().expect("Project Manager ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        manager_id,
+        "project-manager:1",
+        "role-plan-pm-activation",
+    );
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    call_tool(
+        &data_dir,
+        "record_delegation_update",
+        json!({
+            "delegation_id": manager_id,
+            "update_type": "action_required",
+            "phase": "coordinating",
+            "summary": "An irreversible schema operation needs an authority decision.",
+            "action_key": "schema-change-approval",
+            "owner_action": "Approve the irreversible schema change",
+            "idempotency_key": "role-plan-owner-action"
+        }),
+    );
+    let owner_request = call_tool(
+        &data_dir,
+        "request_owner_approval",
+        json!({
+            "manager_delegation_id": manager_id,
+            "action_key": "schema-change-approval",
+            "request_summary": "The Project Manager escalated an irreversible schema operation.",
+            "owner_action": "Approve or decline the schema change",
+            "reason": "The action is irreversible and outside autonomous role authority.",
+            "idempotency_key": "role-plan-owner-approval"
+        }),
+    );
+    let owner_request_id = owner_request["id"]
+        .as_i64()
+        .expect("owner approval request ID");
+    let owner_request_resource = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://owner-approvals/{owner_request_id}") }),
+        )],
+    );
+    assert_eq!(
+        resource_text(response(&owner_request_resource, 2))["decision"],
+        Value::Null
+    );
+    let owner_dashboard = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": "cathulu://dashboard" }),
+        )],
+    );
+    let owner_dashboard = resource_text(response(&owner_dashboard, 2));
+    assert_eq!(
+        owner_dashboard["pendingOwnerApprovalRequests"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        owner_dashboard["pendingAgentActions"][0]["routedToRole"],
+        json!("main_overseer")
+    );
+    let premature_pm_report = tool_error(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": manager_id,
+            "worker_report": {
+                "schema_version": 1, "summary": "The PM cannot close before the owner responds.",
+                "outcome": "completed", "changed_files": [], "commits": [],
+                "check_results": [], "blockers": [], "artifact_ids": [], "quality_check_ids": []
+            },
+            "idempotency_key": "role-plan-owner-report-too-early"
+        }),
+    );
+    assert!(premature_pm_report
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("owner request(s) remain unresolved"));
+    let owner_decision_tool_list =
+        run_initialized_server(&data_dir, &[request(2, "tools/list", json!({}))]);
+    let owner_tools = response(&owner_decision_tool_list, 2)["result"]["tools"]
+        .as_array()
+        .expect("MCP tool list");
+    assert!(!owner_tools
+        .iter()
+        .any(|tool| { tool["name"] == json!("record_owner_approval_decision") }));
+    let request_hash = owner_dashboard["pendingOwnerApprovalRequests"][0]["requestHash"]
+        .as_str()
+        .expect("snapshot request hash");
+    let owner_decision = Store::open(&data_dir)
+        .expect("open local owner-action store")
+        .record_owner_approval_decision_from_desktop(owner_request_id, request_hash, "approved")
+        .expect("record explicit desktop owner decision");
+    assert_eq!(owner_decision.decision, "approved");
+    assert_eq!(owner_decision.decision_origin, "desktop_owner_ui");
+    let after_owner_response = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": "cathulu://dashboard" }),
+        )],
+    );
+    let after_owner_response = resource_text(response(&after_owner_response, 2));
+    assert_eq!(
+        after_owner_response["pendingOwnerApprovalRequests"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        after_owner_response["pendingAgentActions"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    // Approval records human intent; the PM must still close the underlying action
+    // before its result can be tested against the separate Worker-review gate.
+    call_tool(
+        &data_dir,
+        "record_delegation_update",
+        json!({
+            "delegation_id": manager_id,
+            "update_type": "action_resolved",
+            "phase": "coordinating",
+            "summary": "The approved action is handled in this synthetic fixture.",
+            "action_key": "schema-change-approval",
+            "idempotency_key": "role-plan-owner-action-resolved"
+        }),
+    );
+
+    let manager_plan = call_tool(
+        &data_dir,
+        "record_role_work_plan",
+        json!({
+            "project_id": 1, "run_id": run_id, "plan_level": "project_manager",
+            "manager_delegation_id": manager_id,
+            "plan": {
+                "schema_version": 1,
+                "summary": "Split the brief into one bounded Worker task and review its evidence.",
+                "manager_actions": ["Review Worker output before reporting to Main"],
+                "worker_tasks": [{ "task_key": "worker-one", "task_packet": task_packet }]
+            },
+            "idempotency_key": "role-plan-pm-plan"
+        }),
+    );
+    let plan_id = manager_plan["id"]
+        .as_i64()
+        .expect("Project Manager plan ID");
+    let worker_args = json!({
+        "project_id": 1, "task_id": task_id, "run_id": run_id,
+        "role": "worker", "parent_delegation_id": manager_id,
+        "task_packet": task_packet, "plan_task_key": "worker-one",
+        "idempotency_key": "role-plan-worker"
+    });
+    let unreviewed_plan = tool_error(&data_dir, "prepare_delegation", worker_args.clone());
+    assert!(unreviewed_plan
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("Main Overseer must accept"));
+    let plan_review = call_tool(
+        &data_dir,
+        "review_role_work_plan",
+        json!({
+            "plan_id": plan_id, "reviewer_role": "main_overseer", "decision": "accepted",
+            "note": "The task, project boundary, and acceptance evidence match the Main brief.",
+            "idempotency_key": "role-plan-main-accepts-pm-plan"
+        }),
+    );
+    assert_eq!(plan_review["decision"], json!("accepted"));
+    let mut mismatched_packet = task_packet.clone();
+    mismatched_packet["objective"] =
+        json!("A different objective outside the reviewed task packet.");
+    let mismatch = tool_error(
+        &data_dir,
+        "prepare_delegation",
+        json!({
+            "project_id": 1, "task_id": task_id, "run_id": run_id,
+            "role": "worker", "parent_delegation_id": manager_id,
+            "task_packet": mismatched_packet, "plan_task_key": "worker-one",
+            "idempotency_key": "role-plan-worker-mismatch"
+        }),
+    );
+    assert!(mismatch
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("does not match"));
+
+    let worker = call_tool(&data_dir, "prepare_delegation", worker_args);
+    let worker_id = worker["id"].as_i64().expect("Worker ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        worker_id,
+        "agent:role-plan-worker",
+        "role-plan-worker-activation",
+    );
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": worker_id }),
+    );
+    call_tool(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": worker_id,
+            "worker_report": {
+                "schema_version": 1, "summary": "The planned Worker checks completed.",
+                "outcome": "completed", "changed_files": [], "commits": [],
+                "check_results": [], "blockers": [], "artifact_ids": [], "quality_check_ids": []
+            },
+            "idempotency_key": "role-plan-worker-report"
+        }),
+    );
+    let pm_report_too_early = tool_error(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": manager_id,
+            "worker_report": {
+                "schema_version": 1, "summary": "Project work reported.",
+                "outcome": "completed", "changed_files": [], "commits": [],
+                "check_results": [], "blockers": [], "artifact_ids": [], "quality_check_ids": []
+            },
+            "idempotency_key": "role-plan-pm-report-too-early"
+        }),
+    );
+    assert!(pm_report_too_early
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("Worker report(s) are accepted"));
+    let wrong_worker_reviewer = tool_error(
+        &data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id": worker_id, "reviewer_role": "main_overseer",
+            "decision": "accepted", "note": "Wrong hierarchy level.",
+            "idempotency_key": "role-plan-wrong-worker-reviewer"
+        }),
+    );
+    assert!(wrong_worker_reviewer
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("project_manager"));
+    call_tool(
+        &data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id": worker_id, "reviewer_role": "project_manager",
+            "decision": "accepted", "note": "Worker report satisfies its planned packet.",
+            "idempotency_key": "role-plan-pm-accepts-worker"
+        }),
+    );
+    call_tool(
+        &data_dir,
+        "submit_delegation_report",
+        json!({
+            "delegation_id": manager_id,
+            "worker_report": {
+                "schema_version": 1, "summary": "The Worker result was reviewed and the project brief is satisfied.",
+                "outcome": "completed", "changed_files": [], "commits": [],
+                "check_results": [], "blockers": [], "artifact_ids": [], "quality_check_ids": []
+            },
+            "idempotency_key": "role-plan-pm-result"
+        }),
+    );
+    let completion_before_main_review = tool_error(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": manager_id }),
+    );
+    assert!(completion_before_main_review
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .contains("Main accepts"));
+    call_tool(
+        &data_dir,
+        "review_delegation_report",
+        json!({
+            "delegation_id": manager_id, "reviewer_role": "main_overseer",
+            "decision": "accepted", "note": "PM result reviewed against Main brief and Worker review.",
+            "idempotency_key": "role-plan-main-accepts-pm-result"
+        }),
+    );
+    let completed = call_tool(
+        &data_dir,
+        "complete_project_manager_assignment",
+        json!({ "delegation_id": manager_id }),
+    );
+    assert_eq!(completed["status"], json!("completed"));
+
+    let plan_resource = run_initialized_server(
+        &data_dir,
+        &[request(
+            2,
+            "resources/read",
+            json!({ "uri": format!("cathulu://work-plans/{plan_id}") }),
+        )],
+    );
+    let plan = resource_text(response(&plan_resource, 2));
+    assert_eq!(plan["latestReview"]["decision"], json!("accepted"));
+    fs::remove_dir_all(root).expect("remove workflow-plan fixture");
 }
 
 #[test]
@@ -1437,6 +2001,7 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         json!({ "delegation_id": manager_id }),
     );
     assert_eq!(dispatched_manager["status"], json!("dispatched"));
+    record_project_manager_plan(&data_dir, manager_id, &[("worker-one", hierarchy_packet())]);
 
     let worker = call_tool(
         &data_dir,
@@ -1444,7 +2009,8 @@ fn hierarchy_dispatch_requires_a_ready_memory_activation_receipt() {
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": "hierarchy-memory-worker"
+            "task_packet": hierarchy_packet(), "plan_task_key": "worker-one",
+            "idempotency_key": "hierarchy-memory-worker"
         }),
     );
     let worker_id = worker["id"].as_i64().expect("worker ID");
@@ -1700,6 +2266,8 @@ fn logical_roles_and_known_memory_survive_project_manager_reassignment() {
         "mark_delegation_dispatched",
         json!({ "delegation_id": first_id }),
     );
+    record_project_manager_plan(&data_dir, first_id, &[]);
+    submit_and_accept_project_manager_report(&data_dir, first_id);
     let completed = call_tool(
         &data_dir,
         "complete_project_manager_assignment",
@@ -2707,7 +3275,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 12);
+    assert_eq!(version, 18);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -2751,13 +3319,30 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
         }),
     );
     let manager_id = manager["id"].as_i64().expect("manager ID");
+    activate_with_no_relevant_memory(
+        &data_dir,
+        manager_id,
+        "project-manager:1",
+        "v10-preserve-manager-activation",
+    );
+    call_tool(
+        &data_dir,
+        "mark_delegation_dispatched",
+        json!({ "delegation_id": manager_id }),
+    );
+    record_project_manager_plan(
+        &data_dir,
+        manager_id,
+        &[("preserved-worker", hierarchy_packet())],
+    );
     let worker = call_tool(
         &data_dir,
         "prepare_delegation",
         json!({
             "project_id": 1, "task_id": task_id, "run_id": run_id,
             "role": "worker", "parent_delegation_id": manager_id,
-            "task_packet": hierarchy_packet(), "idempotency_key": "v10-preserve-worker"
+            "task_packet": hierarchy_packet(), "plan_task_key": "preserved-worker",
+            "idempotency_key": "v10-preserve-worker"
         }),
     );
     let worker_id = worker["id"].as_i64().expect("worker ID");
@@ -2794,7 +3379,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 12);
+    assert_eq!(version, 18);
     let assignment_status: String = database
         .query_row(
             "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
@@ -2944,7 +3529,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 12);
+    assert_eq!(version, 18);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

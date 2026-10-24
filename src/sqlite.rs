@@ -1,5 +1,5 @@
 use rusqlite::types::ValueRef;
-use rusqlite::Connection as SqliteConnection;
+use rusqlite::{Connection as SqliteConnection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
@@ -8,6 +8,18 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
+    pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let inner = SqliteConnection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("cannot open Cathulu SQLite store read-only: {error}"))?;
+        inner
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("cannot configure SQLite busy timeout: {error}"))?;
+        inner
+            .execute_batch("PRAGMA query_only = ON;")
+            .map_err(|error| format!("cannot configure read-only SQLite store: {error}"))?;
+        Ok(Self { inner })
+    }
+
     pub fn open(path: &Path) -> Result<Self, String> {
         let inner = SqliteConnection::open(path)
             .map_err(|error| format!("cannot open Cathulu SQLite store: {error}"))?;
@@ -65,5 +77,27 @@ impl Connection {
 
     pub(crate) fn raw_mut(&mut self) -> &mut SqliteConnection {
         &mut self.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Connection;
+
+    #[test]
+    fn observer_connection_rejects_writes() {
+        let path =
+            std::env::temp_dir().join(format!("cathulu-monitor-{}.sqlite3", uuid::Uuid::new_v4()));
+        let owner = Connection::open(&path).unwrap();
+        owner.execute("CREATE TABLE probe (id INTEGER)").unwrap();
+        let observer = Connection::open_read_only(&path).unwrap();
+        assert!(observer
+            .execute("INSERT INTO probe (id) VALUES (1)")
+            .is_err());
+        drop(observer);
+        drop(owner);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
     }
 }

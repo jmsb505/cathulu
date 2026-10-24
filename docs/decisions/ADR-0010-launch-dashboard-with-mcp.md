@@ -1,6 +1,6 @@
 # ADR-0010 — Launch the desktop dashboard with MCP
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0020 on 2026-10-24. The historical implementation and evidence below describe the former startup behavior.
 - **Date:** 2026-10-22
 - **Decision owners:** Cathulu project owner
 
@@ -10,7 +10,7 @@ Codex starts the local Cathulu MCP process as a stdio server. That process and t
 
 ## Decision
 
-The MCP executable looks for `cathulu-desktop` beside itself and schedules its launch on a named background thread while RMCP stdio starts immediately. Desktop/WebView startup and the bounded Windows readiness wait must never delay MCP initialization: Codex may restart an MCP process that has not completed its stdio handshake, which can otherwise make the dashboard repeatedly appear and disappear. On Windows the launch thread serializes MCP-triggered launches with a short-lived named mutex and uses `ShellExecuteW` to open the GUI independently of MCP pipe handles. Other desktop targets launch with null standard streams. The dashboard inherits the MCP environment, including any `CATHULU_DATA_DIR` override. If scheduling, the sibling lookup, startup synchronization, or the app launch fails, MCP reports the issue to stderr and continues normally.
+The MCP executable looks for `cathulu-desktop` beside itself and schedules its launch on a named background thread while RMCP stdio starts immediately. Desktop/WebView startup and the bounded Windows readiness wait must never delay MCP initialization: Codex may restart an MCP process that has not completed its stdio handshake, which can otherwise make the dashboard repeatedly appear and disappear. On Windows the launch thread serializes MCP-triggered launches with a short-lived named mutex and uses `ShellExecuteW` to open the GUI independently of MCP pipe handles. A second named Windows object records which MCP process owns this session's launch attempt for that process's lifetime. Other MCP processes skip launching even before Tauri registers its single-instance window. Other desktop targets launch with null standard streams. The dashboard inherits the MCP environment, including any `CATHULU_DATA_DIR` override. If scheduling, the sibling lookup, startup synchronization, or the app launch fails, MCP reports the issue to stderr and continues normally.
 
 The desktop registers Tauri's single-instance plugin with a no-op callback so a repeated MCP start cannot raise the existing window over the user's active application. On Windows, the MCP checks for the registered single-instance window while holding the launch mutex and returns immediately if it already exists. Otherwise it uses `ShellExecuteW` with `SW_SHOWNOACTIVATE` to open the first dashboard in the background. The main Tauri window also sets `focus: false`. The user can bring the dashboard forward from the taskbar when needed. The release MCP and desktop executables are built from the same source tree and placed together in the configured directory. Direct Cargo release builds enable the desktop crate's `custom-protocol` feature so Tauri embeds `frontendDist` rather than trying to load the development server URL.
 
@@ -28,7 +28,7 @@ Codex uses the stable `target/mcp-current/cathulu-mcp.exe` path. `scripts/build-
 - MCP stdio initialization is not delayed by dashboard or WebView startup.
 - The local desktop uses the same data directory and source revision as MCP.
 - Multiple Codex sessions reuse one dashboard window without activating, showing, restoring, or focusing it on every MCP start.
-- Near-simultaneous MCP restarts do not race the first Tauri single-instance registration.
+- Near-simultaneous MCP starts share one launch attempt even before Tauri registers its single-instance window. If the owner MCP process exits, a later MCP process can claim a new attempt.
 - A standalone MCP binary without its sibling desktop continues to work with a stderr diagnostic.
 - Slow repository inspection cannot block initial dashboard rendering or MCP stdio initialization, and background Git commands do not create visible console windows on Windows.
 

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
@@ -24,9 +24,12 @@ const emptyDashboardSnapshot = () => ({
   recentRuns: [],
   agentActivity: [],
   agentUpdates: [],
-  pendingAgentActions: [],
+  pendingAgentActions: [] as unknown[],
+  pendingOwnerApprovalRequests: [] as unknown[],
   recentAgentUpdateCount: 0,
   delegations: [],
+  roleDispatches: [],
+  roleInbox: [],
   failedChecks: [],
   memoryHealth: {
     hotBytes: 0, warmBytes: 0, coldBytes: 0, hotScopeCount: 0, largestScopeHotBytes: 0,
@@ -41,7 +44,18 @@ const emptyDashboardSnapshot = () => ({
 });
 
 describe("dashboard and local Codex settings", () => {
-  beforeEach(() => { cleanup(); invokeMock.mockReset(); });
+  beforeEach(() => {
+    cleanup();
+    invokeMock.mockReset();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: false }),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
 
   it("renders the snapshot returned by the Tauri command", async () => {
     invokeMock.mockResolvedValueOnce({
@@ -80,6 +94,7 @@ describe("dashboard and local Codex settings", () => {
       agentActivity: [],
       agentUpdates: [],
       pendingAgentActions: [],
+      pendingOwnerApprovalRequests: [],
       recentAgentUpdateCount: 0,
       delegations: [{
         id: 12,
@@ -169,6 +184,8 @@ describe("dashboard and local Codex settings", () => {
           reviewHistory: [{ id: 16, decision: "needs_follow_up", note: "Please add the migration diagnosis.", createdAt: 1_800_000_152 }],
         },
       }],
+      roleDispatches: [],
+      roleInbox: [],
       failedChecks: [
         { id: 5, runId: 6, projectName: "Atlas", checkKey: "integration", mandatory: true, status: "failed", details: {}, updatedAt: 1_800_000_115 },
         { id: 9, runId: 8, projectName: "Atlas", checkKey: "packaging", mandatory: false, status: "inconclusive", details: {}, updatedAt: 1_800_000_116 },
@@ -179,10 +196,9 @@ describe("dashboard and local Codex settings", () => {
     render(<App />);
 
     expect(await screen.findByRole("region", { name: "Project activity graph" })).toBeTruthy();
-    expect(screen.getByRole("group", { name: "One persistent logical Main Overseer role" })).toBeTruthy();
-    const projectManager = screen.getByRole("button", { name: /Atlas · persistent Project Manager role/ });
-    expect(projectManager.getAttribute("aria-label")).toContain("context scope project:1");
-    expect(projectManager.getAttribute("aria-label")).toContain("tool profile project-manager-v1");
+    expect(screen.getByRole("button", { name: /Main Overseer/ })).toBeTruthy();
+    const projectManager = screen.getByRole("button", { name: /Atlas Project Manager/ });
+    expect(projectManager.getAttribute("aria-label")).toContain("latest task Verify");
     expect(screen.queryByRole("navigation", { name: "Dashboard views" })).toBeNull();
     expect(screen.queryByText("Recent runs")).toBeNull();
     expect(invokeMock).toHaveBeenCalledWith("dashboard_snapshot");
@@ -195,9 +211,83 @@ describe("dashboard and local Codex settings", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("group", { name: "One persistent logical Main Overseer role" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Main Overseer/ })).toBeTruthy();
     expect(screen.getByText("No registered project roles")).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Dashboard views" })).toBeNull();
+  });
+
+  it("keeps Main visibly idle while project agents continue working", async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...emptyDashboardSnapshot(),
+      logicalRoles: [mainRole, {
+        roleKey: "project-manager:1", roleKind: "project_manager", projectId: 1,
+        projectName: "Atlas", memoryScopeKey: "project:1", receiverScopeKey: "scope:project-manager:1",
+        toolProfileKey: "project-manager-v1", createdAt: 1_800_000_000,
+      }],
+      projects: [{ id: 1, name: "Atlas", path: "C:\\work\\atlas", branch: "main", head: null, dirty: false, changedPaths: [], registeredAt: 1_800_000_000, reconciledAt: 1_800_000_100 }],
+      recentRuns: [{ id: 1, projectName: "Atlas", objectiveTitle: "Implement feature", taskTitle: null, workflowKey: null, workflowVersion: null, status: "running", summary: "", startedAt: 1_800_000_100, finishedAt: null }],
+    } as never);
+
+    render(<App />);
+
+    const mainNode = await screen.findByRole("button", { name: /Main Overseer/ });
+    expect(mainNode.className).not.toContain("is-active");
+    expect(mainNode.textContent).toContain("IDLE · DELEGATES RUN");
+  });
+
+  it("shows Main as working only while a routed Main inbox turn is active", async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...emptyDashboardSnapshot(),
+      roleInbox: [{ id: 3, sourceDelegationId: 10, targetBindingKey: "main-overseer", projectId: 1, projectName: "Atlas", eventType: "delegation_report_submitted", status: "running", attemptCount: 1, lastError: null, createdAt: 1_800_000_100, updatedAt: 1_800_000_101 }],
+    } as never);
+
+    render(<App />);
+
+    const mainNode = await screen.findByRole("button", { name: /Main Overseer/ });
+    expect(mainNode.className).toContain("is-active");
+    expect(mainNode.textContent).toContain("REVIEWING UPDATE");
+    fireEvent.click(mainNode);
+    const dossier = await screen.findByRole("region", { name: "Main Overseer work details" });
+    expect(within(dossier).getByText("Working")).toBeTruthy();
+    expect(within(dossier).getByText("Main event trail")).toBeTruthy();
+  });
+
+  it("distinguishes Main escalations from requests that actually need the owner", async () => {
+    const snapshot = emptyDashboardSnapshot();
+    snapshot.pendingAgentActions = [{
+      eventId: 4,
+      projectId: 1,
+      projectName: "Atlas",
+      delegationId: 10,
+      runId: 3,
+      role: "sub_overseer",
+      routedToRole: "main_overseer",
+      actionKey: "contract-choice",
+      summary: "The PM needs a bounded contract decision.",
+      ownerAction: "Choose the supported contract version",
+      createdAt: 1_800_000_120,
+    }];
+    snapshot.pendingOwnerApprovalRequests = [{
+      id: 7,
+      projectId: 1,
+      projectName: "Atlas",
+      runId: 3,
+      managerDelegationId: 10,
+      actionKey: "destructive-change",
+      requestSummary: "The PM escalated an irreversible operation.",
+      ownerAction: "Approve the irreversible operation",
+      reason: "It is outside autonomous role authority.",
+      requestHash: "a".repeat(64),
+      createdAt: 1_800_000_121,
+    }];
+    invokeMock.mockResolvedValueOnce(snapshot as never);
+
+    render(<App />);
+
+    const pulse = await screen.findByLabelText("Current workflow process");
+    expect(pulse.textContent).toContain("1Needs you");
+    expect(pulse.textContent).toContain("1Needs Main");
+    expect(screen.getByText("1 OWNER ACTION")).toBeTruthy();
   });
 
   it("opens the separate local Codex settings surface and labels catalog availability as unverified", async () => {

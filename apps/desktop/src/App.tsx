@@ -103,9 +103,23 @@ type PendingAgentAction = {
   delegationId: number;
   runId: number;
   role: string;
+  routedToRole: "main_overseer" | "project_manager";
   actionKey: string;
   summary: string;
   ownerAction: string;
+  createdAt: number;
+};
+type PendingOwnerApproval = {
+  id: number;
+  projectId: number;
+  projectName: string;
+  runId: number;
+  managerDelegationId: number;
+  actionKey: string;
+  requestSummary: string;
+  ownerAction: string;
+  reason: string;
+  requestHash: string;
   createdAt: number;
 };
 type LogicalAgentRole = {
@@ -147,8 +161,19 @@ type DashboardSnapshot = {
   }[];
   agentUpdates: AgentUpdateSnapshot[];
   pendingAgentActions: PendingAgentAction[];
+  pendingOwnerApprovalRequests: PendingOwnerApproval[];
   recentAgentUpdateCount: number;
   delegations: DelegationSnapshot[];
+  roleDispatches: {
+    id: number; delegationId: number; projectId: number; projectName: string;
+    taskTitle: string; role: string; status: string; attemptCount: number;
+    lastError: string | null; createdAt: number; updatedAt: number;
+  }[];
+  roleInbox: {
+    id: number; sourceDelegationId: number; targetBindingKey: string;
+    projectId: number; projectName: string; eventType: string; status: string;
+    attemptCount: number; lastError: string | null; createdAt: number; updatedAt: number;
+  }[];
   failedChecks: { id: number; runId: number; projectName: string; checkKey: string; mandatory: boolean; status: string; details: unknown; updatedAt: number }[];
   memoryHealth: {
     hotBytes: number; hotScopeCount: number; largestScopeHotBytes: number;
@@ -167,7 +192,7 @@ type DashboardSnapshot = {
 
 type RunRecord = DashboardSnapshot["recentRuns"][number];
 type HookAgentRecord = DashboardSnapshot["agentActivity"][number];
-type ProjectMonitorState = "working" | "stale" | "blocked" | "failed" | "inconclusive" | "complete" | "stopped" | "idle";
+type ProjectMonitorState = "working" | "queued" | "stale" | "blocked" | "failed" | "inconclusive" | "complete" | "stopped" | "idle";
 type ProjectMonitorItem = {
   project: ProjectSnapshot;
   state: ProjectMonitorState;
@@ -178,7 +203,9 @@ type ProjectMonitorItem = {
   staleAgentCount: number;
   latestRun: RunRecord | null;
   latestUpdate: AgentUpdateSnapshot | null;
+  latestDispatch: DashboardSnapshot["roleDispatches"][number] | null;
   pendingAction: PendingAgentAction | null;
+  pendingOwnerApproval: PendingOwnerApproval | null;
   failedCheckKeys: string[];
 };
 
@@ -198,7 +225,7 @@ function runTitle(run: RunRecord) {
 }
 
 function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] {
-  const priority: Record<ProjectMonitorState, number> = { working: 0, stale: 1, blocked: 2, failed: 3, inconclusive: 4, complete: 5, stopped: 6, idle: 7 };
+  const priority: Record<ProjectMonitorState, number> = { working: 0, queued: 1, stale: 2, blocked: 3, failed: 4, inconclusive: 5, complete: 6, stopped: 7, idle: 8 };
   return snapshot.projects.map((project) => {
     const latestRun = snapshot.recentRuns
       .filter((run) => run.projectName === project.name)
@@ -207,8 +234,14 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
     const mandatoryFailures = latestRun
       ? snapshot.failedChecks.filter((check) => check.runId === latestRun.id && check.mandatory && check.status.toLowerCase() === "failed")
       : [];
+    const pendingOwnerApproval = snapshot.pendingOwnerApprovalRequests
+      .filter((request) => request.projectId === project.id)
+      .sort((left, right) => right.createdAt - left.createdAt || right.id - left.id)[0] ?? null;
+    const ownerRequestKeys = new Set(snapshot.pendingOwnerApprovalRequests
+      .filter((request) => request.projectId === project.id)
+      .map((request) => `${request.managerDelegationId}:${request.actionKey}`));
     const pendingActions = snapshot.pendingAgentActions
-      .filter((action) => action.projectId === project.id)
+      .filter((action) => action.projectId === project.id && !ownerRequestKeys.has(`${action.delegationId}:${action.actionKey}`))
       .sort((left, right) => right.createdAt - left.createdAt || right.eventId - left.eventId);
     const latestUpdate = latestRun
       ? snapshot.agentUpdates
@@ -216,6 +249,12 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
         .sort((left, right) => right.createdAt - left.createdAt || right.eventId - left.eventId)[0] ?? null
       : null;
     const delegations = latestRun ? snapshot.delegations.filter((item) => item.runId === latestRun.id) : [];
+    const latestDispatch = snapshot.roleDispatches
+      .filter((item) => item.projectId === project.id)
+      .sort((left, right) => right.updatedAt - left.updatedAt || right.id - left.id)[0] ?? null;
+    const dispatchNeedsReview = latestDispatch !== null && ["blocked", "failed", "needs_reconcile"].includes(latestDispatch.status);
+    const dispatchQueued = latestDispatch?.status === "queued";
+    const dispatchActive = latestDispatch !== null && ["preflighting", "thread_ready", "turn_starting", "dispatched", "running"].includes(latestDispatch.status);
     const managerIds = new Set(delegations
       .filter((delegation) => delegation.role === "sub_overseer" && delegation.projectManagerAssignmentStatus === "active")
       .map((delegation) => delegation.id));
@@ -232,8 +271,12 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
       + hookAgents.filter((item) => hookAgentState(item, latestRun?.status ?? "unknown") === "active").length;
     const staleAgentCount = trackedAgents.filter((item) => agentState(item, snapshot.agentUpdates) === "stale").length
       + hookAgents.filter((item) => hookAgentState(item, latestRun?.status ?? "unknown") === "stale").length;
-    const state: ProjectMonitorState = pendingActions.length > 0
+    const state: ProjectMonitorState = pendingActions.length > 0 || pendingOwnerApproval !== null || dispatchNeedsReview
       ? "blocked"
+      : dispatchActive
+        ? "working"
+        : dispatchQueued
+          ? "queued"
       : latestRun?.status === "running" && staleAgentCount > 0 && activeAgents === 0
         ? "stale"
       : latestRun?.status === "running"
@@ -249,7 +292,10 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
               : latestRun
                 ? "stopped"
                 : "idle";
-    const detail = pendingActions[0]?.ownerAction
+    const detail = pendingOwnerApproval?.ownerAction ?? pendingActions[0]?.ownerAction
+      ?? (dispatchNeedsReview ? latestDispatch?.lastError ?? "Role dispatch needs review" : null)
+      ?? (dispatchQueued ? `Queued · ${latestDispatch?.taskTitle ?? "role assignment"}` : null)
+      ?? (dispatchActive ? `${latestDispatch?.role === "worker" ? "Worker" : "Project Manager"} · ${latestDispatch?.taskTitle ?? "starting"}` : null)
       ?? (blockers.length > 0 && !latestRun
       ? blockers[0].title
       : staleAgentCount > 0
@@ -262,12 +308,14 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
       state,
       detail,
       activeAgents,
-      issueCount: blockers.length + mandatoryFailures.length + pendingActions.length + staleAgentCount,
-      attentionCount: pendingActions.length,
+      issueCount: blockers.length + mandatoryFailures.length + pendingActions.length + (pendingOwnerApproval ? 1 : 0) + staleAgentCount + (dispatchNeedsReview ? 1 : 0),
+      attentionCount: pendingActions.length + (pendingOwnerApproval ? 1 : 0) + (dispatchNeedsReview ? 1 : 0),
       staleAgentCount,
       latestRun,
       latestUpdate,
+      latestDispatch,
       pendingAction: pendingActions[0] ?? null,
+      pendingOwnerApproval,
       failedCheckKeys: mandatoryFailures.map((check) => check.checkKey),
     };
   }).sort((left, right) => {
@@ -276,11 +324,18 @@ function projectMonitorItems(snapshot: DashboardSnapshot): ProjectMonitorItem[] 
 }
 
 function monitorStateLabel(state: ProjectMonitorState) {
-  return state === "working" ? "Working" : state === "stale" ? "No fresh signal" : state === "blocked" ? "Blocked" : state === "failed" ? "Failed" : state === "inconclusive" ? "Unverified" : state === "complete" ? "Verified" : state === "stopped" ? "Stopped" : "Idle";
+  return state === "working" ? "Working" : state === "queued" ? "Queued" : state === "stale" ? "No fresh signal" : state === "blocked" ? "Needs review" : state === "failed" ? "Failed" : state === "inconclusive" ? "Unverified" : state === "complete" ? "Verified" : state === "stopped" ? "Stopped" : "Idle";
 }
 
 function projectMonitorLabel(item: ProjectMonitorItem) {
-  return item.pendingAction ? "Needs you" : monitorStateLabel(item.state);
+  if (item.pendingOwnerApproval) return "Needs you";
+  if (item.pendingAction) return item.pendingAction.routedToRole === "project_manager" ? "Needs PM" : "Needs Main";
+  if (item.latestDispatch && ["blocked", "failed", "needs_reconcile"].includes(item.latestDispatch.status)) return "Needs review";
+  return monitorStateLabel(item.state);
+}
+
+function actionRecipientLabel(role: string) {
+  return role === "project_manager" ? "Needs PM" : "Needs Main";
 }
 
 function roleLabel(role: string) {
@@ -304,13 +359,24 @@ function attentionItems(
   snapshot: DashboardSnapshot,
   staleAgents: { key: string; source: string; title: string; detail: string; createdAt: number; priority: number }[] = [],
 ) {
-  const actions = snapshot.pendingAgentActions.map((action) => ({
+  const ownerRequests = snapshot.pendingOwnerApprovalRequests.map((request) => ({
+    key: `owner-${request.id}`,
+    source: `${request.projectName} · Owner approval`,
+    title: request.ownerAction,
+    detail: `${request.requestSummary} · ${request.reason}`,
+    createdAt: request.createdAt,
+    priority: 0,
+    label: "Needs you",
+  }));
+  const ownerRequestKeys = new Set(snapshot.pendingOwnerApprovalRequests.map((request) => `${request.managerDelegationId}:${request.actionKey}`));
+  const actions = snapshot.pendingAgentActions.filter((action) => !ownerRequestKeys.has(`${action.delegationId}:${action.actionKey}`)).map((action) => ({
     key: `agent-${action.eventId}`,
     source: `${action.projectName} · ${roleLabel(action.role)}`,
     title: action.ownerAction,
     detail: action.summary,
     createdAt: action.createdAt,
-    priority: 0,
+    priority: action.routedToRole === "main_overseer" ? 1 : 3,
+    label: actionRecipientLabel(action.routedToRole),
   }));
   const blockedTasks = snapshot.blockers.map((blocker) => ({
     key: `task-${blocker.id}`,
@@ -319,6 +385,7 @@ function attentionItems(
     detail: "Blocked task recorded in Cathulu",
     createdAt: blocker.updatedAt,
     priority: 1,
+    label: "Review",
   }));
   const failedChecks = snapshot.failedChecks
     .filter((check) => check.mandatory && check.status.toLowerCase() === "failed")
@@ -329,8 +396,21 @@ function attentionItems(
       detail: "Required QA check failed",
       createdAt: check.updatedAt,
       priority: 2,
+      label: "QA",
     }));
-  return [...actions, ...blockedTasks, ...failedChecks, ...staleAgents]
+  const dispatchIssues = snapshot.roleDispatches
+    .filter((item) => ["blocked", "failed", "needs_reconcile"].includes(item.status))
+    .map((item) => ({
+      key: `dispatch-${item.id}`,
+      source: `${item.projectName} · ${roleLabel(item.role)}`,
+      title: item.taskTitle,
+      detail: item.lastError ?? (item.status === "needs_reconcile" ? "Dispatch state must be reconciled before retry" : "Role dispatch needs review"),
+      createdAt: item.updatedAt,
+      priority: 1,
+      label: "Dispatch",
+    }));
+  const normalizedStale = staleAgents.map((item) => ({ ...item, label: "Check" }));
+  return [...ownerRequests, ...actions, ...blockedTasks, ...failedChecks, ...dispatchIssues, ...normalizedStale]
     .sort((left, right) => left.priority - right.priority || right.createdAt - left.createdAt)
     .slice(0, 4);
 }
@@ -385,9 +465,12 @@ export default function App() {
     };
     loadSnapshot();
     const poll = window.setInterval(loadSnapshot, 5_000);
+    const refreshSnapshot = () => loadSnapshot();
+    window.addEventListener("cathulu:refresh-dashboard", refreshSnapshot);
     return () => {
       cancelled = true;
       window.clearInterval(poll);
+      window.removeEventListener("cathulu:refresh-dashboard", refreshSnapshot);
     };
   }, [nativeRuntime]);
 
@@ -576,6 +659,15 @@ function agentRole(delegation: DelegationSnapshot) {
   return roleLabel(delegation.role);
 }
 
+function agentStateLabel(state: AgentVisualState) {
+  return state === "active" ? "Working"
+    : state === "waiting" ? "Waiting"
+      : state === "stale" ? "No recent update"
+        : state === "finished" ? "Finished"
+          : state === "blocked" ? "Blocked"
+            : "Status unknown";
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB"];
@@ -588,14 +680,18 @@ function formatBytes(bytes: number) {
   return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${unit}`;
 }
 
-function MemoryUsageOverview({ health }: { health: DashboardSnapshot["memoryHealth"] }) {
-  const classes = [
+function memoryClassMetrics(health: DashboardSnapshot["memoryHealth"]) {
+  return [
     { key: "working", label: "Working", count: health.workingCount ?? 0 },
     { key: "canonical", label: "Canonical", count: health.canonicalCount },
     { key: "episodic", label: "Episodic", count: health.episodicCount },
     { key: "evidence", label: "Evidence", count: health.evidenceCount },
     { key: "aggregate", label: "Aggregate", count: health.aggregateCount ?? 0 },
   ];
+}
+
+function MemoryUsageOverview({ health }: { health: DashboardSnapshot["memoryHealth"] }) {
+  const classes = memoryClassMetrics(health);
   const temperatures = [
     { key: "hot", label: "Hot", bytes: health.hotBytes },
     { key: "warm", label: "Warm", bytes: health.warmBytes },
@@ -686,7 +782,6 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
     })
     .filter((row): row is NonNullable<typeof row> => row !== null)
     .sort((left, right) => left.project.name.localeCompare(right.project.name));
-  const mainRole = snapshot.logicalRoles.find((role) => role.roleKind === "main_overseer");
   const allDelegations = projectRoleRows.flatMap((row) => [
     row.assigned,
     ...row.workers.filter((worker) => worker.parentDelegationId === row.assigned?.id),
@@ -702,33 +797,144 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
     agentState(delegation, snapshot.agentUpdates) === "blocked" && !actionDelegationIds.has(delegation.id),
   ).length;
   const issueCount = projectRoleRows.reduce((total, row) => total + row.item.issueCount, 0) + blockedAgentCount;
+  const ownerApprovalCount = snapshot.pendingOwnerApprovalRequests.length;
+  const ownerRequestKeys = new Set(snapshot.pendingOwnerApprovalRequests.map((request) => `${request.managerDelegationId}:${request.actionKey}`));
+  const mainEscalationCount = snapshot.pendingAgentActions.filter((action) => action.routedToRole === "main_overseer" && !ownerRequestKeys.has(`${action.delegationId}:${action.actionKey}`)).length;
+  const queuedDispatchCount = snapshot.roleDispatches.filter((item) => item.status === "queued").length;
+  const activeDispatchCount = snapshot.roleDispatches.filter((item) => ["preflighting", "thread_ready", "turn_starting", "dispatched", "running"].includes(item.status)).length;
+  const dispatchAttentionCount = snapshot.roleDispatches.filter((item) => ["blocked", "failed", "needs_reconcile"].includes(item.status)).length;
   const hasRunningProject = projectRoleRows.some((row) => row.run?.status === "running") || allDelegations.some((delegation) => agentState(delegation, snapshot.agentUpdates) === "active");
+  const mainInbox = snapshot.roleInbox.filter((message) => message.targetBindingKey === "main-overseer");
+  const mainTurnActive = mainInbox.some((message) => ["starting", "dispatched", "running"].includes(message.status));
+  const mainTurnQueued = mainInbox.some((message) => message.status === "queued");
+  const mainInboxAttention = mainInbox.filter((message) => ["blocked", "unroutable", "needs_reconcile"].includes(message.status));
+  const mainInboxIssues = mainInboxAttention.length;
   const actions = attentionItems(snapshot, staleAgentAttentionItems(snapshot));
   const recentUpdateCount = snapshot.recentAgentUpdateCount;
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const selected = snapshot.delegations.find((item) => item.id === Number(selectedAgentId)) ?? null;
-  const selectedUpdate = selected ? latestAgentUpdate(snapshot, selected.id) : null;
+  const liveProjectCount = projectRoleRows.filter((row) => row.run?.status === "running").length;
+  const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
+  const selectedIsMain = selectedNodeKey === "main";
+  const selectedAgentId = selectedNodeKey?.startsWith("agent:") ? Number(selectedNodeKey.slice("agent:".length)) : null;
+  const selectedAgent = selectedAgentId === null ? null : snapshot.delegations.find((item) => item.id === selectedAgentId) ?? null;
+  const selectedProjectId = selectedNodeKey?.startsWith("project:") ? Number(selectedNodeKey.slice("project:".length)) : null;
+  const selectedProjectRow = selectedProjectId === null ? null : projectRoleRows.find((row) => row.project.id === selectedProjectId) ?? null;
+  const selected = selectedAgent ?? selectedProjectRow?.assigned ?? null;
+  const selectedProject = selectedAgent
+    ? snapshot.projects.find((project) => project.id === selectedAgent.projectId) ?? null
+    : selectedProjectRow?.project ?? null;
+  const selectedRun = selectedAgent
+    ? snapshot.recentRuns.find((run) => run.id === selectedAgent.runId) ?? null
+    : selectedProjectRow?.run ?? null;
+  const selectedUpdate = selected
+    ? latestAgentUpdate(snapshot, selected.id)
+    : selectedProjectRow?.item.latestUpdate ?? null;
   const selectedUpdates = selected
     ? snapshot.agentUpdates.filter((update) => update.delegationId === selected.id).sort((left, right) => right.createdAt - left.createdAt).slice(0, 5)
-    : [];
-  const selectedManager = selected?.parentDelegationId
-    ? snapshot.delegations.find((item) => item.id === selected.parentDelegationId) ?? null
-    : null;
-  const liveProjectCount = projectRoleRows.filter((row) => row.run?.status === "running").length;
+    : selectedProjectRow
+      ? snapshot.agentUpdates.filter((update) => update.projectId === selectedProjectRow.project.id && (!selectedRun || update.runId === selectedRun.id)).sort((left, right) => right.createdAt - left.createdAt).slice(0, 5)
+      : [];
+  const selectedAction = selectedAgent
+    ? snapshot.pendingAgentActions.find((action) => action.delegationId === selectedAgent.id) ?? null
+    : selectedProjectRow
+      ? selectedProjectRow.item.pendingAction
+      : selectedIsMain
+        ? [...snapshot.pendingAgentActions]
+          .filter((action) => action.routedToRole === "main_overseer")
+          .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null
+        : null;
+  const selectedOwnerApproval = selectedIsMain
+    ? [...snapshot.pendingOwnerApprovalRequests].sort((left, right) => right.createdAt - left.createdAt)[0] ?? null
+    : selectedAgent?.role === "sub_overseer"
+      ? snapshot.pendingOwnerApprovalRequests.find((request) => request.managerDelegationId === selectedAgent.id) ?? null
+      : selectedProjectRow?.assigned
+        ? snapshot.pendingOwnerApprovalRequests.find((request) => request.managerDelegationId === selectedProjectRow.assigned?.id) ?? null
+        : null;
+  const selectedAttention = selectedIsMain
+    ? selectedOwnerApproval
+      ? { source: `${selectedOwnerApproval.projectName} · Owner approval`, title: selectedOwnerApproval.ownerAction, detail: `${selectedOwnerApproval.requestSummary} · ${selectedOwnerApproval.reason}`, label: "Needs you" }
+      : selectedAction
+        ? { source: `${selectedAction.projectName} · ${roleLabel(selectedAction.role)}`, title: selectedAction.ownerAction, detail: selectedAction.summary, label: actionRecipientLabel(selectedAction.routedToRole) }
+        : actions[0] ?? null
+    : selectedOwnerApproval
+      ? { source: `${selectedOwnerApproval.projectName} · Owner approval`, title: selectedOwnerApproval.ownerAction, detail: `${selectedOwnerApproval.requestSummary} · ${selectedOwnerApproval.reason}`, label: "Needs you" }
+      : selectedAction
+      ? {
+        source: `${selectedAction.projectName} · ${roleLabel(selectedAction.role)}`,
+        title: selectedAction.ownerAction,
+        detail: selectedAction.summary,
+        label: actionRecipientLabel(selectedAction.routedToRole),
+      }
+      : null;
+  const selectedStatus = selectedIsMain
+    ? selectedOwnerApproval ? "Needs you" : selectedAction ? "Needs Main" : mainInboxIssues ? "Review inbox" : mainTurnActive ? "Reviewing update" : mainTurnQueued ? "Update queued" : "Idle"
+    : selected
+      ? selectedOwnerApproval ? "Needs you" : selectedAction ? actionRecipientLabel(selectedAction.routedToRole) : agentStateLabel(agentState(selected, snapshot.agentUpdates))
+      : selectedProjectRow
+        ? selectedOwnerApproval ? "Needs you" : selectedAction ? actionRecipientLabel(selectedAction.routedToRole) : selectedProjectRow.assigned ? agentStateLabel(agentState(selectedProjectRow.assigned, snapshot.agentUpdates)) : monitorStateLabel(selectedProjectRow.item.state)
+        : "Status unavailable";
+  const selectedTone = selectedIsMain
+    ? selectedOwnerApproval || selectedAction || mainInboxIssues ? "blocked" : mainTurnActive ? "active" : mainTurnQueued ? "queued" : "finished"
+    : selected
+      ? agentState(selected, snapshot.agentUpdates)
+      : selectedProjectRow
+        ? selectedProjectRow.item.state === "working" ? "active"
+          : selectedProjectRow.item.state === "blocked" || selectedProjectRow.item.state === "failed" ? "blocked"
+              : selectedProjectRow.item.state === "stale" || selectedProjectRow.item.state === "inconclusive" ? "stale"
+              : selectedProjectRow.item.state === "complete" || selectedProjectRow.item.state === "stopped" ? "finished"
+                : "unknown"
+        : "unknown";
+  const selectedTitle = selected?.taskTitle
+    ?? selectedRun?.taskTitle
+    ?? selectedRun?.objectiveTitle
+    ?? (selectedIsMain ? "Coordination across projects" : "No active task recorded");
+  const selectedSummarySource = selectedIsMain ? "Across all projects"
+    : selectedUpdate ? "Latest update"
+      : selected?.report ? "Latest report"
+        : selectedRun ? "Latest project run"
+          : "Current status";
+  const selectedSummary = selectedIsMain
+    ? snapshot.pendingOwnerApprovalRequests.length > 0
+      ? `${snapshot.pendingOwnerApprovalRequests.length} owner action${snapshot.pendingOwnerApprovalRequests.length === 1 ? " needs" : "s need"} your response.`
+      : snapshot.pendingAgentActions.some((action) => action.routedToRole === "main_overseer")
+        ? `${snapshot.pendingAgentActions.filter((action) => action.routedToRole === "main_overseer").length} Project Manager escalation${snapshot.pendingAgentActions.filter((action) => action.routedToRole === "main_overseer").length === 1 ? " needs" : "s need"} Main review.`
+      : mainInboxIssues > 0
+        ? `${mainInboxIssues} Main message${mainInboxIssues === 1 ? " needs" : "s need"} delivery review.`
+      : mainTurnActive
+        ? `Main is reviewing a routed update. Project Managers continue independently.`
+      : mainTurnQueued
+        ? `A project update is queued for Main. Other projects continue independently.`
+      : activeCount > 0
+        ? `Main is idle while ${activeCount} project agent${activeCount === 1 ? " continues" : "s continue"} work.`
+      : staleCount > 0 && activeCount === 0
+        ? `${staleCount} agent signal${staleCount === 1 ? " is" : "s are"} out of date; activity is unconfirmed.`
+      : issueCount > 0
+        ? `${issueCount} recorded attention signal${issueCount === 1 ? " needs" : "s need"} review.`
+        : activeCount > 0
+          ? `${activeCount} agent${activeCount === 1 ? " is" : "s are"} working across ${liveProjectCount} live project${liveProjectCount === 1 ? "" : "s"}.`
+          : "No active agent work is recorded."
+    : selectedUpdate?.summary
+      ?? selected?.report?.report.summary
+      ?? selectedAction?.summary
+      ?? selectedRun?.summary
+      ?? (selectedProjectRow?.item.state === "idle" ? "No project activity has been recorded yet." : "No checkpoint or report has been recorded for this work.");
+  const selectedTriggerId = selectedIsMain ? "graph-main-node"
+    : selectedAgent ? `graph-agent-node-${selectedAgent.id}`
+      : selectedProjectRow ? `graph-project-node-${selectedProjectRow.project.id}`
+        : null;
   useEffect(() => {
-    if (!selected) return;
+    if (!selectedNodeKey) return;
     const dossier = document.getElementById("graph-agent-dossier");
     dossier?.focus({ preventScroll: true });
     dossier?.scrollIntoView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
       block: "nearest",
     });
-  }, [selected?.id]);
+  }, [selectedNodeKey]);
 
   const closeDossier = () => {
-    if (!selected) return;
-    const triggerId = `graph-agent-node-${selected.id}`;
-    setSelectedAgentId(null);
+    if (!selectedNodeKey || !selectedTriggerId) return;
+    const triggerId = selectedTriggerId;
+    setSelectedNodeKey(null);
     window.requestAnimationFrame(() => document.getElementById(triggerId)?.focus());
   };
   const logicalState = hasRunningProject
@@ -764,8 +970,21 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
             <div title="Projects whose latest recorded run is still open"><i className="metric-signal signal-live" /><b>{liveProjectCount}</b><span>Live</span></div>
             <div title="Agents with a current recorded working signal"><i className="metric-signal signal-live" /><b>{activeCount}</b><span>Working</span></div>
             <div title="Agent checkpoints recorded in the last hour"><i className="metric-signal signal-update" /><b>{recentUpdateCount}</b><span>Updates / h</span></div>
-            <div className={snapshot.pendingAgentActions.length ? "needs-owner" : ""} title="Open, explicitly recorded requests for owner input"><i className="metric-signal signal-attention" /><b>{snapshot.pendingAgentActions.length}</b><span>Needs you</span></div>
+            <div className={ownerApprovalCount ? "needs-owner" : ""} title="Explicit owner approvals or decisions required"><i className="metric-signal signal-attention" /><b>{ownerApprovalCount}</b><span>Needs you</span></div>
+            <div className={mainEscalationCount ? "needs-owner" : ""} title="Project Manager escalations routed to Main Overseer"><i className="metric-signal signal-attention" /><b>{mainEscalationCount}</b><span>Needs Main</span></div>
             <div className={snapshot.failedChecks.length ? "has-failed-checks" : ""} title="Failed quality checks currently included in the dashboard snapshot"><i className="metric-signal signal-failure" /><b>{snapshot.failedChecks.length}</b><span>Failed checks</span></div>
+          </div>
+          <div className={`dispatch-pulse ${dispatchAttentionCount ? "has-attention" : ""}`} aria-label="Role dispatch queue state">
+            <span><i className="dispatch-pulse-dot" />Role dispatch</span>
+            <b>{queuedDispatchCount} queued</b>
+            <b>{activeDispatchCount} active</b>
+            {dispatchAttentionCount > 0 && <b className="dispatch-attention-count">{dispatchAttentionCount} needs review</b>}
+          </div>
+          <div className={`dispatch-pulse ${mainInboxIssues ? "has-attention" : ""}`} aria-label="Main Overseer event state">
+            <span><i className="dispatch-pulse-dot" />Main</span>
+            <b>{mainTurnActive ? "reviewing" : "idle"}</b>
+            {mainTurnQueued && <b>{mainInbox.filter((message) => message.status === "queued").length} queued</b>}
+            {mainInboxIssues > 0 && <b className="dispatch-attention-count">{mainInboxIssues} needs review</b>}
           </div>
         </section>
         <MemoryUsageOverview health={snapshot.memoryHealth} />
@@ -773,14 +992,14 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
 
       <div className={`agent-workspace ${actions.length || snapshot.agentUpdates.length || hasRunningProject ? "has-side-activity" : ""}`}>
         <aside className="graph-side-rail" aria-label="Project attention and recent activity">
-          {actions.length > 0 && <section className={`graph-attention-panel ${snapshot.pendingAgentActions.length ? "has-owner-action" : ""}`} aria-label="Items needing attention">
+          {actions.length > 0 && <section className={`graph-attention-panel ${ownerApprovalCount ? "has-owner-action" : ""}`} aria-label="Items needing attention">
             <div className="graph-attention-heading" role="status" aria-live="polite" aria-atomic="true">
               <span className="attention-beacon"><i /></span>
-              <strong>{snapshot.pendingAgentActions.length ? `${snapshot.pendingAgentActions.length} OWNER ACTION${snapshot.pendingAgentActions.length === 1 ? "" : "S"}` : "NEEDS ATTENTION"}</strong>
+              <strong>{ownerApprovalCount ? `${ownerApprovalCount} OWNER ACTION${ownerApprovalCount === 1 ? "" : "S"}` : mainEscalationCount ? `${mainEscalationCount} MAIN ESCALATION${mainEscalationCount === 1 ? "" : "S"}` : "NEEDS ATTENTION"}</strong>
             </div>
             <ol>
               {actions.slice(0, 3).map((action) => <li key={action.key}>
-                <span className="attention-copy"><b>{action.source}</b><strong>{action.title}</strong><small>{action.detail} · {updateAge(action.createdAt)}</small></span>
+                <span className="attention-copy"><b>{action.source} · {action.label}</b><strong>{action.title}</strong><small>{action.detail} · {updateAge(action.createdAt)}</small></span>
                 <i aria-hidden="true">›</i>
               </li>)}
             </ol>
@@ -801,55 +1020,58 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
 
         <div className={`agent-graph-stage ${projectRoleRows.length ? "has-agents" : ""}`} style={graphStageStyle}>
         <div className="graph-role-tree">
-          <div className={`graph-overseer-node ${hasRunningProject ? "is-active" : ""}`} role="group" title="Persistent Main Overseer role coordinates project work; Codex Project Managers and Workers perform repository changes" aria-label={`One persistent logical Main Overseer role${hasRunningProject ? ", coordinating active project managers" : ""}`}>
-            <span className={`graph-overseer-orbit ${hasRunningProject ? "is-active" : ""}`}><BrandMark /></span>
-            <span className="graph-overseer-label"><small>{snapshot.pendingAgentActions.length ? "ACTION NEEDED" : hasRunningProject ? staleCount > 0 && activeCount === 0 ? "CHECK AGENT SIGNAL" : "COORDINATING" : "STANDING BY"}</small><strong>Main Overseer</strong></span>
-            <span className="role-indicators">
-              <i className="role-indicator is-configured" aria-label={`Main context scope: ${mainRole?.memoryScopeKey ?? "global"}`} title={`Shared context · ${mainRole?.memoryScopeKey ?? "global"}`}><b>C</b></i>
-              <i className="role-indicator is-configured" aria-label={`Main tool profile: ${mainRole?.toolProfileKey ?? "main-overseer-v1"}; actual chat tools are not observable`} title={`Tool profile · ${mainRole?.toolProfileKey ?? "main-overseer-v1"}`}><b>T</b></i>
-            </span>
-            <i className={`graph-status-dot state-${logicalState}`} title={hasRunningProject ? "Recorded project activity" : issueCount > 0 ? "Recorded blocker or failed check" : "Idle"} />
-          </div>
+          <button
+            type="button"
+            id="graph-main-node"
+            className={`graph-overseer-node ${mainTurnActive ? "is-active" : ""} ${selectedIsMain ? "is-selected" : ""}`}
+            onClick={() => setSelectedNodeKey(selectedIsMain ? null : "main")}
+            aria-expanded={selectedIsMain}
+            aria-controls={selectedIsMain ? "graph-agent-dossier" : undefined}
+            title="Open Main Overseer coordination"
+            aria-label={`Main Overseer. ${ownerApprovalCount ? `${ownerApprovalCount} owner actions need attention` : mainEscalationCount ? `${mainEscalationCount} Project Manager escalations need review` : mainInboxIssues ? `${mainInboxIssues} Main messages need delivery review` : mainTurnActive ? "reviewing a routed update" : mainTurnQueued ? "a routed update is queued" : "idle; project agents run independently"}. Open coordination details`}
+          >
+            <span className={`graph-overseer-orbit ${mainTurnActive ? "is-active" : ""}`}><BrandMark /></span>
+            <span className="graph-overseer-label"><small>{ownerApprovalCount ? "OWNER ACTION" : mainEscalationCount ? "REVIEW ESCALATION" : mainInboxIssues ? "INBOX NEEDS REVIEW" : mainTurnActive ? "REVIEWING UPDATE" : mainTurnQueued ? "UPDATE QUEUED" : "IDLE · DELEGATES RUN"}</small><strong>Main Overseer</strong></span>
+            <i className={`graph-status-dot state-${mainInboxIssues || ownerApprovalCount ? "danger" : mainTurnActive ? "live" : mainTurnQueued ? "review" : "quiet"}`} title={mainTurnActive ? "Main is processing a routed event" : mainTurnQueued ? "Main event is queued" : "Main is idle; project agents run independently"} />
+          </button>
 
           {projectRoleRows.length ? <ol className="graph-project-list" aria-label="Persistent Project Manager roles">
-            {projectRoleRows.map(({ role, project, item, assigned, workers, state, statusLabel, latestUpdate, unlinkedHooks, run }) => {
-              const roleTitle = `${project.name} · persistent Project Manager role · ${statusLabel}${assigned ? ` · ${assigned.taskTitle}` : ""}`;
-              const updateTitle = latestUpdate ? `\nLast agent checkpoint (${updateAge(latestUpdate.createdAt)}): ${latestUpdate.summary}` : "\nNo agent checkpoint has been recorded for this assignment.";
-              const selected = assigned && selectedAgentId === String(assigned.id);
+            {projectRoleRows.map(({ role, project, item, assigned, workers, state, statusLabel, unlinkedHooks, run }) => {
+              const selectedProjectNode = selectedNodeKey === `project:${project.id}`;
               return (
                 <li className="graph-project-row" key={role.roleKey}>
                   <button
                     type="button"
-                    id={assigned ? `graph-agent-node-${assigned.id}` : undefined}
-                    className={`graph-project-node state-${state} ${selected ? "is-selected" : ""}`}
-                    onClick={() => assigned && setSelectedAgentId(selected ? null : String(assigned.id))}
-                    aria-expanded={selectedAgentId === String(assigned?.id)}
-                    aria-controls={selectedAgentId === String(assigned?.id) ? "graph-agent-dossier" : undefined}
-                    title={`${roleTitle}${updateTitle}\nContext scope: ${role.memoryScopeKey}\nTool profile: ${role.toolProfileKey}; actual Codex chat availability is unobserved.`}
-                    aria-label={`${roleTitle}${latestUpdate ? `; latest agent checkpoint ${latestUpdate.summary}, ${updateAge(latestUpdate.createdAt)}` : "; no agent checkpoint recorded"}; context scope ${role.memoryScopeKey}; tool profile ${role.toolProfileKey}; actual chat tool availability is unobserved`}
+                    id={`graph-project-node-${project.id}`}
+                    className={`graph-project-node state-${state} ${selectedProjectNode ? "is-selected" : ""}`}
+                    onClick={() => setSelectedNodeKey(selectedProjectNode ? null : `project:${project.id}`)}
+                    aria-expanded={selectedProjectNode}
+                    aria-controls={selectedProjectNode ? "graph-agent-dossier" : undefined}
+                    title={`${project.name} · ${statusLabel}${assigned ? ` · ${assigned.taskTitle}` : run?.taskTitle ? ` · ${run.taskTitle}` : ""}. Open work details.`}
+                    aria-label={`${project.name} Project Manager. ${statusLabel}${assigned ? `; current task ${assigned.taskTitle}` : run?.taskTitle ? `; latest task ${run.taskTitle}` : "; no task recorded"}. Open work details`}
                   >
                     <i className={`project-state-indicator state-${state}`} aria-hidden="true"><i /></i>
                     <span className="graph-project-copy"><strong>{project.name}</strong><small>{statusLabel}</small></span>
-                    <span className="role-indicators">
-                      <i className={`role-indicator ${assigned?.activationStatus === "ready" ? "is-ready" : assigned?.activationStatus === "incomplete" ? "is-warning" : "is-configured"}`} aria-label={`Persistent project context scope ${role.memoryScopeKey}; latest activation ${assigned?.activationStatus ?? "not observed"}`} title={`Context · ${role.memoryScopeKey} · ${assigned?.activationStatus ?? "not activated in current assignment"}`}><b>C</b></i>
-                      <i className="role-indicator is-configured" aria-label={`Project Manager tool profile ${role.toolProfileKey}; actual chat availability is unobserved`} title={`Tool profile · ${role.toolProfileKey}`}><b>T</b></i>
-                    </span>
                     <i className={`graph-status-dot state-${state}`} aria-hidden="true" />
                   </button>
                   <div className="graph-worker-cluster" role="group" aria-label={`${project.name} recorded child workers`}>
-                    {workers.map((worker, index) => (
-                      <button
-                        key={worker.id}
-                        type="button"
-                        id={`graph-agent-node-${worker.id}`}
-                        className={`graph-worker-node state-${agentState(worker, snapshot.agentUpdates)} ${selectedAgentId === String(worker.id) ? "is-selected" : ""}`}
-                        onClick={() => setSelectedAgentId(selectedAgentId === String(worker.id) ? null : String(worker.id))}
-                        aria-expanded={selectedAgentId === String(worker.id)}
-                        aria-controls={selectedAgentId === String(worker.id) ? "graph-agent-dossier" : undefined}
-                        title={`${project.name} · Worker ${index + 1} · ${worker.status} · ${worker.taskTitle}${latestAgentUpdate(snapshot, worker.id) ? ` · ${latestAgentUpdate(snapshot, worker.id)?.summary}` : " · no checkpoint recorded"}`}
-                        aria-label={`${project.name} Worker ${index + 1}: ${agentState(worker, snapshot.agentUpdates)}${latestAgentUpdate(snapshot, worker.id) ? `; latest checkpoint ${latestAgentUpdate(snapshot, worker.id)?.summary}` : "; no checkpoint recorded"}`}
-                      ><b>W</b><i /></button>
-                    ))}
+                    {workers.map((worker, index) => {
+                      const workerSelected = selectedNodeKey === `agent:${worker.id}`;
+                      const workerState = agentState(worker, snapshot.agentUpdates);
+                      return (
+                        <button
+                          key={worker.id}
+                          type="button"
+                          id={`graph-agent-node-${worker.id}`}
+                          className={`graph-worker-node state-${workerState} ${workerSelected ? "is-selected" : ""}`}
+                          onClick={() => setSelectedNodeKey(workerSelected ? null : `agent:${worker.id}`)}
+                          aria-expanded={workerSelected}
+                          aria-controls={workerSelected ? "graph-agent-dossier" : undefined}
+                          title={`${project.name} · Worker ${index + 1} · ${worker.taskTitle}. Open work details.`}
+                          aria-label={`${project.name} Worker ${index + 1}: ${agentStateLabel(workerState)}; ${worker.taskTitle}. Open work details`}
+                        ><span>Worker {index + 1}</span><i aria-hidden="true" /></button>
+                      );
+                    })}
                     {!workers.length && <span className="graph-worker-empty" title="No explicit child Worker delegation is recorded" aria-label="No child Worker delegation recorded">·</span>}
                     {item.issueCount > 0 && <span className="graph-issue-count" title={`${item.issueCount} recorded action, blocker, or failed-required-check signals`} aria-label={`${item.issueCount} project attention signals`}>{item.issueCount}</span>}
                   </div>
@@ -866,68 +1088,176 @@ function AgentActivityView({ snapshot }: { snapshot: DashboardSnapshot }) {
         </div>
         </div>
       </div>
-      {selected && <section id="graph-agent-dossier" className="worker-dossier" tabIndex={-1} aria-label={`${agentRole(selected)} work details`}>
+      {selectedNodeKey && <section id="graph-agent-dossier" className="worker-dossier" tabIndex={-1} aria-label={`${selectedIsMain ? "Main Overseer" : selectedAgent ? agentRole(selectedAgent) : "Project Manager"} work details`}>
         <header className="worker-dossier-heading">
           <div className="dossier-identity">
-            <i className={`detail-state state-${agentState(selected, snapshot.agentUpdates)}`} aria-hidden="true" />
-            <span><small>{selected.projectName} · {agentRole(selected)} · Run {selected.runId}</small><h2>{selected.taskTitle}</h2></span>
+            <i className={`detail-state state-${selectedTone}`} aria-hidden="true" />
+            <span>
+              <small>{selectedProject?.name ?? "All projects"} · {selectedIsMain ? "Main Overseer" : selectedAgent ? agentRole(selectedAgent) : "Project Manager"}{selectedRun ? ` · Run ${selectedRun.id}` : ""}</small>
+              <h2>{selectedTitle}</h2>
+            </span>
           </div>
-          <button type="button" className="dossier-close" onClick={closeDossier} aria-label="Close work details" title="Close work details"><Icon name="close" /></button>
+          <div className="dossier-heading-actions">
+            <span className={`dossier-status state-${selectedTone}`}>{selectedStatus}</span>
+            <button type="button" className="dossier-close" onClick={closeDossier} aria-label="Close work details" title="Close work details"><Icon name="close" /></button>
+          </div>
         </header>
-        <div className="dossier-status-line">
-          <span className={`dossier-status state-${agentState(selected, snapshot.agentUpdates)}`}>{selectedUpdate?.phase?.replace(/_/g, " ") ?? selected.status.replace(/_/g, " ")}</span>
-          <span>{selectedUpdate ? `Checkpoint ${updateAge(selectedUpdate.createdAt)}` : "No checkpoint recorded"}</span>
-          {selectedManager && <span>Child of {selectedManager.taskTitle}</span>}
-          {selected.report && <span className="dossier-report-status">Report {selected.report.reviewStatus.replace(/_/g, " ")}</span>}
+        <div className="dossier-summary">
+          <div className="dossier-summary-heading">
+            <span>{selectedSummarySource}</span>
+            {selectedUpdate && <time dateTime={new Date(selectedUpdate.createdAt * 1000).toISOString()}>Updated {updateAge(selectedUpdate.createdAt)}</time>}
+          </div>
+          <p className="dossier-summary-copy">{selectedSummary}</p>
+          {selectedAttention && <aside className="dossier-owner-action" role="status">
+            <strong>{selectedAttention.label}</strong>
+            <p>{selectedAttention.title}</p>
+            <small>{selectedAttention.source}{selectedAttention.detail ? ` · ${selectedAttention.detail}` : ""}</small>
+            {selectedOwnerApproval && <OwnerApprovalControls request={selectedOwnerApproval} />}
+          </aside>}
+          {(selectedIsMain || selectedRun || selected?.report || selectedUpdate || selectedProjectRow) && <div className="dossier-glance" aria-label="Work summary metrics">
+            {selectedIsMain ? <>
+              <div><strong>{mainTurnActive ? "Working" : mainTurnQueued ? "Queued" : "Idle"}</strong><span>Main turn</span></div>
+              <div><strong>{liveProjectCount}</strong><span>Live projects</span></div>
+              <div><strong>{activeCount}</strong><span>Agents working</span></div>
+              <div className={issueCount ? "needs-action" : ""}><strong>{issueCount}</strong><span>Attention</span></div>
+            </> : <>
+              {selectedRun && <div><strong>{selectedRun.status === "running" ? "In progress" : selectedRun.status === "verified_success" ? "Verified" : selectedRun.status.replace(/_/g, " ")}</strong><span>Project run</span></div>}
+              {selected?.report && <>
+                <div><strong>{selected.report.report.checkResults.length}</strong><span>Checks reported</span></div>
+                <div><strong>{selected.report.report.changedFiles.length}</strong><span>Files reported</span></div>
+              </>}
+              {!selected?.report && selectedUpdate && <div><strong>{updateAge(selectedUpdate.createdAt)}</strong><span>Last update</span></div>}
+              {!selected?.report && selectedProjectRow && <div><strong>{selectedProjectRow.workers.length}</strong><span>Recorded workers</span></div>}
+            </>}
+          </div>}
         </div>
-        <div className="worker-dossier-grid">
-          <section className="dossier-section dossier-latest-work">
-            <h3>Latest work signal</h3>
-            {selectedUpdate ? <p>{selectedUpdate.summary}</p> : <p className="dossier-empty">No progress checkpoint has been recorded for this assignment.</p>}
-            {selected.workerTelemetry && <small className="dossier-source-note">Hook observed {selected.workerTelemetry.events.length} event{selected.workerTelemetry.events.length === 1 ? "" : "s"}{selected.workerTelemetry.effectiveModel ? ` · ${selected.workerTelemetry.effectiveModel}` : ""}</small>}
-          </section>
-          <section className="dossier-section dossier-report">
-            <h3>Worker report <span>self-reported</span></h3>
-            {selected.report ? <>
+        {(selectedIsMain ? actions.length > 0 || mainInbox.length > 0 : selectedRun || selectedUpdates.length > 0 || selected?.report || selected?.worktree || selected?.workerTelemetry || Boolean(selectedAction)) && <details className="dossier-evidence">
+          <summary><span>Full evidence</span><small>{selectedIsMain ? "Recent attention items" : "Reports, updates, Git and QA details"}</small></summary>
+          <div className="worker-dossier-grid">
+            {selectedIsMain && actions.length > 0 && <section className="dossier-section">
+              <h3>Latest attention</h3>
+              <ul className="dossier-check-list">{actions.map((action) => <li key={action.key}>
+                <i className={`check-signal ${action.priority === 0 ? "status-failed" : "status-unknown"}`} />
+                <span><b>{action.source} · {action.title}</b><small>{action.detail}</small></span>
+                <strong>{action.label}</strong>
+              </li>)}</ul>
+            </section>}
+            {selectedIsMain && mainInbox.length > 0 && <section className="dossier-section dossier-checkpoints">
+              <h3>Main event trail <span>{mainInbox.length}</span></h3>
+              <ol>{[...mainInbox].sort((left, right) => right.updatedAt - left.updatedAt || right.id - left.id).slice(0, 6).map((message) => <li key={message.id}>
+                <i className={`checkpoint-mark checkpoint-${message.status}`} aria-hidden="true"><b /></i>
+                <span><strong>{message.projectName} · {message.eventType.replace(/_/g, " ")}</strong><small>{message.status.replace(/_/g, " ")}{message.lastError ? ` · ${message.lastError}` : ""}</small></span>
+                <time dateTime={new Date(message.updatedAt * 1000).toISOString()}>{updateAge(message.updatedAt)}</time>
+              </li>)}</ol>
+            </section>}
+            {selectedRun && <section className="dossier-section">
+              <h3>Project run</h3>
+              <div className="dossier-fact-row"><span>Result</span><b>{selectedRun.status.replace(/_/g, " ")}</b></div>
+              {selectedRun.workflowKey && <div className="dossier-fact-row"><span>Workflow</span><b>{selectedRun.workflowKey.replace(/_/g, " ")}{selectedRun.workflowVersion ? ` · v${selectedRun.workflowVersion}` : ""}</b></div>}
+              {selectedRun.summary && <p>{selectedRun.summary}</p>}
+            </section>}
+            {selectedUpdates.length > 0 && <section className="dossier-section dossier-checkpoints">
+              <h3>Recent updates <span>{selectedUpdates.length}</span></h3>
+              <ol>{selectedUpdates.map((update) => <li key={update.eventId}>
+                <i className={`checkpoint-mark checkpoint-${update.updateType}`} aria-hidden="true"><b /></i>
+                <span><strong>{update.phase?.replace(/_/g, " ") ?? update.updateType.replace(/_/g, " ")}</strong><small>{update.summary}</small></span>
+                <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
+              </li>)}</ol>
+            </section>}
+            {selected?.workerTelemetry && !selected.report && <section className="dossier-section">
+              <h3>Recorded agent activity</h3>
+              <div className="dossier-fact-row"><span>Hook events</span><b>{selected.workerTelemetry.events.length}</b></div>
+              {selected.workerTelemetry.effectiveModel && <div className="dossier-fact-row"><span>Observed model</span><b>{selected.workerTelemetry.effectiveModel}</b></div>}
+              {selected.workerTelemetry.events.length > 0 && <ol className="dossier-telemetry-list">{selected.workerTelemetry.events.map((event) => <li key={event.eventId}><span>{event.eventKind.replace(/_/g, " ")}</span><time dateTime={new Date(event.createdAt * 1000).toISOString()}>{updateAge(event.createdAt)}</time></li>)}</ol>}
+            </section>}
+            {selected?.report && <section className="dossier-section dossier-report">
+              <h3>{agentRole(selected)} report <span>reported by agent</span></h3>
               <p>{selected.report.report.summary}</p>
-              <div className="dossier-outcome"><span>Outcome</span><strong>{selected.report.report.outcome.replace(/_/g, " ")}</strong></div>
-              <div className="dossier-subsection"><h4>Changed files · {selected.report.report.changedFiles.length}</h4>
-                {selected.report.report.changedFiles.length ? <ul className="dossier-path-list">{selected.report.report.changedFiles.slice(0, 6).map((path) => <li key={path} title={path}>{path}</li>)}</ul> : <p className="dossier-empty">No changed files reported.</p>}
-                {selected.report.report.changedFiles.length > 6 && <small>+{selected.report.report.changedFiles.length - 6} more files in the report</small>}
+              <div className="dossier-outcome"><span>Reported outcome</span><strong>{selected.report.report.outcome.replace(/_/g, " ")}</strong></div>
+              <div className="dossier-subsection"><h4>Reported changed files · {selected.report.report.changedFiles.length}</h4>
+                {selected.report.report.changedFiles.length ? <ul className="dossier-path-list">{selected.report.report.changedFiles.map((path) => <li key={path} title={path}>{path}</li>)}</ul> : <p className="dossier-empty">No files were reported as changed.</p>}
               </div>
-              <div className="dossier-subsection"><h4>Checks reported · {selected.report.report.checkResults.length}</h4>
-                {selected.report.report.checkResults.length ? <ul className="dossier-check-list">{selected.report.report.checkResults.slice(0, 5).map((check, index) => <li key={`${check.name}-${index}`}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.name}</b><small>{check.summary}</small></span><strong>{check.status}</strong></li>)}</ul> : <p className="dossier-empty">No checks included in the worker report.</p>}
+              <div className="dossier-subsection"><h4>Reported checks · {selected.report.report.checkResults.length}</h4>
+                {selected.report.report.checkResults.length ? <ul className="dossier-check-list">{selected.report.report.checkResults.map((check, index) => <li key={`${check.name}-${index}`}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.name}</b><small>{check.summary}</small></span><strong>{check.status}</strong></li>)}</ul> : <p className="dossier-empty">No checks were included in this report.</p>}
               </div>
-              {selected.report.report.blockers.length > 0 && <div className="dossier-subsection dossier-blockers"><h4>Reported blockers · {selected.report.report.blockers.length}</h4><ul>{selected.report.report.blockers.slice(0, 4).map((blocker, index) => <li key={`${blocker}-${index}`}>{blocker}</li>)}</ul></div>}
-              {selected.report.report.commits.length > 0 && <div className="dossier-commits"><span>Reported commits</span>{selected.report.report.commits.slice(0, 3).map((commit) => <code key={commit}>{commit}</code>)}</div>}
-            </> : <p className="dossier-empty">No final Worker report is recorded.</p>}
-          </section>
-          <section className="dossier-section dossier-checkpoints">
-            <h3>Recent checkpoints <span>{selectedUpdates.length}</span></h3>
-            {selectedUpdates.length ? <ol>{selectedUpdates.map((update) => <li key={update.eventId}>
-              <i className={`checkpoint-mark checkpoint-${update.updateType}`} aria-hidden="true"><b /></i>
-              <span><strong>{update.phase?.replace(/_/g, " ") ?? update.updateType.replace(/_/g, " ")}</strong><small>{update.summary}</small></span>
-              <time dateTime={new Date(update.createdAt * 1000).toISOString()}>{updateAge(update.createdAt)}</time>
-            </li>)}</ol> : <p className="dossier-empty">No checkpoint history recorded.</p>}
-          </section>
-          <section className="dossier-section dossier-worktree">
-            <h3>Git / QA evidence <span>independent of report</span></h3>
-            {selected.worktree ? <>
+              {selected.report.report.blockers.length > 0 && <div className="dossier-subsection dossier-blockers"><h4>Reported blockers</h4><ul>{selected.report.report.blockers.map((blocker, index) => <li key={`${blocker}-${index}`}>{blocker}</li>)}</ul></div>}
+              {selected.report.report.commits.length > 0 && <div className="dossier-commits"><span>Reported commits</span>{selected.report.report.commits.map((commit) => <code key={commit}>{commit}</code>)}</div>}
+              {selected.workerTelemetry && <small className="dossier-source-note">Hook observed {selected.workerTelemetry.events.length} event{selected.workerTelemetry.events.length === 1 ? "" : "s"}{selected.workerTelemetry.effectiveModel ? ` · ${selected.workerTelemetry.effectiveModel}` : ""}</small>}
+            </section>}
+            {selected?.worktree && <section className="dossier-section dossier-worktree">
+              <h3>Git and worktree</h3>
               <div className="dossier-fact-row"><span>Branch</span><b>{selected.worktree.branch ?? "Unknown"}</b></div>
               <div className="dossier-fact-row"><span>Observed HEAD</span><b title={selected.worktree.observedHead ?? "No Git HEAD recorded"}>{selected.worktree.observedHead?.slice(0, 12) ?? "Not recorded"}</b></div>
               <div className="dossier-fact-row"><span>Observed state</span><b>{selected.worktree.isClean === null ? "Not available" : selected.worktree.isClean ? "Clean" : "Changes present"}</b></div>
               <div className="dossier-fact-row"><span>Reconciled</span><b>{selected.worktree.lastReconciledAt ? updateAge(selected.worktree.lastReconciledAt) : "Not reconciled"}</b></div>
               {selected.worktree.reportVerification && <div className="dossier-verification"><b>{selected.worktree.reportVerification.status.replace(/_/g, " ")}</b><span>{selected.worktree.reportVerification.verifiedPaths.length} verified paths · {selected.worktree.reportVerification.unverifiedPaths.length} unverified</span></div>}
-              <div className="dossier-subsection"><h4>Observed changed paths · {selected.worktree.changedPaths.length}</h4>
-                {selected.worktree.changedPaths.length ? <ul className="dossier-path-list">{selected.worktree.changedPaths.slice(0, 6).map((path) => <li key={path} title={path}>{path}</li>)}</ul> : <p className="dossier-empty">No changed paths observed at the last reconciliation.</p>}
-                {selected.worktree.changedPaths.length > 6 && <small>+{selected.worktree.changedPaths.length - 6} more paths</small>}
-              </div>
-              {selected.report?.qualityCheckRefs.length ? <div className="dossier-subsection"><h4>Cathulu QA references</h4><ul className="dossier-check-list">{selected.report.qualityCheckRefs.slice(0, 5).map((check) => <li key={check.qualityCheckId}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.checkKey}</b><small>{check.mandatory ? "Required" : "Optional"} · recorded by Cathulu</small></span><strong>{check.status}</strong></li>)}</ul></div> : <p className="dossier-empty">No Cathulu QA references are linked to this report.</p>}
-            </> : <p className="dossier-empty">No worktree reconciliation is recorded for this assignment.</p>}
-          </section>
-        </div>
+              {selected.worktree.changedPaths.length > 0 && <div className="dossier-subsection"><h4>Observed changed paths · {selected.worktree.changedPaths.length}</h4><ul className="dossier-path-list">{selected.worktree.changedPaths.map((path) => <li key={path} title={path}>{path}</li>)}</ul></div>}
+            </section>}
+            {selected?.report?.qualityCheckRefs.length ? <section className="dossier-section">
+              <h3>Cathulu QA references</h3>
+              <ul className="dossier-check-list">{selected.report.qualityCheckRefs.map((check) => <li key={check.qualityCheckId}><i className={`check-signal status-${check.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} /><span><b>{check.checkKey}</b><small>{check.mandatory ? "Required" : "Optional"} · recorded by Cathulu</small></span><strong>{check.status}</strong></li>)}</ul>
+            </section> : null}
+          </div>
+        </details>}
       </section>}
     </section>
+  );
+}
+
+function OwnerApprovalControls({ request }: { request: PendingOwnerApproval }) {
+  const [armedDecision, setArmedDecision] = useState<"approved" | "declined" | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setArmedDecision(null);
+    setSubmitting(false);
+    setError(null);
+  }, [request.id, request.requestHash]);
+
+  const decide = async (decision: "approved" | "declined") => {
+    if (armedDecision !== decision) {
+      setArmedDecision(decision);
+      setError(null);
+      return;
+    }
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await invoke("decide_owner_approval_request", {
+        requestId: request.id,
+        expectedRequestHash: request.requestHash,
+        decision,
+      });
+      setArmedDecision(null);
+      window.dispatchEvent(new Event("cathulu:refresh-dashboard"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="owner-decision-controls" aria-label="Owner approval decision">
+      {armedDecision ? <>
+        <p className="owner-decision-confirmation" role="status">
+          {armedDecision === "approved" ? "Approve" : "Decline"} only this exact request? Cathulu will record your decision; it will not perform the action.
+        </p>
+        <div className="owner-decision-buttons">
+          <button className={`owner-decision-button is-${armedDecision}`} type="button" disabled={submitting} onClick={() => void decide(armedDecision)}>
+            {submitting ? "Recording…" : `Confirm ${armedDecision === "approved" ? "approval" : "decline"}`}
+          </button>
+          <button className="owner-decision-cancel" type="button" disabled={submitting} onClick={() => setArmedDecision(null)}>Cancel</button>
+        </div>
+      </> : <div className="owner-decision-buttons">
+        <button className="owner-decision-button is-approved" type="button" onClick={() => void decide("approved")}>Approve exact action</button>
+        <button className="owner-decision-button is-declined" type="button" onClick={() => void decide("declined")}>Decline</button>
+      </div>}
+      {error && <p className="owner-decision-error" role="alert">Decision not recorded: {error}</p>}
+      <small className="owner-decision-note">Approval applies only to the action shown above. Review and execute it separately.</small>
+    </div>
   );
 }
 
@@ -966,6 +1296,13 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
   const [actionError, setActionError] = useState<string | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const projectItems = snapshot ? projectMonitorItems(snapshot) : [];
+  const liveProjectCount = projectItems.filter((item) => item.latestRun?.status === "running").length;
+  const workingAgentCount = projectItems.reduce((total, item) => total + item.activeAgents, 0);
+  const ownerActionCount = snapshot?.pendingOwnerApprovalRequests.length ?? 0;
+  const queuedDispatchCount = snapshot?.roleDispatches.filter((item) => item.status === "queued").length ?? 0;
+  const activeDispatchCount = snapshot?.roleDispatches.filter((item) => ["preflighting", "thread_ready", "turn_starting", "dispatched", "running"].includes(item.status)).length ?? 0;
+  const memoryClasses = snapshot ? memoryClassMetrics(snapshot.memoryHealth) : [];
+  const memoryClassTotal = memoryClasses.reduce((total, item) => total + item.count, 0);
   const compactWidth = 174;
   const compactHeight = 58;
   const expandedWidth = 376;
@@ -1053,6 +1390,24 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
               <span>Projects</span>
               <button className="monitor-open" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => void restoreDashboard()} aria-label="Open dashboard" title="Open dashboard"><Icon name="open" /></button>
             </div>
+            {snapshot && <section className="monitor-pulse" aria-label="Workflow pulse">
+              <div className="monitor-pulse-item" title="Projects with a latest run still recorded as running"><i className="signal-live" /><b>{liveProjectCount}</b><span>Live</span></div>
+              <div className="monitor-pulse-item" title="Agents with a current recorded working signal"><i className="signal-live" /><b>{workingAgentCount}</b><span>Working</span></div>
+              <div className="monitor-pulse-item" title="Prepared role assignments accepted into Cathulu's asynchronous queue"><i className="signal-update" /><b>{queuedDispatchCount}</b><span>Queued</span></div>
+              <div className="monitor-pulse-item" title="Role turns acknowledged by Codex and not yet returned"><i className="signal-live" /><b>{activeDispatchCount}</b><span>Dispatching</span></div>
+              <div className={`monitor-pulse-item ${ownerActionCount ? "needs-owner" : ""}`} title="Open, explicitly recorded requests for owner input"><i className="signal-attention" /><b>{ownerActionCount}</b><span>Needs you</span></div>
+            </section>}
+            {snapshot && <section className="monitor-memory" aria-label="Memory usage by class">
+              <div className="monitor-memory-heading"><span>Memory mix</span><small>{memoryClassTotal} records</small></div>
+              {memoryClassTotal > 0 ? <>
+                <div className="memory-stack monitor-memory-stack" role="img" aria-label={memoryClasses.map((item) => `${item.label}: ${item.count}`).join(", ")}>
+                  {memoryClasses.filter((item) => item.count > 0).map((item) => <i key={item.key} className={`memory-segment memory-${item.key}`} style={{ width: `${(item.count / memoryClassTotal) * 100}%` }} />)}
+                </div>
+                <ul className="monitor-memory-legend">
+                  {memoryClasses.map((item) => <li key={item.key} title={`${item.count} ${item.label.toLowerCase()} memory records`}><i className={`memory-key memory-${item.key}`} /><span>{item.label}</span><b>{item.count}</b></li>)}
+                </ul>
+              </> : <p className="monitor-memory-empty">No memory records</p>}
+            </section>}
             {!snapshot ? <p className="monitor-error">{error ?? (loading ? "Reading local state…" : "No snapshot available")}</p> : projectItems.length === 0 ? <p className="monitor-empty">No registered projects</p> : projectItems.map((item) => (
               <div className="monitor-project-entry" key={item.project.id}>
                 <button
@@ -1074,8 +1429,13 @@ function MonitorWindow({ snapshot, loading, error }: { snapshot: DashboardSnapsh
                   </span>
                 </button>
                 <div className="monitor-project-details" id={`monitor-project-details-${item.project.id}`} role="region" aria-label={`${item.project.name} latest activity`} hidden={expandedProjectId !== item.project.id}>
-                  {item.pendingAction && <section className="monitor-detail-attention">
+                  {item.pendingOwnerApproval && <section className="monitor-detail-attention">
                     <small>Needs you</small>
+                    <strong>{item.pendingOwnerApproval.ownerAction}</strong>
+                    <p>{item.pendingOwnerApproval.requestSummary} · {item.pendingOwnerApproval.reason}</p>
+                  </section>}
+                  {item.pendingAction && <section className="monitor-detail-attention">
+                    <small>{actionRecipientLabel(item.pendingAction.routedToRole)}</small>
                     <strong>{item.pendingAction.ownerAction}</strong>
                     <p>{item.pendingAction.summary}</p>
                   </section>}

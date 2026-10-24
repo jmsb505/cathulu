@@ -1,8 +1,8 @@
 # PLAN-007 — Launch the desktop dashboard with the local MCP server
 
-**Status:** In progress
+**Status:** Superseded by ADR-0020 and PLAN-018 on 2026-10-24. Retained as historical M26 design and implementation evidence.
 **Created:** 2026-10-22
-**Updated:** 2026-10-22
+**Updated:** 2026-10-24
 **Milestone:** M26
 
 ## Objective
@@ -15,7 +15,7 @@ The configured M23 MCP executable starts independently from the Tauri desktop ap
 
 ## Current and desired state
 
-- **Current:** Codex points to `target/mcp-current/cathulu-mcp.exe`, a stable Windows junction now targeting the schema-12 pair in `target/mcp-versions/ADB67AE38250F74FB9C4C503`. The user restarted Codex and the active MCP exposed `cathulu://roles`. During that restart, the dashboard visibly opened and closed repeatedly. The new matched build schedules dashboard startup off the MCP stdio path; the current MCP process still needs a Cathulu-only restart to load this follow-up.
+- **Current:** Codex points to `target/mcp-current/cathulu-mcp.exe`, a stable Windows junction targeting the latest matched pair. The user still observed about three dashboard appearances on Codex startup with the prior build. The 2026-10-24 pair adds a process-lifetime Windows launch claim; the currently loaded MCP must restart to use it, and the next startup must be observed before the visual issue is considered resolved.
 - **Desired:** Build through `scripts/build-current.ps1`. It stages both release executables from the same source fingerprint, uses Tauri's `custom-protocol` build, verifies hashes, stores the pair in a versioned directory, and advances the stable junction. Codex configuration then remains fixed across future builds. MCP schedules the sibling desktop through the OS shell on a background thread while RMCP stdio becomes ready immediately; first launch is non-activating and repeated starts leave the existing window untouched.
 
 ## Scope
@@ -141,3 +141,9 @@ If the dashboard fails to start, MCP remains usable. Rebuild both binaries from 
 - Rebuilt and published the matched pair with `scripts/build-current.ps1`. Version `4FF845CF2EA60E7545E73139` is selected by the unchanged `target/mcp-current` junction; source fingerprint `4FF845CF2EA60E7545E731391433413BFBE74D76A126504C0ADCB5018D49D915`, MCP SHA-256 `DD72005776635CEF1E9C504BDA9BC441904476D864C093E4C5883ED09CFA4A91`, desktop SHA-256 `F5946F7088939488A28FB960AE61F0B3CCCFFFB5C52E960686D22693821F56F4`, `custom-protocol` enabled.
 - Parsed the PE headers: both debug and release desktop executables use subsystem 2 (`Windows GUI`); the MCP executable remains subsystem 3 (`Windows console`) for stdio transport.
 - Sent normal close requests to five stale debug Cathulu windows and stopped seven additional stale debug processes with no main window. The post-cleanup snapshot showed zero `target/debug/cathulu-desktop.exe` and zero `OpenConsole.exe` processes, with one release desktop and four Codex-managed MCP processes remaining. Codex and the MCP processes were left running.
+
+### Multi-context startup launch claim — 2026-10-24
+
+- The user still observed the dashboard appearing and disappearing about three times when Codex started. The current Codex config contains one Cathulu MCP entry; Codex logs show Cathulu MCP readiness for multiple chat thread IDs. Windows Application crash events for the previous day contain no Cathulu desktop crash. This supports repeated launch attempts during startup, though the logs do not count the exact desktop processes that appeared.
+- The prior short-lived launch mutex only serialized MCP processes. It released after an eight-second window readiness check, so a later MCP process could launch a second desktop copy while the first Tauri process was still loading. Tauri would then exit the duplicate through its single-instance plugin.
+- The first MCP process now retains a named Windows session claim for its lifetime. Other MCP processes skip their launch attempt before consulting the Tauri window. This does not delay the MCP stdio handshake, raise an existing window, or start a console. An isolated Windows named-object check validates that a second claim is unavailable until the first handle closes. The matched pair is published at source fingerprint `49403D5945B920FF8B571B1A58C0A746931AE4EEEC993028F4BDF6808F06081A`; MCP SHA-256 `F41AB97908D9FB5CA67679D029106E7295CB301202DE74B669B042114D0F9C9D`, desktop SHA-256 `2B7897BCCF08F57F8DC1B48D9FFECE69D9BEA957A7B014455A2D21D6E823D82C`. The stable Codex path resolves to that pair and both hashes match its manifest. Observing the next Codex startup remains required before declaring the user-visible flicker resolved.

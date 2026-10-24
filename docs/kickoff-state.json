@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "phase": "CHECKPOINTED",
-  "project_scope": "Cathulu local Codex evidence and portfolio-state layer; first Phase 1 increment",
-  "last_updated": "2026-10-21",
-  "repository_revision": "6251515156c033e15b276bacc73b54df92101643",
+  "project_scope": "Mixed-provider personal project OS rebaseline; bounded provider-free task/checkpoint slice M48-M49",
+  "last_updated": "2026-10-25",
+  "repository_revision": "757fd3d5c0325095e40b07963602eb6feccd5624",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -81,6 +81,36 @@
       "date": "2026-10-21",
       "revision": "6251515156c033e15b276bacc73b54df92101643",
       "scope": "21 Rust tests passed with one dedicated integration test ignored by default; 3 React tests, formatting, frontend build, and disposable MCP/Tauri/Windows desktop/restart smoke passed. Semantic/read-only React assertions and 900px/620px responsive rules were checked. Direct browser viewport inspection could not connect to the local Windows loopback server. Published to main by fast-forward; GitHub returned no status checks."
+    },
+    {
+      "type": "USER_DECISION",
+      "locator": "Owner request: please use this plan to pivot",
+      "date": "2026-10-25",
+      "scope": "Adopt supplied mixed-provider personal project OS direction and planning-first assessment"
+    },
+    {
+      "type": "REFERENCE",
+      "locator": "C:\\Users\\sjuan\\Downloads\\Cathulu_Pivot_Mixed_Provider_Personal_Project_OS.md",
+      "date": "2026-10-25",
+      "scope": "Design requirements and requested 31-section migration assessment; no independent operational authorization"
+    },
+    {
+      "type": "CODE",
+      "locator": "docs/pivot-migration.md section 2 source map; dirty tree at HEAD 757fd3d5c0325095e40b07963602eb6feccd5624",
+      "date": "2026-10-25",
+      "scope": "Rust/SQLite schema through 18, FTS5, scoped memory, persistent roles, Codex dispatch, root workspace execution, optional specialist APIs"
+    },
+    {
+      "type": "RUNTIME",
+      "locator": "Read-only Get-Command claude,codex,graphify and Test-Path graphify-out/graph.json",
+      "date": "2026-10-25",
+      "scope": "Codex launcher resolves; Claude and Graphify absent on inspected PATH; local graph absent. No auth or provider invocation performed."
+    },
+    {
+      "type": "CANONICAL_DOC",
+      "locator": "https://learn.chatgpt.com/docs/app-server; https://code.claude.com/docs/en/headless; https://code.claude.com/docs/en/authentication; https://code.claude.com/docs/en/permissions",
+      "date": "2026-10-25",
+      "scope": "Official provider lifecycle/permissions documentation fetched after Context7 monthly-quota failures; installed support and live authentication remain unknown"
     }
   ],
   "claims": [
@@ -90,12 +120,20 @@
       "scope": "product",
       "claim": "Cathulu is a local evidence/state/memory layer around Codex; Codex remains the agent and user interaction surface.",
       "status": "KNOWN",
-      "sources": [{"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §§Purpose, 1, 2.1, 29", "date": "2026-10-20"}],
-      "decision_status": "ACCEPTED",
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "CATHULU_PROJECT_KICKOFF.md §§Purpose, 1, 2.1, 29",
+          "date": "2026-10-20"
+        }
+      ],
+      "decision_status": "SUPERSEDED",
       "related_question": null,
       "blocking": false,
       "owner": "project owner",
-      "next_action": null
+      "next_action": null,
+      "superseded_by": "C-010",
+      "supersession_note": "Codex-only product identity superseded by ADR-0022. Local evidence/state/memory foundations retained."
     },
     {
       "id": "C-002",
@@ -103,12 +141,19 @@
       "scope": "desktop UI",
       "claim": "The dashboard is read-only and has Overview, Activity, Project/Scope, and Evidence views.",
       "status": "KNOWN",
-      "sources": [{"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §19", "date": "2026-10-20"}],
-      "decision_status": "ACCEPTED",
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "CATHULU_PROJECT_KICKOFF.md §19",
+          "date": "2026-10-20"
+        }
+      ],
+      "decision_status": "SUPERSEDED",
       "related_question": null,
       "blocking": false,
       "owner": "project owner",
-      "next_action": null
+      "next_action": null,
+      "supersession_note": "Dated original UI arrangement; later graph/terminal decisions and desktop pause govern current presentation; pivot UI is deferred under ADR-0022."
     },
     {
       "id": "C-003",
@@ -116,7 +161,13 @@
       "scope": "first platform",
       "claim": "Phase 1 targets Windows first; cross-platform support is later.",
       "status": "KNOWN",
-      "sources": [{"type": "USER_DECISION", "locator": "User answer to Phase 1 platform question", "date": "2026-10-20"}],
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "User answer to Phase 1 platform question",
+          "date": "2026-10-20"
+        }
+      ],
       "decision_status": "ACCEPTED",
       "related_question": null,
       "blocking": false,
@@ -130,8 +181,16 @@
       "claim": "Use the brief's preferred Tauri 2, React/TypeScript, Rust, and SQLite stack because the empty repository supplies no existing-stack reason to choose otherwise.",
       "status": "INFERRED",
       "sources": [
-        {"type": "USER_DECISION", "locator": "CATHULU_PROJECT_KICKOFF.md §§3 and 25", "date": "2026-10-20"},
-        {"type": "CODE", "locator": "Local checkout and GitHub repository are empty", "date": "2026-10-20"}
+        {
+          "type": "USER_DECISION",
+          "locator": "CATHULU_PROJECT_KICKOFF.md §§3 and 25",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "CODE",
+          "locator": "Local checkout and GitHub repository are empty",
+          "date": "2026-10-20"
+        }
       ],
       "decision_status": "ACCEPTED",
       "rationale": "The brief explicitly prefers this stack unless an existing repository has a strong contrary reason; none exists.",
@@ -147,9 +206,21 @@
       "claim": "Cathulu will host future model and effort selectors for the Main Overseer and sub-agents. Official Codex documentation supports main-session model/effort settings and distinct per-role custom-agent values; the owner-approved apply target, account-specific catalog, and live-session behavior remain to be defined.",
       "status": "KNOWN",
       "sources": [
-        {"type": "USER_DECISION", "locator": "User parenthetical on future orchestrator/sub-agent model and effort selectors", "date": "2026-10-20"},
-        {"type": "USER_DECISION", "locator": "User clarification: Cathulu selectors later", "date": "2026-10-20"},
-        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/config-file/config-reference; https://learn.chatgpt.com/docs/agent-configuration/subagents; https://learn.chatgpt.com/docs/developer-settings", "date": "2026-10-21"}
+        {
+          "type": "USER_DECISION",
+          "locator": "User parenthetical on future orchestrator/sub-agent model and effort selectors",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "USER_DECISION",
+          "locator": "User clarification: Cathulu selectors later",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "CANONICAL_DOC",
+          "locator": "https://learn.chatgpt.com/docs/config-file/config-reference; https://learn.chatgpt.com/docs/agent-configuration/subagents; https://learn.chatgpt.com/docs/developer-settings",
+          "date": "2026-10-21"
+        }
       ],
       "decision_status": "ACCEPTED",
       "rationale": "The owner chose Cathulu as the future selector surface. Official docs confirm main-session and per-role configuration fields; the owner's preview/apply target and available option catalog remain to be decided.",
@@ -165,8 +236,16 @@
       "claim": "The local checkout and personal GitHub repository have no source files or commits as of 2026-10-20.",
       "status": "KNOWN",
       "sources": [
-        {"type": "CODE", "locator": "git status --short --branch and local workspace listing", "date": "2026-10-20"},
-        {"type": "RUNTIME", "locator": "GitHub connector: repository metadata, empty branches list, empty contents result", "date": "2026-10-20"}
+        {
+          "type": "CODE",
+          "locator": "git status --short --branch and local workspace listing",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "RUNTIME",
+          "locator": "GitHub connector: repository metadata, empty branches list, empty contents result",
+          "date": "2026-10-20"
+        }
       ],
       "decision_status": "ACCEPTED",
       "related_question": null,
@@ -181,9 +260,21 @@
       "claim": "Current official docs describe local MCP configuration, local lifecycle/tool hooks, and OpenTelemetry configuration; target Windows runtime behavior remains untested.",
       "status": "KNOWN",
       "sources": [
-        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/extend/mcp", "date": "2026-10-20"},
-        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/hooks", "date": "2026-10-20"},
-        {"type": "CANONICAL_DOC", "locator": "https://learn.chatgpt.com/docs/config-file/config-reference", "date": "2026-10-20"}
+        {
+          "type": "CANONICAL_DOC",
+          "locator": "https://learn.chatgpt.com/docs/extend/mcp",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "CANONICAL_DOC",
+          "locator": "https://learn.chatgpt.com/docs/hooks",
+          "date": "2026-10-20"
+        },
+        {
+          "type": "CANONICAL_DOC",
+          "locator": "https://learn.chatgpt.com/docs/config-file/config-reference",
+          "date": "2026-10-20"
+        }
       ],
       "decision_status": "PROVISIONAL",
       "related_question": "Q-003",
@@ -197,7 +288,13 @@
       "scope": "local toolchain",
       "claim": "The host has Rust 1.91.1, Cargo 1.91.1, Node.js 24.11.1, npm 10.8.3, and Git available.",
       "status": "KNOWN",
-      "sources": [{"type": "RUNTIME", "locator": "rustc --version; cargo --version; node --version; npm --version; Get-Command git", "date": "2026-10-20"}],
+      "sources": [
+        {
+          "type": "RUNTIME",
+          "locator": "rustc --version; cargo --version; node --version; npm --version; Get-Command git",
+          "date": "2026-10-20"
+        }
+      ],
       "decision_status": "ACCEPTED",
       "related_question": null,
       "blocking": false,
@@ -210,12 +307,151 @@
       "scope": "memory lifecycle",
       "claim": "Cathulu should preserve justified durable knowledge and provenance while keeping active scope context bounded. Memory class and retrieval temperature are independent; SQLite remains authoritative; raw evidence is promoted, compacted, or deleted only through a staged, evidence-based lifecycle.",
       "status": "KNOWN",
-      "sources": [{"type": "USER_DECISION", "locator": "User memory-system refinement, sections 1-32", "date": "2026-10-20"}],
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "User memory-system refinement, sections 1-32",
+          "date": "2026-10-20"
+        }
+      ],
       "decision_status": "ACCEPTED",
       "related_question": null,
       "blocking": false,
       "owner": "project owner",
       "next_action": null
+    },
+    {
+      "id": "C-010",
+      "dimension": "INTENT",
+      "scope": "product",
+      "claim": "Cathulu owns persistent local project/personal state, memory, policy and evidence; Claude Code and Codex are replaceable cognition/execution providers.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "ADR",
+          "locator": "docs/decisions/ADR-0022-mixed-provider-personal-project-os.md",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": null
+    },
+    {
+      "id": "C-011",
+      "dimension": "OBSERVED",
+      "scope": "source baseline",
+      "claim": "Current dirty source already implements SQLite through schema 18, FTS5, memory lifecycle, stable Main/PM identities and durable Codex event routing; this does not prove current loaded/live behavior.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "CODE",
+          "locator": "docs/pivot-migration.md section 2",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": null
+    },
+    {
+      "id": "C-012",
+      "dimension": "OBSERVED",
+      "scope": "execution safety",
+      "claim": "Current dispatch starts PM/Worker threads at the registered project path; worktree reconciliation does not allocate exclusive writer workspaces.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "CODE",
+          "locator": "src/dispatcher.rs dispatch_one; src/worktree.rs reconcile_delegation_worktree",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": "Implement PLAN-020 M52 before new mixed-provider execution activation."
+    },
+    {
+      "id": "C-013",
+      "dimension": "INTENT",
+      "scope": "first increment",
+      "claim": "Implement deterministic tasks/portfolio state and immutable checkpoint/resume for existing registered projects without provider calls or desktop redesign.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "ADR",
+          "locator": "docs/project-definition.md#pivot-scope-and-invariants; docs/plans/PLAN-020-mixed-provider-personal-project-os.md",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": "Begin M48 after rechecking current diffs and next schema version."
+    },
+    {
+      "id": "C-014",
+      "dimension": "OBSERVED",
+      "scope": "Claude feasibility",
+      "claim": "Claude launcher did not resolve on inspected PATH; safe subscription-compatible configuration and Windows permission parity are not established.",
+      "status": "UNKNOWN",
+      "sources": [
+        {
+          "type": "RUNTIME",
+          "locator": "docs/pivot-migration.md section 8",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "UNDECIDED",
+      "related_question": "P-Q1",
+      "blocking": true,
+      "owner": "Cathulu development",
+      "next_action": "Prepare concrete supported-version/configuration preflight before Claude activation."
+    },
+    {
+      "id": "C-015",
+      "dimension": "INTENT",
+      "scope": "routing priors",
+      "claim": "Claude judgment/UX and Codex bounded execution/verification are initial configurable preferences, not measured superiority or autonomous promotion.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "ADR",
+          "locator": "docs/decisions/ADR-0022-mixed-provider-personal-project-os.md",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": null
+    },
+    {
+      "id": "C-016",
+      "dimension": "OBSERVED",
+      "scope": "current runtime acceptance",
+      "claim": "Loaded build, current live dispatcher/tool parity and comparative benefit were not revalidated by the pivot documentation work.",
+      "status": "UNKNOWN",
+      "sources": [
+        {
+          "type": "RUNTIME",
+          "locator": "docs/plans/PLAN-020-mixed-provider-personal-project-os.md",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "UNDECIDED",
+      "related_question": "P-Q4",
+      "blocking": false,
+      "owner": "Cathulu development",
+      "next_action": "Observe existing M42/M44 through authorized work before reporting current live capability."
     }
   ],
   "questions": [
@@ -261,22 +497,130 @@
       "blocking": false,
       "owner": "project owner",
       "next_action": "Decide before meaningful public release; it does not block the local first increment."
+    },
+    {
+      "id": "P-Q1",
+      "text": "Which installed Claude version, subscription authentication mode and supported Windows configuration/permission controls satisfy safe adapter execution?",
+      "status": "OPEN_DEPENDENT",
+      "blocking": true,
+      "dependent_scope": "Claude adapter activation, not M48-M49",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Prepare explicit preflight; no automatic install, auth change or API fallback."
+    },
+    {
+      "id": "P-Q2",
+      "text": "Which personal information categories and provider disclosure grants should Cathulu retain/use?",
+      "status": "OPEN_DEPENDENT",
+      "blocking": true,
+      "dependent_scope": "Personal collection and disclosure in M50 or later",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Define categories, retention/correction and disclosure controls before collecting facts."
+    },
+    {
+      "id": "P-Q3",
+      "text": "Does an actual non-code project need zero-or-one repository or multiple repository bindings?",
+      "status": "OPEN_NONBLOCKING",
+      "blocking": false,
+      "dependent_scope": "M50 repository association",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Start with zero-or-one; investigate multiple bindings only for a real need."
+    },
+    {
+      "id": "P-Q4",
+      "text": "What does the currently loaded MCP demonstrate on the next already authorized assignment?",
+      "status": "OPEN_DEPENDENT",
+      "blocking": true,
+      "dependent_scope": "Live execution acceptance, not provider-free planning",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Reuse M42/M44 with current runtime evidence; do not infer failure or repeat reload from historical notes."
+    },
+    {
+      "id": "P-Q5",
+      "text": "When should the paused desktop track resume and which Owner command surface may write task state?",
+      "status": "OPEN_DEPENDENT",
+      "blocking": true,
+      "dependent_scope": "Desktop implementation only",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Keep UI work paused; develop headless domain seams first."
+    },
+    {
+      "id": "P-Q6",
+      "text": "Which existing uncommitted runtime changes integrate before the first pivot schema change?",
+      "status": "RESOLVED",
+      "blocking": false,
+      "dependent_scope": "Git integration and schema allocation",
+      "owner": "Cathulu development; Owner only for essential account/data/product authority",
+      "next_action": "Use the repository integration record/PR for delivery evidence; do not infer future schema allocation from a stale note.",
+      "answer": "Owner authorized integration of the full pending source/docs checkpoint on 2026-10-25; preserve existing IDs and recheck schema version before M48."
     }
   ],
   "document_authority": [
-    {"concern": "Purpose, actors, scope, invariants, MVP, success criteria", "document": "docs/project-definition.md"},
-    {"concern": "Architecture, security, profile, feasibility", "document": "docs/architecture.md"},
-    {"concern": "Phase order", "document": "docs/roadmap.md"},
-    {"concern": "Accepted decisions", "document": "docs/decisions/"},
-    {"concern": "Definition gate", "document": "docs/readiness/definition-gate.md"}
+    {
+      "concern": "Purpose, actors, scope, invariants, MVP, success criteria",
+      "document": "docs/project-definition.md"
+    },
+    {
+      "concern": "Architecture, security, profile, feasibility",
+      "document": "docs/architecture.md"
+    },
+    {
+      "concern": "Phase order",
+      "document": "docs/roadmap.md"
+    },
+    {
+      "concern": "Accepted decisions",
+      "document": "docs/decisions/"
+    },
+    {
+      "concern": "Definition gate",
+      "document": "docs/readiness/definition-gate.md"
+    },
+    {
+      "concern": "Pivot current-state evidence, proposed contracts and current development profile",
+      "document": "docs/pivot-migration.md"
+    },
+    {
+      "concern": "Pivot milestone sequence and acceptance",
+      "document": "docs/plans/PLAN-020-mixed-provider-personal-project-os.md"
+    },
+    {
+      "concern": "Accepted pivot direction and scoped supersession",
+      "document": "docs/decisions/ADR-0022-mixed-provider-personal-project-os.md"
+    }
   ],
-  "profile_location": "docs/architecture.md#development-skills--tooling-profile",
-  "gate_location": "docs/readiness/definition-gate.md",
+  "profile_location": "docs/pivot-migration.md#development-skills--tooling-profile",
+  "gate_location": "docs/readiness/definition-gate.md#pivot-first-slice-definition--2026-10-25",
   "interview": {
-    "pass_number": 1,
-    "questions_in_pass": 1,
-    "completed_passes": [1],
-    "next_question": "No blocking definition question. Verify the future selector integration, telemetry, and distribution questions at their dependent phases."
+    "pass_number": 2,
+    "questions_in_pass": 0,
+    "completed_passes": [
+      1
+    ],
+    "next_question": "No blocking Owner question for M48-M49. Resolve dependent provider/personal-data/UI questions before their affected activation."
   },
-  "next_action": "Start Phase 3 M8: record and reconcile verifiable worktree isolation and supported worker telemetry. Keep worker reports separate from parent-run quality. Keep the live hook smoke owner-controlled; resolve the selector apply target at M9."
+  "next_action": "Finish authorized repository synchronization using the integration evidence record; then continue PLAN-020 M48 task/portfolio implementation after current diff/schema recheck. M48-M55 and dependent provider/personal/UI gates remain pending.",
+  "repository_revision_note": "Observed dirty working tree includes preexisting runtime/docs edits and untracked modules; HEAD alone is not the inspected implementation.",
+  "rebaseline": {
+    "date": "2026-10-25",
+    "prior_checkpoint_date": "2026-10-21",
+    "direction": "ADR-0022",
+    "assessment": "docs/pivot-migration.md",
+    "plan": "PLAN-020",
+    "gate_scope": "M48-M49 existing-project provider-free tasks and checkpoint/resume",
+    "gate_result": "PASS",
+    "whole_pivot_live_readiness": "UNKNOWN",
+    "git_state": "Owner authorized pending branch/commit/push/merge synchronization on 2026-10-25; delivery tracked in docs/readiness/repository-integration-2026-10-25.md.",
+    "permission_note": "Attachment requirements do not authorize installations, accounts, spending, unrelated project work, remote disclosure or production actions.",
+    "documentation_validation": {
+      "status": "PASS",
+      "date": "2026-10-25",
+      "evidence": "docs/plans/PLAN-020-mixed-provider-personal-project-os.md#completion-evidence",
+      "markdown_files": 10,
+      "local_links_checked": 371,
+      "assessment_sections": 31,
+      "planned_milestones": 9,
+      "unchanged_outside_scope": 110,
+      "git_integration": "tracked in docs/readiness/repository-integration-2026-10-25.md"
+    }
+  }
 }

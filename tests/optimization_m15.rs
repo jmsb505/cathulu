@@ -1,4 +1,5 @@
 use cathulu_core::{
+    memory::{FreshnessBasis, MemoryCreateInput, MemorySource},
     optimization::{
         CapabilitySettings, ContextCapability, ContextModel, ContextRequest, ContextSource,
         DecisionModel, DecisionRequest, DisabledContextModel, DisabledDecisionModel,
@@ -45,6 +46,40 @@ impl Fixture {
         git(&repo, &["commit", "--quiet", "-m", "fixture"]);
         let store = Store::open(root.join("data")).expect("open local store");
         let project_id = store.register_project(&repo).expect("register project").id;
+        let profile = store
+            .create_memory(&MemoryCreateInput {
+                scope_type: "project".to_string(),
+                scope_id: Some(project_id.to_string()),
+                memory_class: "canonical".to_string(),
+                temperature: "hot".to_string(),
+                kind: "summary".to_string(),
+                body:
+                    "This local repository is a fixture for optional optimization workflow tests."
+                        .to_string(),
+                sources: vec![
+                    MemorySource {
+                        source_type: "project".to_string(),
+                        source_id: project_id.to_string(),
+                    },
+                    MemorySource {
+                        source_type: "source_file".to_string(),
+                        source_id: "README.md".to_string(),
+                    },
+                ],
+                artifact_ids: Vec::new(),
+                valid_from: None,
+                valid_until: None,
+                supersedes_id: None,
+                freshness_basis: FreshnessBasis::default(),
+                importance: 0.9,
+                confidence: 0.95,
+                active: true,
+                protected: false,
+            })
+            .expect("create project summary");
+        store
+            .review_memory_candidate(profile.id, "accepted")
+            .expect("accept project summary");
         Self {
             root,
             store,
@@ -64,6 +99,17 @@ impl Fixture {
             .start_run(self.project_id, None, None, workflow_version_id)
             .expect("start disabled-by-default run")
             .id
+    }
+
+    fn review_memory(&self, run_id: i64) {
+        self.store
+            .record_project_memory_review(
+                run_id,
+                "no_durable_change",
+                "task_produced_no_reusable_knowledge",
+                &[],
+            )
+            .expect("review project memory for run");
     }
 }
 
@@ -174,6 +220,8 @@ async fn every_capability_defaults_to_disabled_and_disabled_models_are_noops() {
         baseline_run.workflow_version_id,
         explicit_disabled_run.workflow_version_id
     );
+    fixture.review_memory(run_id);
+    fixture.review_memory(explicit_disabled_run.id);
     let baseline_finished = fixture
         .store
         .finish_run(run_id, "Disabled baseline completed.")
@@ -331,6 +379,12 @@ fn invalid_configuration_fails_closed_without_blocking_run_creation() {
 #[test]
 fn run_attribution_and_deduplicated_telemetry_are_append_only_and_survive_reopen() {
     let fixture = Fixture::new("telemetry-reopen");
+    let original_schema_version: i64 = Connection::open(fixture.store.database_path())
+        .unwrap()
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     let workflow_id = fixture.workflow(json!({ "mandatory_checks": ["test"] }));
     let run_id = fixture.run(Some(workflow_id));
     let first = fixture
@@ -388,7 +442,7 @@ fn run_attribution_and_deduplicated_telemetry_are_append_only_and_survive_reopen
         })
         .unwrap();
     assert_eq!(
-        schema_version, 12,
+        schema_version, original_schema_version,
         "M15 should not add a duplicate schema authority"
     );
 }

@@ -489,7 +489,7 @@ VALUES (5, CAST(strftime('%s','now') AS INTEGER));
 pub(crate) const VERSION_6: &str = r#"
 CREATE TABLE worker_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  delegation_id INTEGER NOT NULL UNIQUE REFERENCES delegations(id) ON DELETE RESTRICT,
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
   schema_version INTEGER NOT NULL CHECK(schema_version = 1),
   report_json TEXT NOT NULL CHECK(length(CAST(report_json AS BLOB)) <= 16384),
   report_hash TEXT NOT NULL,
@@ -878,4 +878,405 @@ BEGIN SELECT RAISE(ABORT, 'Project Manager logical role binding is immutable'); 
 
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (12, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_13: &str = r#"
+CREATE TABLE role_work_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  plan_level TEXT NOT NULL CHECK(plan_level IN ('main', 'project_manager')),
+  manager_delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  plan_json TEXT NOT NULL,
+  plan_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  CHECK(
+    (plan_level = 'main' AND manager_delegation_id IS NULL)
+    OR (plan_level = 'project_manager' AND manager_delegation_id IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX role_work_plans_main_revision_idx
+  ON role_work_plans(run_id, revision) WHERE plan_level = 'main';
+CREATE UNIQUE INDEX role_work_plans_pm_revision_idx
+  ON role_work_plans(manager_delegation_id, revision) WHERE plan_level = 'project_manager';
+CREATE INDEX role_work_plans_project_run_idx
+  ON role_work_plans(project_id, run_id, plan_level, revision DESC);
+
+CREATE TABLE delegation_work_plan_refs (
+  delegation_id INTEGER PRIMARY KEY REFERENCES delegations(id) ON DELETE RESTRICT,
+  plan_id INTEGER NOT NULL REFERENCES role_work_plans(id) ON DELETE RESTRICT,
+  task_key TEXT,
+  created_at INTEGER NOT NULL,
+  CHECK(task_key IS NULL OR length(task_key) BETWEEN 1 AND 80)
+);
+CREATE UNIQUE INDEX delegation_plan_task_once_idx
+  ON delegation_work_plan_refs(plan_id, task_key) WHERE task_key IS NOT NULL;
+
+CREATE TABLE role_work_plan_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL REFERENCES role_work_plans(id) ON DELETE RESTRICT,
+  reviewer_role TEXT NOT NULL CHECK(reviewer_role = 'main_overseer'),
+  decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected', 'needs_follow_up')),
+  note TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX role_work_plan_reviews_latest_idx
+  ON role_work_plan_reviews(plan_id, created_at DESC, id DESC);
+
+ALTER TABLE worker_report_reviews
+  ADD COLUMN reviewer_role TEXT NOT NULL DEFAULT 'unknown'
+  CHECK(reviewer_role IN ('unknown', 'project_manager', 'main_overseer'));
+
+CREATE TABLE owner_approval_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  manager_delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  source_action_event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
+  action_key TEXT NOT NULL,
+  request_summary TEXT NOT NULL,
+  owner_action TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX owner_approval_requests_project_idx
+  ON owner_approval_requests(project_id, run_id, created_at DESC);
+
+CREATE TABLE owner_approval_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id INTEGER NOT NULL REFERENCES owner_approval_requests(id) ON DELETE RESTRICT,
+  decision TEXT NOT NULL CHECK(decision IN ('approved', 'declined', 'clarification_received')),
+  response_summary TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX owner_approval_decisions_latest_idx
+  ON owner_approval_decisions(request_id, id DESC);
+CREATE UNIQUE INDEX owner_approval_decision_once_idx
+  ON owner_approval_decisions(request_id);
+
+CREATE TRIGGER role_work_plans_no_update BEFORE UPDATE ON role_work_plans
+BEGIN SELECT RAISE(ABORT, 'role work plans are immutable'); END;
+CREATE TRIGGER role_work_plans_no_delete BEFORE DELETE ON role_work_plans
+BEGIN SELECT RAISE(ABORT, 'role work plans are immutable'); END;
+CREATE TRIGGER role_work_plan_reviews_no_update BEFORE UPDATE ON role_work_plan_reviews
+BEGIN SELECT RAISE(ABORT, 'role work plan reviews are append-only'); END;
+CREATE TRIGGER role_work_plan_reviews_no_delete BEFORE DELETE ON role_work_plan_reviews
+BEGIN SELECT RAISE(ABORT, 'role work plan reviews are append-only'); END;
+CREATE TRIGGER delegation_work_plan_refs_no_update BEFORE UPDATE ON delegation_work_plan_refs
+BEGIN SELECT RAISE(ABORT, 'delegation work plan references are immutable'); END;
+CREATE TRIGGER delegation_work_plan_refs_no_delete BEFORE DELETE ON delegation_work_plan_refs
+BEGIN SELECT RAISE(ABORT, 'delegation work plan references are immutable'); END;
+CREATE TRIGGER owner_approval_requests_no_update BEFORE UPDATE ON owner_approval_requests
+BEGIN SELECT RAISE(ABORT, 'owner approval requests are immutable'); END;
+CREATE TRIGGER owner_approval_requests_no_delete BEFORE DELETE ON owner_approval_requests
+BEGIN SELECT RAISE(ABORT, 'owner approval requests are immutable'); END;
+CREATE TRIGGER owner_approval_decisions_no_update BEFORE UPDATE ON owner_approval_decisions
+BEGIN SELECT RAISE(ABORT, 'owner approval decisions are append-only'); END;
+CREATE TRIGGER owner_approval_decisions_no_delete BEFORE DELETE ON owner_approval_decisions
+BEGIN SELECT RAISE(ABORT, 'owner approval decisions are append-only'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (13, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_14: &str = r#"
+CREATE TABLE role_dispatcher_lease (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  owner_id TEXT,
+  lease_expires_at INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'idle'
+    CHECK(status IN ('idle', 'running', 'failed')),
+  last_error TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE role_thread_bindings (
+  binding_key TEXT PRIMARY KEY,
+  role_key TEXT REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  thread_id TEXT NOT NULL UNIQUE CHECK(length(thread_id) BETWEEN 1 AND 256),
+  status TEXT NOT NULL CHECK(status IN ('active', 'inactive', 'unknown')),
+  last_turn_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(length(binding_key) BETWEEN 1 AND 256),
+  CHECK(role_key IS NOT NULL OR delegation_id IS NOT NULL)
+);
+CREATE UNIQUE INDEX role_thread_active_role_idx
+  ON role_thread_bindings(role_key) WHERE role_key IS NOT NULL AND status = 'active';
+CREATE UNIQUE INDEX role_thread_active_delegation_idx
+  ON role_thread_bindings(delegation_id) WHERE delegation_id IS NOT NULL AND status = 'active';
+
+CREATE TABLE role_dispatch_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delegation_id INTEGER NOT NULL UNIQUE REFERENCES delegations(id) ON DELETE RESTRICT,
+  idempotency_key_hash TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK(status IN (
+    'queued', 'preflighting', 'thread_ready', 'turn_starting', 'dispatched',
+    'running', 'completed', 'blocked', 'failed', 'needs_reconcile', 'cancelled'
+  )),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  acknowledged_at INTEGER
+);
+CREATE INDEX role_dispatch_queue_idx
+  ON role_dispatch_outbox(status, created_at, id);
+CREATE INDEX role_dispatch_recent_idx
+  ON role_dispatch_outbox(updated_at DESC, id DESC);
+
+CREATE TABLE role_dispatch_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  outbox_id INTEGER NOT NULL REFERENCES role_dispatch_outbox(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX role_dispatch_events_outbox_idx
+  ON role_dispatch_events(outbox_id, id);
+
+CREATE TRIGGER role_dispatch_events_no_update BEFORE UPDATE ON role_dispatch_events
+BEGIN SELECT RAISE(ABORT, 'role dispatch events are append-only'); END;
+CREATE TRIGGER role_dispatch_events_no_delete BEFORE DELETE ON role_dispatch_events
+BEGIN SELECT RAISE(ABORT, 'role dispatch events are retained for audit'); END;
+CREATE TRIGGER role_thread_binding_identity_guard BEFORE UPDATE ON role_thread_bindings
+WHEN NEW.binding_key IS NOT OLD.binding_key OR NEW.role_key IS NOT OLD.role_key
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+BEGIN SELECT RAISE(ABORT, 'role thread binding identity is immutable'); END;
+CREATE TRIGGER role_thread_binding_scope_valid BEFORE INSERT ON role_thread_bindings
+WHEN (NEW.role_key IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM logical_agent_roles role
+        WHERE role.role_key = NEW.role_key AND role.role_kind = 'project_manager'
+          AND role.project_id = NEW.project_id
+      ))
+  OR (NEW.delegation_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM delegations delegation
+        WHERE delegation.id = NEW.delegation_id AND delegation.project_id = NEW.project_id
+      ))
+  OR (NEW.role_key IS NOT NULL AND NEW.binding_key <> NEW.role_key)
+  OR (NEW.role_key IS NULL AND NEW.binding_key <> ('worker:' || NEW.delegation_id))
+BEGIN SELECT RAISE(ABORT, 'role thread binding must match its persistent project role or delegation'); END;
+CREATE TRIGGER role_thread_binding_no_delete BEFORE DELETE ON role_thread_bindings
+BEGIN SELECT RAISE(ABORT, 'role thread bindings are retained for audit'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (14, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_15: &str = r#"
+ALTER TABLE owner_approval_decisions
+  ADD COLUMN decision_origin TEXT NOT NULL DEFAULT 'legacy_unverified'
+  CHECK(decision_origin IN ('legacy_unverified', 'desktop_owner_ui'));
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (15, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_16: &str = r#"
+CREATE TABLE role_thread_capabilities (
+  binding_key TEXT PRIMARY KEY CHECK(length(binding_key) BETWEEN 1 AND 256),
+  role_kind TEXT NOT NULL CHECK(role_kind IN ('sub_overseer', 'worker')),
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  delegation_id INTEGER NOT NULL UNIQUE REFERENCES delegations(id) ON DELETE RESTRICT,
+  capability_hash TEXT NOT NULL UNIQUE CHECK(length(capability_hash) = 64),
+  status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK((role_kind = 'sub_overseer' AND binding_key = 'project-manager:' || project_id)
+     OR (role_kind = 'worker' AND binding_key = 'worker:' || delegation_id))
+);
+
+CREATE TRIGGER role_thread_capability_scope_valid BEFORE INSERT ON role_thread_capabilities
+WHEN NOT EXISTS (
+  SELECT 1 FROM delegations delegation
+  WHERE delegation.id = NEW.delegation_id
+    AND delegation.project_id = NEW.project_id
+    AND delegation.role = NEW.role_kind
+    AND delegation.status IN ('prepared', 'dispatched')
+    AND ((NEW.role_kind = 'sub_overseer' AND delegation.parent_delegation_id IS NULL)
+      OR (NEW.role_kind = 'worker' AND delegation.parent_delegation_id IS NOT NULL))
+)
+BEGIN SELECT RAISE(ABORT, 'role thread capability must match an active prepared delegation'); END;
+
+CREATE TRIGGER role_thread_capability_identity_immutable
+BEFORE UPDATE OF binding_key, role_kind, project_id, created_at ON role_thread_capabilities
+WHEN NEW.binding_key IS NOT OLD.binding_key OR NEW.role_kind IS NOT OLD.role_kind
+  OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'role thread capability identity is immutable'); END;
+
+CREATE TRIGGER role_thread_capability_scope_valid_update
+BEFORE UPDATE OF delegation_id ON role_thread_capabilities
+WHEN NOT EXISTS (
+  SELECT 1 FROM delegations delegation
+  WHERE delegation.id = NEW.delegation_id
+    AND delegation.project_id = NEW.project_id
+    AND delegation.role = NEW.role_kind
+    AND delegation.status IN ('prepared', 'dispatched')
+    AND ((NEW.role_kind = 'sub_overseer' AND delegation.parent_delegation_id IS NULL)
+      OR (NEW.role_kind = 'worker' AND delegation.parent_delegation_id IS NOT NULL))
+)
+BEGIN SELECT RAISE(ABORT, 'role thread capability must match an active prepared delegation'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (16, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_17: &str = r#"
+CREATE TABLE role_turn_inbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE RESTRICT,
+  source_delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  target_binding_key TEXT NOT NULL CHECK(length(target_binding_key) BETWEEN 1 AND 256),
+  target_delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'queued', 'starting', 'dispatched', 'running', 'completed', 'blocked',
+    'needs_reconcile', 'unroutable'
+  )),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX role_turn_inbox_queue_idx ON role_turn_inbox(status, created_at, id);
+CREATE INDEX role_turn_inbox_project_idx ON role_turn_inbox(project_id, created_at DESC);
+
+CREATE TABLE role_turn_inbox_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  inbox_id INTEGER NOT NULL REFERENCES role_turn_inbox(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX role_turn_inbox_events_inbox_idx ON role_turn_inbox_events(inbox_id, id);
+CREATE TRIGGER role_turn_inbox_events_no_update BEFORE UPDATE ON role_turn_inbox_events
+BEGIN SELECT RAISE(ABORT, 'role inbox events are append-only'); END;
+CREATE TRIGGER role_turn_inbox_events_no_delete BEFORE DELETE ON role_turn_inbox_events
+BEGIN SELECT RAISE(ABORT, 'role inbox events are retained for audit'); END;
+CREATE TRIGGER role_turn_inbox_identity_immutable
+BEFORE UPDATE OF source_event_id, source_delegation_id, target_binding_key, target_delegation_id, project_id,
+                 event_type, payload_json, created_at ON role_turn_inbox
+WHEN NEW.source_event_id IS NOT OLD.source_event_id
+  OR NEW.source_delegation_id IS NOT OLD.source_delegation_id
+  OR NEW.target_binding_key IS NOT OLD.target_binding_key
+  OR NEW.target_delegation_id IS NOT OLD.target_delegation_id
+  OR NEW.project_id IS NOT OLD.project_id OR NEW.event_type IS NOT OLD.event_type
+  OR NEW.payload_json IS NOT OLD.payload_json OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'role inbox message identity is immutable'); END;
+
+CREATE TABLE role_event_cursor (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  last_event_id INTEGER NOT NULL CHECK(last_event_id >= 0),
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO role_event_cursor(singleton, last_event_id, updated_at)
+SELECT 1, COALESCE(MAX(id), 0), CAST(strftime('%s','now') AS INTEGER) FROM events;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (17, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_18: &str = r#"
+DROP TRIGGER role_thread_binding_identity_guard;
+DROP TRIGGER role_thread_binding_scope_valid;
+DROP TRIGGER role_thread_binding_no_delete;
+DROP INDEX role_thread_active_role_idx;
+DROP INDEX role_thread_active_delegation_idx;
+ALTER TABLE role_thread_bindings RENAME TO role_thread_bindings_v14;
+
+CREATE TABLE role_thread_bindings (
+  binding_key TEXT PRIMARY KEY,
+  role_key TEXT REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
+  thread_id TEXT NOT NULL UNIQUE CHECK(length(thread_id) BETWEEN 1 AND 256),
+  status TEXT NOT NULL CHECK(status IN ('active', 'inactive', 'unknown')),
+  last_turn_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(length(binding_key) BETWEEN 1 AND 256),
+  CHECK(role_key IS NOT NULL OR delegation_id IS NOT NULL)
+);
+INSERT INTO role_thread_bindings
+  (binding_key, role_key, delegation_id, project_id, thread_id, status, last_turn_id, created_at, updated_at)
+SELECT binding_key, role_key, delegation_id, project_id, thread_id, status, last_turn_id, created_at, updated_at
+FROM role_thread_bindings_v14;
+DROP TABLE role_thread_bindings_v14;
+
+CREATE UNIQUE INDEX role_thread_active_role_idx
+  ON role_thread_bindings(role_key) WHERE role_key IS NOT NULL AND status = 'active';
+CREATE UNIQUE INDEX role_thread_active_delegation_idx
+  ON role_thread_bindings(delegation_id) WHERE delegation_id IS NOT NULL AND status = 'active';
+
+CREATE TRIGGER role_thread_binding_identity_guard BEFORE UPDATE ON role_thread_bindings
+WHEN NEW.binding_key IS NOT OLD.binding_key OR NEW.role_key IS NOT OLD.role_key
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+BEGIN SELECT RAISE(ABORT, 'role thread binding identity is immutable'); END;
+CREATE TRIGGER role_thread_binding_scope_valid BEFORE INSERT ON role_thread_bindings
+WHEN (NEW.binding_key = 'main-overseer' AND NOT EXISTS (
+        SELECT 1 FROM logical_agent_roles role
+        WHERE role.role_key = NEW.role_key AND role.role_kind = 'main_overseer'
+          AND role.project_id IS NULL AND NEW.project_id IS NULL AND NEW.delegation_id IS NULL
+      ))
+  OR (NEW.role_key IS NOT NULL AND NEW.binding_key <> 'main-overseer' AND NOT EXISTS (
+        SELECT 1 FROM logical_agent_roles role
+        WHERE role.role_key = NEW.role_key AND role.role_kind = 'project_manager'
+          AND role.project_id = NEW.project_id AND NEW.delegation_id IS NULL
+      ))
+  OR (NEW.delegation_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM delegations delegation
+        WHERE delegation.id = NEW.delegation_id AND delegation.project_id = NEW.project_id
+      ))
+  OR (NEW.role_key IS NULL AND NEW.binding_key <> ('worker:' || NEW.delegation_id))
+  OR (NEW.role_key IS NOT NULL AND NEW.binding_key <> NEW.role_key)
+BEGIN SELECT RAISE(ABORT, 'role thread binding must match its persistent logical role or delegation'); END;
+CREATE TRIGGER role_thread_binding_no_delete BEFORE DELETE ON role_thread_bindings
+BEGIN SELECT RAISE(ABORT, 'role thread bindings are retained for audit'); END;
+
+CREATE TABLE main_overseer_capability (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  role_key TEXT NOT NULL UNIQUE REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT,
+  capability_hash TEXT NOT NULL UNIQUE CHECK(length(capability_hash) = 64),
+  status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(role_key = 'main-overseer')
+);
+CREATE TRIGGER main_overseer_capability_role_valid BEFORE INSERT ON main_overseer_capability
+WHEN NOT EXISTS (
+  SELECT 1 FROM logical_agent_roles role
+  WHERE role.role_key = NEW.role_key AND role.role_kind = 'main_overseer' AND role.project_id IS NULL
+)
+BEGIN SELECT RAISE(ABORT, 'Main capability must bind the single global Main role'); END;
+
+CREATE TABLE owner_approval_relays (
+  request_id INTEGER PRIMARY KEY REFERENCES owner_approval_requests(id) ON DELETE RESTRICT,
+  manager_delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER owner_approval_relays_no_update BEFORE UPDATE ON owner_approval_relays
+BEGIN SELECT RAISE(ABORT, 'Owner decision relays are immutable'); END;
+CREATE TRIGGER owner_approval_relays_no_delete BEFORE DELETE ON owner_approval_relays
+BEGIN SELECT RAISE(ABORT, 'Owner decision relays are retained for audit'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (18, CAST(strftime('%s','now') AS INTEGER));
 "#;
