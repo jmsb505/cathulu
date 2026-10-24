@@ -24,6 +24,7 @@ Owner
 
 - Main Overseer owns the conversation, priorities, task/run setup, dispatch, monitoring, evidence review, QA gate tracking, and escalation. It does not inspect repositories to implement, edit code, run project commands/tests, or commit project work.
 - At most one Project Manager is assigned to a project within a single orchestration request. A Project Manager owns one project's planning and coordination and does not perform the implementation itself.
+- For two or more independent eligible projects, Main prepares each available project packet and dispatches all eligible Project Managers concurrently. Main must not use a per-project `spawn → wait → spawn` loop or wait for first completion. M35 initially described this as Codex fan-out followed by monitoring; that was insufficient and is superseded by the no-wait dispatcher target in PLAN-015. A setup or dispatch failure is isolated to that project; other eligible PMs still dispatch.
 - Each Project Manager assignment may dispatch at most two worker agents total, including replacement workers. Workers perform the repository work within the recorded project/task/path scope.
 - All three roles must use the existing local Cathulu MCP server. Before reasoning from project history or assigning work, each role loads relevant accepted HOT project memory, selectively searches WARM candidates, transfers only selected knowledge through `prepare_context_transfer`, and includes provenance-bearing memory/artifact references in handoffs. Empty retrieval is recorded explicitly. COLD evidence is not automatically injected.
 - Reuse existing memory, delegation, event, context-transfer, quality, and artifact authorities. Do not create a parallel memory store or infer success from agent reports.
@@ -42,6 +43,18 @@ Main read the dashboard and HOT/WARM memory; the PM read `cathulu://dashboard`; 
 - Activity in the dashboard must be projected from actual runs, delegation relationships, and observed lifecycle events. Missing events stay visibly unknown; no progress or agent nodes are fabricated.
 - Memory transfer ledger entries are the auditable evidence that relevant Cathulu memory was supplied. Agent instructions alone are not a hard enforcement boundary; the implementation plan adds deterministic checks and reports missing receipts.
 - The tested client/session supports nested spawning and Cathulu MCP reachability, but tool parity and lifecycle correlation remain incomplete. If a future target client/configuration lacks the required capabilities, expose that gap and preserve the baseline workflow. Never let Main silently take over implementation or flatten the hierarchy.
+
+## Amendment — 2026-10-22: parallel project fan-out
+
+The owner observed Main coordinating multiple independent projects serially. The existing first-completion monitoring rule applied only after PM chats were active, leaving the initial dispatch order ambiguous. The Main Overseer must now prepare all eligible project handoffs and fan out their PMs before waiting on any result. Per-project setup failures do not delay other projects. M21 proved a single PM → Worker path only; it did not verify multi-PM concurrency. See [PLAN-014](../plans/PLAN-014-parallel-main-overseer-fanout.md).
+
+## Amendment — 2026-10-22: no-wait dispatch and authority chain
+
+The owner clarified that first-result monitoring still leaves Main's generation active and delays work that should continue independently. After dispatch acknowledgements, Main must end its turn; routine progress updates Cathulu without waking Main. A material decision, escalation, owner action, or project result starts a fresh short Main turn. Workers report to their PM; PMs resolve routine in-scope decisions; Main handles bounded portfolio decisions; the owner is the final authority for sensitive, irreversible, external, or out-of-scope actions. Only the project requiring owner input pauses. Current MCP cannot create/resume Codex chats or wake an idle role, so this is a target behavior, not a live capability. PLAN-015 tests local app-server support before implementation; PLAN-014's wait/monitor sequence is insufficient and is superseded for runtime behavior.
+
+## Amendment — 2026-10-22: project workflow plans and hierarchical review
+
+Before assigning a PM, Main creates a concise outcome-focused workflow brief for each requested project, with phases, boundaries, acceptance evidence, and approval gates. Each PM turns its brief into bounded Worker task packets and reviews Worker evidence before accepting or escalating it. Main reviews each PM's plan/results against the brief and evidence. Escalations move Worker → PM → Main → Owner, and Main surfaces Owner-required actions as soon as they arrive; only that project's dependent work pauses. These reviews are separate from deterministic QA. This strengthens role accountability without changing the one-Main, one-PM-per-project, two-Worker-per-assignment limits. M39 adds SQLite-enforced sequencing for briefs, plans, matching Worker packets, parent report reviews, unresolved action gates, and explicit owner-approval records. The MCP still cannot authenticate which Codex chat invoked a role-declared review, and M36 still blocks the no-wait dispatcher. See [PLAN-015](../plans/PLAN-015-event-driven-role-orchestration.md).
 
 ## Reconsider if
 

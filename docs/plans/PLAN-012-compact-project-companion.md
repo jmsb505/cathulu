@@ -1,6 +1,6 @@
 # PLAN-012 — Compact project companion
 
-Status: M32 merged in PR #31; native visual review pending
+Status: M32 merged in PR #31; M34 implemented and matched build published; native visual review pending
 Created: 2026-10-22  
 Last updated: 2026-10-22
 
@@ -16,7 +16,7 @@ The existing compact monitor represents each project with a tiny dot, but the do
 
 - The detached Tauri monitor opens at 174 × 58 logical pixels and has pin, expand, close, and drag controls.
 - Its bubbles are 6 px and can wrap within a 48 px strip; their order follows state priority, so a color change can also move a project.
-- Expansion resizes to a 360 × 268 board. Rows show project state and one detail line but cannot be selected.
+- The expanded companion now uses a 376 × 360 board with selectable project rows, inline evidence, and a workflow/memory summary.
 - The read-only `DashboardSnapshot` already contains each project's latest run, agent checkpoints, pending owner actions, required check failures, and active-agent signals.
 
 ## Desired state
@@ -25,6 +25,7 @@ The existing compact monitor represents each project with a tiny dot, but the do
 - Color bubbles from recorded Cathulu state, distinguishing active work, stale/no signal, owner action/blockage, failed verification, unverified completion, verified completion, stopped, and idle. Animate only active work. Each bubble's name and state remain available to keyboard and assistive technology users.
 - Clicking a bubble expands the monitor and selects that project. A compact expand control opens the overview without selecting one.
 - The expanded board presents concise, clickable project rows. Opening a row reveals the latest recorded checkpoint and age, a pending owner action, a required-check failure, or the run summary when no checkpoint exists.
+- The expanded board also presents a compact workflow pulse (live projects, agents with current working signals, and owner actions) and a visual memory-class mix. The collapsed capsule stays unchanged.
 - Keep the expanded companion read-only, transparent, bounded, and independent from the single main dashboard graph. Preserve pin, drag, restore, and close behavior.
 - Respect reduced-motion preferences. Working-state motion indicates a recorded running state only.
 
@@ -36,7 +37,7 @@ The existing compact monitor represents each project with a tiny dot, but the do
 
 ## Out of scope
 
-- Changes to the main graph, agent hierarchy, persistent memory, SQLite schema, MCP behavior, app startup, OS notifications, dashboard navigation, or model use.
+- Changes to the main graph, agent hierarchy, persistent memory lifecycle, SQLite schema, MCP behavior, app startup, OS notifications, dashboard navigation, or model use.
 - Automatically launching, focusing, or restarting the dashboard or MCP server.
 - New UI dependencies or fabricated progress percentages.
 
@@ -52,6 +53,7 @@ The existing compact monitor represents each project with a tiny dot, but the do
 - [ADR-0012](../decisions/ADR-0012-live-agent-progress-and-attention.md) requires factual status and visible attention without inferring completion.
 - The dashboard stays read-only and contains one persistent-role graph; the companion is not another run or project page.
 - The Codex Mini screenshot is a compactness and disclosure reference, not a source for Cathulu data or branding.
+- [ADR-0014](../decisions/ADR-0014-project-aware-compact-companion.md) keeps the collapsed pill quiet and uses only snapshot-backed evidence in expanded state.
 
 ## Supporting skills / tools
 
@@ -109,6 +111,39 @@ The existing compact monitor represents each project with a tiny dot, but the do
 
 **Expected Git checkpoint:** A validated M32 commit on `codex/m32-compact-project-companion`, submitted through a pull request to `main`.
 
+### M34 — Docked companion metrics
+
+**Goal:** Show the most useful workflow and memory-usage metrics in the expanded companion so its at-a-glance value matches the main dashboard.
+
+**Subtasks**
+
+- [x] Add live-project, currently-working-agent, and owner-action counts to the expanded companion.
+- [x] Add a compact, labeled visual distribution of memory records by class, reusing the dashboard snapshot's class counts.
+- [x] Keep the 174 × 58 collapsed capsule unchanged and preserve scroll behavior for the project list.
+- [x] Update ADR-0014, this plan, and the roadmap.
+
+**Affected areas:** `apps/desktop/src/App.tsx`, `apps/desktop/src/style.css`, `docs/decisions/ADR-0014-project-aware-compact-companion.md`, `docs/roadmap.md`, and this plan.
+
+**Dependencies:** Existing `DashboardSnapshot` workflow and memory-health projections.
+
+**Acceptance criteria**
+
+- [x] Expanded companion shows snapshot-derived live projects, agents with current working signals, and pending owner actions.
+- [x] Memory class counts use the same Working, Canonical, Episodic, Evidence, and Aggregate values as the dashboard home view.
+- [x] The metric strip and memory mix are not rendered in the collapsed capsule.
+- [x] No new data source, memory write path, telemetry, or inferred progress is introduced.
+
+**Validation**
+
+- [x] `npm run build` in `apps/desktop` (TypeScript and Vite production build passed).
+- [x] `git diff --check` and source review of metric derivations, accessible memory chart labeling, and unchanged compact layout.
+- [x] Build and publish the matched current Windows pair without starting either process.
+- [ ] Native visual review remains pending; do not open or restart the app during delivery.
+
+**Documentation updates:** Extend ADR-0014, update UX-M5 in the roadmap, and record build evidence and native-review limits here.
+
+**Expected Git checkpoint:** Stack M34 with the current Cathulu UI work; no commit or push is part of this request.
+
 ## Final integration validation
 
 - Build the React/TypeScript desktop frontend and the matched Windows MCP/desktop pair.
@@ -134,7 +169,11 @@ Revert the M32 commit if build or desktop integration fails. This milestone chan
 - The existing bubbles sort by state priority, which changes their project position as work changes. The compact strip will instead use stable project IDs while the expanded board may keep state priority.
 - Clicking a compact bubble will both expand the companion and select its project, avoiding an extra navigation step.
 - The user asked for an informative compact surface but the app has previously interrupted Codex when launched. The matched pair will be built without launching or restarting it.
+- M34 adds only three workflow counts and a small memory-class distribution to the expanded board. The collapsed 174 × 58 capsule stays unchanged.
+- The docked board's workflow pulse is derived from the latest recorded run and agent/action signals. The memory chart reuses the same class-count projection as the main dashboard.
 
 ## Completion evidence
 
 Frontend build passed with `npm run build` in `apps/desktop`; `git diff --check` passed. The matched release pair is published at `target/mcp-current`, resolving to `target/mcp-versions/FBC933195F17AAEE0532F974`. MCP SHA-256: `5997BDD0C7EDCE1A36AE2C7FD53F9933FFC440A2E07C88D0C10612F1C8A8C4EA`; desktop SHA-256: `A5D9C836B1760FD6BE3C4955986506BB6C6F7D41C9F2F4593641E8DA8137FED3`. PR #31 merged; GitHub returned no statuses or workflows for the commit. Local `main` is at merge commit `3ca661de36e67b6b4440c419c082dfcc6bf216e8`. No app or MCP process was opened or restarted. Native visual review is still pending.
+
+M34 frontend build and `git diff --check` passed on 2026-10-22. The matched pair was published at `target/mcp-versions/68FBA5F7D8C3B3DC45B73270` and the stable `target/mcp-current` path. Source fingerprint: `68FBA5F7D8C3B3DC45B7327033C9943692A79E057BBFFF2AFB54B54E51AFC45D`; MCP SHA-256: `5997BDD0C7EDCE1A36AE2C7FD53F9933FFC440A2E07C88D0C10612F1C8A8C4EA`; desktop SHA-256: `030F484191C073063EA8ABA13BCFF04D9F5A51603C317FFEC5C16264223059C5`. Neither app nor MCP was started, focused, stopped, or restarted. Native visual review remains pending.

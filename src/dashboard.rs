@@ -1,5 +1,6 @@
 use crate::{
-    delegation::DashboardDelegationSummary, roles::LogicalAgentRole, ProjectSnapshot, Store,
+    delegation::DashboardDelegationSummary, dispatcher::RoleDispatchRecord,
+    roles::LogicalAgentRole, ProjectSnapshot, Store,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -81,9 +82,26 @@ pub struct PendingAgentActionSummary {
     pub delegation_id: i64,
     pub run_id: i64,
     pub role: String,
+    pub routed_to_role: String,
     pub action_key: String,
     pub summary: String,
     pub owner_action: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingOwnerApprovalRequestSummary {
+    pub id: i64,
+    pub project_id: i64,
+    pub project_name: String,
+    pub run_id: i64,
+    pub manager_delegation_id: i64,
+    pub action_key: String,
+    pub request_summary: String,
+    pub owner_action: String,
+    pub reason: String,
+    pub request_hash: String,
     pub created_at: i64,
 }
 
@@ -97,6 +115,22 @@ pub struct FailedCheckSummary {
     pub mandatory: bool,
     pub status: String,
     pub details: Value,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleInboxSummary {
+    pub id: i64,
+    pub source_delegation_id: i64,
+    pub target_binding_key: String,
+    pub project_id: i64,
+    pub project_name: String,
+    pub event_type: String,
+    pub status: String,
+    pub attempt_count: i64,
+    pub last_error: Option<String>,
+    pub created_at: i64,
     pub updated_at: i64,
 }
 
@@ -143,9 +177,12 @@ pub struct DashboardSnapshot {
     pub agent_activity: Vec<AgentActivitySummary>,
     pub agent_updates: Vec<AgentUpdateSummary>,
     pub pending_agent_actions: Vec<PendingAgentActionSummary>,
+    pub pending_owner_approval_requests: Vec<PendingOwnerApprovalRequestSummary>,
     pub recent_agent_update_count: i64,
     pub failed_checks: Vec<FailedCheckSummary>,
     pub delegations: Vec<DashboardDelegationSummary>,
+    pub role_dispatches: Vec<RoleDispatchRecord>,
+    pub role_inbox: Vec<RoleInboxSummary>,
     pub memory_health: MemoryHealthSummary,
 }
 
@@ -155,6 +192,29 @@ impl Store {
         let logical_roles = self.logical_agent_roles()?;
         let projects = self.list_projects()?;
         let delegations = self.dashboard_delegations(100)?;
+        let role_dispatches = self.role_dispatches(40)?;
+        let role_inbox = self
+            .role_turn_inbox(50)?
+            .into_iter()
+            .filter_map(|message| {
+                projects
+                    .iter()
+                    .find(|project| project.id == message.project_id)
+                    .map(|project| RoleInboxSummary {
+                        id: message.id,
+                        source_delegation_id: message.source_delegation_id,
+                        target_binding_key: message.target_binding_key,
+                        project_id: message.project_id,
+                        project_name: project.name.clone(),
+                        event_type: message.event_type,
+                        status: message.status,
+                        attempt_count: message.attempt_count,
+                        last_error: message.last_error,
+                        created_at: message.created_at,
+                        updated_at: message.updated_at,
+                    })
+            })
+            .collect::<Vec<_>>();
         let objectives = connection
             .raw()
             .prepare(
@@ -344,6 +404,8 @@ impl Store {
             .raw()
             .prepare(
                 "SELECT e.id, d.project_id, p.name, d.id, d.run_id, d.role,
+                       COALESCE(json_extract(e.payload_json, '$.routedToRole'),
+                         CASE WHEN d.role = 'worker' AND d.parent_delegation_id IS NOT NULL THEN 'project_manager' ELSE 'main_overseer' END),
                        json_extract(e.payload_json, '$.actionKey'),
                        json_extract(e.payload_json, '$.summary'),
                        json_extract(e.payload_json, '$.ownerAction'), e.created_at
@@ -370,10 +432,44 @@ impl Store {
                     delegation_id: row.get(3)?,
                     run_id: row.get(4)?,
                     role: row.get(5)?,
-                    action_key: row.get(6)?,
-                    summary: row.get(7)?,
-                    owner_action: row.get(8)?,
-                    created_at: row.get(9)?,
+                    routed_to_role: row.get(6)?,
+                    action_key: row.get(7)?,
+                    summary: row.get(8)?,
+                    owner_action: row.get(9)?,
+                    created_at: row.get(10)?,
+                })
+            })
+            .map_err(sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_error)?;
+        let pending_owner_approval_requests = connection
+            .raw()
+            .prepare(
+                "SELECT request.id, request.project_id, project.name, request.run_id,
+                        request.manager_delegation_id, request.action_key, request.request_summary,
+                        request.owner_action, request.reason, request.request_hash, request.created_at
+                 FROM owner_approval_requests request
+                 JOIN projects project ON project.id = request.project_id
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM owner_approval_decisions decision
+                   WHERE decision.request_id = request.id
+                 )
+                 ORDER BY request.created_at DESC, request.id DESC LIMIT 100",
+            )
+            .map_err(sqlite_error)?
+            .query_map([], |row| {
+                Ok(PendingOwnerApprovalRequestSummary {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    run_id: row.get(3)?,
+                    manager_delegation_id: row.get(4)?,
+                    action_key: row.get(5)?,
+                    request_summary: row.get(6)?,
+                    owner_action: row.get(7)?,
+                    reason: row.get(8)?,
+                    request_hash: row.get(9)?,
+                    created_at: row.get(10)?,
                 })
             })
             .map_err(sqlite_error)?
@@ -581,9 +677,12 @@ impl Store {
             agent_activity,
             agent_updates,
             pending_agent_actions,
+            pending_owner_approval_requests,
             recent_agent_update_count,
             failed_checks,
             delegations,
+            role_dispatches,
+            role_inbox,
             memory_health,
         })
     }

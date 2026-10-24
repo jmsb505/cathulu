@@ -11,7 +11,7 @@ use rmcp::schemars;
 use rmcp::schemars::JsonSchema;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -114,8 +114,74 @@ pub struct WorkerReportRecord {
 pub struct WorkerReportReviewResult {
     pub review_id: i64,
     pub delegation_id: i64,
+    pub reviewer_role: String,
     pub decision: String,
     pub review_status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MainWorkflowBrief {
+    #[serde(alias = "schema_version")]
+    pub schema_version: i64,
+    #[serde(alias = "desired_outcome")]
+    pub desired_outcome: String,
+    pub phases: Vec<String>,
+    #[serde(alias = "project_boundary")]
+    pub project_boundary: Vec<String>,
+    pub dependencies: Vec<String>,
+    #[serde(alias = "acceptance_criteria")]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(alias = "owner_approval_gates")]
+    pub owner_approval_gates: Vec<String>,
+    #[serde(alias = "known_risks")]
+    pub known_risks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectManagerWorkPlan {
+    #[serde(alias = "schema_version")]
+    pub schema_version: i64,
+    pub summary: String,
+    #[serde(alias = "manager_actions")]
+    pub manager_actions: Vec<String>,
+    #[serde(alias = "worker_tasks")]
+    pub worker_tasks: Vec<ProjectManagerTask>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectManagerTask {
+    #[serde(alias = "task_key")]
+    pub task_key: String,
+    #[serde(alias = "task_packet")]
+    pub task_packet: DelegationTaskPacket,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleWorkPlanRecord {
+    pub id: i64,
+    pub project_id: i64,
+    pub run_id: i64,
+    pub plan_level: String,
+    pub manager_delegation_id: Option<i64>,
+    pub revision: i64,
+    pub plan: Value,
+    pub plan_hash: String,
+    pub created_at: i64,
+    pub latest_review: Option<RoleWorkPlanReviewRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleWorkPlanReviewRecord {
+    pub id: i64,
+    pub reviewer_role: String,
+    pub decision: String,
+    pub note: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -149,8 +215,36 @@ pub struct DelegationUpdateRecord {
     pub update_type: String,
     pub phase: Option<String>,
     pub summary: String,
+    pub routed_to_role: Option<String>,
     pub action_key: Option<String>,
     pub owner_action: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerApprovalRequestRecord {
+    pub id: i64,
+    pub project_id: i64,
+    pub run_id: i64,
+    pub manager_delegation_id: i64,
+    pub source_action_event_id: i64,
+    pub action_key: String,
+    pub request_summary: String,
+    pub owner_action: String,
+    pub reason: String,
+    pub request_hash: String,
+    pub created_at: i64,
+    pub decision: Option<OwnerApprovalDecisionRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerApprovalDecisionRecord {
+    pub id: i64,
+    pub decision: String,
+    pub response_summary: String,
+    pub decision_origin: String,
     pub created_at: i64,
 }
 
@@ -232,6 +326,52 @@ impl Store {
         owner_action: Option<&str>,
         idempotency_key: &str,
     ) -> Result<DelegationUpdateRecord, String> {
+        self.record_delegation_update_with_source(
+            delegation_id,
+            update_type,
+            phase,
+            summary,
+            action_key,
+            owner_action,
+            idempotency_key,
+            "agent_report",
+        )
+    }
+
+    pub fn record_main_delegation_update(
+        &self,
+        delegation_id: i64,
+        update_type: &str,
+        phase: Option<&str>,
+        summary: &str,
+        action_key: Option<&str>,
+        owner_action: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<DelegationUpdateRecord, String> {
+        self.record_delegation_update_with_source(
+            delegation_id,
+            update_type,
+            phase,
+            summary,
+            action_key,
+            owner_action,
+            idempotency_key,
+            "main_overseer",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_delegation_update_with_source(
+        &self,
+        delegation_id: i64,
+        update_type: &str,
+        phase: Option<&str>,
+        summary: &str,
+        action_key: Option<&str>,
+        owner_action: Option<&str>,
+        idempotency_key: &str,
+        source: &str,
+    ) -> Result<DelegationUpdateRecord, String> {
         if delegation_id <= 0 {
             return Err("delegation ID must be positive".to_string());
         }
@@ -267,6 +407,7 @@ impl Store {
         let owner_action = owner_action
             .map(|value| normalize_update_text("owner action", value, 280))
             .transpose()?;
+        let mut routed_to_role = None;
         match update_type.as_str() {
             "action_required" => {
                 let key = action_key
@@ -313,31 +454,43 @@ impl Store {
         let external_event_id = content_hash(&format!(
             "delegation-update-v1\0{delegation_id}\0{idempotency_key}"
         ));
-        let payload = json!({
-            "source": "agent_report",
-            "updateType": update_type,
-            "phase": phase,
-            "summary": summary,
-            "actionKey": action_key,
-            "ownerAction": owner_action,
-        });
-        let payload_json = serde_json::to_string(&payload)
-            .map_err(|error| format!("cannot serialize delegation update: {error}"))?;
-
         let mut connection = self.connection()?;
         let transaction = connection
             .raw_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_error)?;
-        let (delegation_status, run_id): (String, i64) = transaction
+        let (delegation_status, run_id, role, parent_delegation_id): (
+            String,
+            i64,
+            String,
+            Option<i64>,
+        ) = transaction
             .query_row(
-                "SELECT status, run_id FROM delegations WHERE id = ?1",
+                "SELECT status, run_id, role, parent_delegation_id FROM delegations WHERE id = ?1",
                 params![delegation_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        if matches!(update_type.as_str(), "action_required" | "action_resolved") {
+            routed_to_role = Some(if role == "worker" && parent_delegation_id.is_some() {
+                "project_manager".to_string()
+            } else {
+                "main_overseer".to_string()
+            });
+        }
+        let payload = json!({
+            "source": source,
+            "updateType": update_type,
+            "phase": phase,
+            "summary": summary,
+            "actionKey": action_key,
+            "ownerAction": owner_action,
+            "routedToRole": routed_to_role,
+        });
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|error| format!("cannot serialize delegation update: {error}"))?;
         if let Some((
             event_id,
             aggregate_type,
@@ -382,6 +535,7 @@ impl Store {
                 update_type,
                 phase,
                 summary,
+                routed_to_role,
                 action_key,
                 owner_action,
                 created_at,
@@ -391,7 +545,6 @@ impl Store {
         if delegation_status != "dispatched" {
             return Err("agent updates require a dispatched delegation".to_string());
         }
-
         if update_type == "action_resolved" {
             let latest_action_event: Option<String> = transaction
                 .query_row(
@@ -432,10 +585,711 @@ impl Store {
             update_type,
             phase,
             summary,
+            routed_to_role,
             action_key,
             owner_action,
             created_at: now,
         })
+    }
+
+    pub fn request_owner_approval(
+        &self,
+        manager_delegation_id: i64,
+        action_key: &str,
+        request_summary: &str,
+        owner_action: &str,
+        reason: &str,
+        idempotency_key: &str,
+    ) -> Result<OwnerApprovalRequestRecord, String> {
+        let action_key = normalize_required("action key", action_key, 80)?;
+        if !valid_action_key(&action_key) {
+            return Err(
+                "action key may contain only ASCII letters, numbers, '-', '_', and '.'".to_string(),
+            );
+        }
+        let request_summary = normalize_update_text("owner request summary", request_summary, 500)?;
+        let owner_action = normalize_update_text("owner action", owner_action, 500)?;
+        let reason = normalize_update_text("owner approval reason", reason, 1_000)?;
+        let key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let key_hash = content_hash(&key);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let manager = transaction
+            .query_row(
+                "SELECT d.role, d.project_id, d.run_id, d.status, a.status
+             FROM delegations d JOIN project_manager_assignments a ON a.manager_delegation_id = d.id
+             WHERE d.id = ?1",
+                params![manager_delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| {
+                format!("delegation {manager_delegation_id} is not a Project Manager assignment")
+            })?;
+        if manager.0 != "sub_overseer" || manager.3 != "dispatched" || manager.4 != "active" {
+            return Err(
+                "owner approval requests require an active, dispatched Project Manager escalation"
+                    .to_string(),
+            );
+        }
+        let source_action_event_id: i64 = transaction.query_row(
+            "SELECT action.id FROM events action
+             WHERE action.aggregate_type = 'delegation' AND action.aggregate_id = ?1
+               AND action.event_type = 'agent_action_required'
+               AND json_extract(action.payload_json, '$.actionKey') = ?2
+               AND NOT EXISTS (
+                 SELECT 1 FROM events newer
+                 WHERE newer.aggregate_type = action.aggregate_type AND newer.aggregate_id = action.aggregate_id
+                   AND json_extract(newer.payload_json, '$.actionKey') = ?2
+                   AND newer.event_type IN ('agent_action_required', 'agent_action_resolved')
+                   AND newer.id > action.id
+               )
+             ORDER BY action.id DESC LIMIT 1",
+            params![manager_delegation_id.to_string(), action_key],
+            |row| row.get(0),
+        ).optional().map_err(sqlite_error)?
+            .ok_or_else(|| "Main can request owner input only for an unresolved action escalated by this Project Manager".to_string())?;
+        let request_hash = content_hash(
+            &serde_json::to_string(&json!({
+                "projectId": manager.1,
+                "runId": manager.2,
+                "managerDelegationId": manager_delegation_id,
+                "sourceActionEventId": source_action_event_id,
+                "actionKey": action_key,
+                "requestSummary": request_summary,
+                "ownerAction": owner_action,
+                "reason": reason,
+            }))
+            .map_err(|error| format!("cannot encode owner approval request: {error}"))?,
+        );
+        if let Some((existing_id, existing_hash)) = transaction.query_row(
+            "SELECT id, request_hash FROM owner_approval_requests WHERE idempotency_key_hash = ?1",
+            params![key_hash], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional().map_err(sqlite_error)? {
+            if existing_hash != request_hash { return Err("idempotency key was already used for a different owner approval request".to_string()); }
+            transaction.commit().map_err(sqlite_error)?;
+            return self.get_owner_approval_request(existing_id)?.ok_or_else(|| "idempotent owner approval request disappeared".to_string());
+        }
+        if let Some((existing_id, existing_hash)) = transaction.query_row(
+            "SELECT id, request_hash FROM owner_approval_requests WHERE source_action_event_id = ?1",
+            params![source_action_event_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional().map_err(sqlite_error)? {
+            if existing_hash != request_hash {
+                return Err("this escalation already has an immutable owner request; resolve it or create a new keyed action instead of issuing a duplicate".to_string());
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            return self.get_owner_approval_request(existing_id)?.ok_or_else(|| "existing owner approval request disappeared".to_string());
+        }
+        transaction
+            .execute(
+                "INSERT INTO owner_approval_requests
+             (project_id, run_id, manager_delegation_id, source_action_event_id, action_key,
+              request_summary, owner_action, reason, request_hash, idempotency_key_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    manager.1,
+                    manager.2,
+                    manager_delegation_id,
+                    source_action_event_id,
+                    action_key,
+                    request_summary,
+                    owner_action,
+                    reason,
+                    request_hash,
+                    key_hash,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        let request_id = transaction.last_insert_rowid();
+        append_event(
+            &transaction,
+            "run",
+            manager.2,
+            "owner_approval_requested",
+            &json!({
+                "requestId": request_id,
+                "projectId": manager.1,
+                "managerDelegationId": manager_delegation_id,
+                "sourceActionEventId": source_action_event_id,
+                "actionKey": action_key,
+                "requestSummary": request_summary,
+            }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.get_owner_approval_request(request_id)?
+            .ok_or_else(|| "recorded owner approval request disappeared".to_string())
+    }
+
+    pub fn record_owner_approval_decision_from_desktop(
+        &self,
+        request_id: i64,
+        expected_request_hash: &str,
+        decision: &str,
+    ) -> Result<OwnerApprovalDecisionRecord, String> {
+        if request_id <= 0 {
+            return Err("owner approval request ID must be positive".to_string());
+        }
+        if !matches!(decision, "approved" | "declined") {
+            return Err("desktop owner decision must be approved or declined".to_string());
+        }
+        let expected_request_hash =
+            normalize_required("expected owner request hash", expected_request_hash, 64)?;
+        if expected_request_hash.len() != 64
+            || !expected_request_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "expected owner request hash must be a 64-character hexadecimal hash".to_string(),
+            );
+        }
+        let response_summary = match decision {
+            "approved" => "Owner approved this exact action in Cathulu's local dashboard.",
+            _ => "Owner declined this exact action in Cathulu's local dashboard.",
+        };
+        let key = format!("desktop-owner-approval:{request_id}:{expected_request_hash}:{decision}");
+        let key_hash = content_hash(&key);
+        let request_hash = content_hash(
+            &serde_json::to_string(&json!({
+                "requestId": request_id,
+                "decision": decision,
+                "responseSummary": response_summary,
+                "decisionOrigin": "desktop_owner_ui",
+            }))
+            .map_err(|error| format!("cannot encode owner approval decision: {error}"))?,
+        );
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let (
+            run_id,
+            project_id,
+            manager_delegation_id,
+            source_action_event_id,
+            action_key,
+            current_request_hash,
+        ): (i64, i64, i64, i64, String, String) = transaction
+            .query_row(
+                "SELECT run_id, project_id, manager_delegation_id, source_action_event_id,
+                    action_key, request_hash
+             FROM owner_approval_requests WHERE id = ?1",
+                params![request_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("owner approval request {request_id} was not found"))?;
+        if current_request_hash != expected_request_hash {
+            return Err(
+                "owner approval request changed; refresh the dashboard before deciding".to_string(),
+            );
+        }
+        if let Some((existing_id, existing_hash)) = transaction
+            .query_row(
+                "SELECT id, request_hash FROM owner_approval_decisions WHERE idempotency_key_hash = ?1",
+                params![key_hash],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            if existing_hash != request_hash {
+                return Err(
+                    "idempotency key was already used for a different owner decision".to_string(),
+                );
+            }
+            let decision = transaction
+                .query_row(
+                    "SELECT id, decision, response_summary, decision_origin, created_at FROM owner_approval_decisions WHERE id = ?1",
+                    params![existing_id],
+                    owner_approval_decision_from_row,
+                )
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(decision);
+        }
+        let assignment_is_active: bool = transaction.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM delegations d
+               JOIN project_manager_assignments assignment ON assignment.manager_delegation_id = d.id
+               WHERE d.id = ?1 AND d.role = 'sub_overseer' AND d.project_id = ?2 AND d.run_id = ?3
+                 AND d.status = 'dispatched' AND assignment.status = 'active'
+             )",
+            params![manager_delegation_id, project_id, run_id],
+            |row| row.get(0),
+        ).map_err(sqlite_error)?;
+        if !assignment_is_active {
+            return Err("owner approval request is stale because its Project Manager assignment is no longer active".to_string());
+        }
+        let source_action_is_current: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+               SELECT 1 FROM events action
+               WHERE action.id = ?1 AND action.aggregate_type = 'delegation'
+                 AND action.aggregate_id = ?2 AND action.event_type = 'agent_action_required'
+                 AND json_extract(action.payload_json, '$.actionKey') = ?3
+                 AND NOT EXISTS (
+                   SELECT 1 FROM events newer
+                   WHERE newer.aggregate_type = action.aggregate_type
+                     AND newer.aggregate_id = action.aggregate_id
+                     AND json_extract(newer.payload_json, '$.actionKey') = ?3
+                     AND newer.event_type IN ('agent_action_required', 'agent_action_resolved')
+                     AND newer.id > action.id
+                 )
+             )",
+                params![
+                    source_action_event_id,
+                    manager_delegation_id.to_string(),
+                    action_key
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !source_action_is_current {
+            return Err("owner approval request is stale because its keyed action was resolved or superseded".to_string());
+        }
+        let prior_decision: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM owner_approval_decisions WHERE request_id = ?1)",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if prior_decision {
+            return Err("owner approval request already has a recorded decision".to_string());
+        }
+        transaction.execute(
+            "INSERT INTO owner_approval_decisions (request_id, decision, response_summary, request_hash, idempotency_key_hash, decision_origin, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'desktop_owner_ui', ?6)",
+            params![request_id, decision, response_summary, request_hash, key_hash, now],
+        ).map_err(sqlite_error)?;
+        let decision_id = transaction.last_insert_rowid();
+        append_event(
+            &transaction,
+            "run",
+            run_id,
+            "owner_approval_decided",
+            &json!({ "requestId": request_id, "decisionId": decision_id, "decision": decision, "decisionOrigin": "desktop_owner_ui" }),
+            now,
+        )?;
+        let result = transaction.query_row(
+            "SELECT id, decision, response_summary, decision_origin, created_at FROM owner_approval_decisions WHERE id = ?1",
+            params![decision_id], owner_approval_decision_from_row,
+        ).map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(result)
+    }
+
+    pub fn get_owner_approval_request(
+        &self,
+        request_id: i64,
+    ) -> Result<Option<OwnerApprovalRequestRecord>, String> {
+        let connection = self.connection()?;
+        let row = connection
+            .raw()
+            .query_row(
+                "SELECT id, project_id, run_id, manager_delegation_id, source_action_event_id,
+                    action_key, request_summary, owner_action, reason, request_hash, created_at
+             FROM owner_approval_requests WHERE id = ?1",
+                params![request_id],
+                owner_approval_request_base_from_row,
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some(mut record) = row else {
+            return Ok(None);
+        };
+        record.decision = connection
+            .raw()
+            .query_row(
+                "SELECT id, decision, response_summary, decision_origin, created_at FROM owner_approval_decisions
+             WHERE request_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![request_id],
+                owner_approval_decision_from_row,
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        Ok(Some(record))
+    }
+
+    pub fn record_role_work_plan(
+        &self,
+        project_id: i64,
+        run_id: i64,
+        plan_level: &str,
+        manager_delegation_id: Option<i64>,
+        plan: &Value,
+        idempotency_key: &str,
+    ) -> Result<RoleWorkPlanRecord, String> {
+        if project_id <= 0 || run_id <= 0 {
+            return Err("project and run IDs must be positive".to_string());
+        }
+        let plan_level = plan_level.trim();
+        if !matches!(plan_level, "main" | "project_manager") {
+            return Err("plan_level must be main or project_manager".to_string());
+        }
+        let idempotency_key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let idempotency_key_hash = content_hash(&idempotency_key);
+        let normalized_plan = match plan_level {
+            "main" => {
+                if manager_delegation_id.is_some() {
+                    return Err(
+                        "Main workflow briefs cannot name a Project Manager delegation".to_string(),
+                    );
+                }
+                normalize_main_workflow_brief(plan)?
+            }
+            "project_manager" => {
+                if manager_delegation_id.is_none_or(|id| id <= 0) {
+                    return Err(
+                        "Project Manager plans require a positive manager_delegation_id"
+                            .to_string(),
+                    );
+                }
+                normalize_project_manager_plan(plan)?
+            }
+            _ => unreachable!(),
+        };
+        let plan_json = serde_json::to_string(&normalized_plan)
+            .map_err(|error| format!("cannot serialize role work plan: {error}"))?;
+        if plan_json.len() > MAX_PACKET_BYTES {
+            return Err("role work plan exceeds the 16 KiB limit".to_string());
+        }
+        let plan_hash = content_hash(&plan_json);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let run_project_id: i64 = transaction
+            .query_row(
+                "SELECT project_id FROM runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("run {run_id} was not found"))?;
+        if run_project_id != project_id {
+            return Err("role work plan project must match its run".to_string());
+        }
+        if let Some((
+            existing_id,
+            existing_hash,
+            existing_project,
+            existing_run,
+            existing_level,
+            existing_manager,
+        )) = transaction
+            .query_row(
+                "SELECT id, plan_hash, project_id, run_id, plan_level, manager_delegation_id
+                 FROM role_work_plans WHERE idempotency_key_hash = ?1",
+                params![idempotency_key_hash],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+        {
+            if existing_hash != plan_hash
+                || existing_project != project_id
+                || existing_run != run_id
+                || existing_level != plan_level
+                || existing_manager != manager_delegation_id
+            {
+                return Err(
+                    "idempotency key was already used for a different role work plan".to_string(),
+                );
+            }
+            transaction.commit().map_err(sqlite_error)?;
+            return self
+                .get_role_work_plan(existing_id)?
+                .ok_or_else(|| "idempotent role work plan disappeared".to_string());
+        }
+        if let Some(manager_id) = manager_delegation_id {
+            let manager = transaction.query_row(
+                "SELECT d.project_id, d.run_id, d.status, a.status
+                 FROM delegations d JOIN project_manager_assignments a ON a.manager_delegation_id = d.id
+                 WHERE d.id = ?1 AND d.role = 'sub_overseer'",
+                params![manager_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+            ).optional().map_err(sqlite_error)?
+                .ok_or_else(|| format!("delegation {manager_id} is not a Project Manager assignment"))?;
+            if manager.0 != project_id
+                || manager.1 != run_id
+                || manager.2 != "dispatched"
+                || manager.3 != "active"
+            {
+                return Err(
+                    "Project Manager plans require their matching dispatched, active assignment"
+                        .to_string(),
+                );
+            }
+            let has_main_brief: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM role_work_plans WHERE project_id = ?1 AND run_id = ?2 AND plan_level = 'main')",
+                params![project_id, run_id], |row| row.get(0),
+            ).map_err(sqlite_error)?;
+            if !has_main_brief {
+                return Err(
+                    "Project Manager plan requires the Main workflow brief for this project"
+                        .to_string(),
+                );
+            }
+        }
+        let latest = transaction
+            .query_row(
+                "SELECT id, revision, plan_hash FROM role_work_plans
+             WHERE project_id = ?1 AND run_id = ?2 AND plan_level = ?3
+               AND manager_delegation_id IS ?4 ORDER BY revision DESC LIMIT 1",
+                params![project_id, run_id, plan_level, manager_delegation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let revision = if let Some((latest_id, latest_revision, latest_hash)) = latest {
+            if latest_hash == plan_hash {
+                transaction.commit().map_err(sqlite_error)?;
+                return self
+                    .get_role_work_plan(latest_id)?
+                    .ok_or_else(|| "current role work plan disappeared".to_string());
+            }
+            let referenced: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM delegation_work_plan_refs WHERE plan_id = ?1)",
+                    params![latest_id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if referenced {
+                return Err("role work plan cannot be revised after a child assignment references it; create a follow-up run".to_string());
+            }
+            latest_revision + 1
+        } else {
+            1
+        };
+        transaction
+            .execute(
+                "INSERT INTO role_work_plans
+             (project_id, run_id, plan_level, manager_delegation_id, revision,
+              plan_json, plan_hash, idempotency_key_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    project_id,
+                    run_id,
+                    plan_level,
+                    manager_delegation_id,
+                    revision,
+                    plan_json,
+                    plan_hash,
+                    idempotency_key_hash,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        let plan_id = transaction.last_insert_rowid();
+        if plan_level == "main" {
+            let prepared_legacy_managers = transaction
+                .prepare(
+                    "SELECT d.id FROM delegations d
+                     LEFT JOIN delegation_work_plan_refs ref ON ref.delegation_id = d.id
+                     WHERE d.project_id = ?1 AND d.run_id = ?2 AND d.role = 'sub_overseer'
+                       AND d.status = 'prepared' AND ref.delegation_id IS NULL",
+                )
+                .map_err(sqlite_error)?
+                .query_map(params![project_id, run_id], |row| row.get::<_, i64>(0))
+                .map_err(sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?;
+            for manager_id in prepared_legacy_managers {
+                transaction.execute(
+                    "INSERT INTO delegation_work_plan_refs (delegation_id, plan_id, task_key, created_at)
+                     VALUES (?1, ?2, NULL, ?3)",
+                    params![manager_id, plan_id, now],
+                ).map_err(sqlite_error)?;
+            }
+        }
+        append_event(
+            &transaction,
+            if plan_level == "main" {
+                "run"
+            } else {
+                "delegation"
+            },
+            manager_delegation_id.unwrap_or(run_id),
+            "role_work_plan_recorded",
+            &json!({ "planId": plan_id, "planLevel": plan_level, "revision": revision, "planHash": plan_hash }),
+            now,
+        )?;
+        transaction.commit().map_err(sqlite_error)?;
+        self.get_role_work_plan(plan_id)?
+            .ok_or_else(|| "recorded role work plan disappeared".to_string())
+    }
+
+    pub fn review_role_work_plan(
+        &self,
+        plan_id: i64,
+        reviewer_role: &str,
+        decision: &str,
+        note: &str,
+        idempotency_key: &str,
+    ) -> Result<RoleWorkPlanReviewRecord, String> {
+        if reviewer_role != "main_overseer" {
+            return Err("Project Manager work plans must be reviewed by Main Overseer".to_string());
+        }
+        if !matches!(decision, "accepted" | "rejected" | "needs_follow_up") {
+            return Err("plan decision must be accepted, rejected, or needs_follow_up".to_string());
+        }
+        validate_text("plan review note", note.trim(), 1_000, false)?;
+        let key = normalize_required("idempotency key", idempotency_key, 256)?;
+        let key_hash = content_hash(&key);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let (plan_level, plan_hash, manager_id, plan_json): (String, String, Option<i64>, String) = transaction
+            .query_row("SELECT plan_level, plan_hash, manager_delegation_id, plan_json FROM role_work_plans WHERE id = ?1", params![plan_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .optional().map_err(sqlite_error)?
+            .ok_or_else(|| format!("role work plan {plan_id} was not found"))?;
+        if plan_level != "project_manager" {
+            return Err("only Project Manager plans require a Main review".to_string());
+        }
+        let request_hash = content_hash(&serde_json::to_string(&json!({ "planId": plan_id, "planHash": plan_hash, "reviewerRole": reviewer_role, "decision": decision, "note": note.trim() })).map_err(|error| format!("cannot serialize plan review: {error}"))?);
+        if let Some((id, existing_hash)) = transaction.query_row(
+            "SELECT id, request_hash FROM role_work_plan_reviews WHERE idempotency_key_hash = ?1",
+            params![key_hash], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional().map_err(sqlite_error)? {
+            if existing_hash != request_hash { return Err("idempotency key was already used for a different plan review".to_string()); }
+            let review = transaction.query_row(
+                "SELECT id, reviewer_role, decision, note, created_at FROM role_work_plan_reviews WHERE id = ?1",
+                params![id], role_work_plan_review_from_row,
+            ).map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(review);
+        }
+        transaction.execute(
+            "INSERT INTO role_work_plan_reviews (plan_id, reviewer_role, decision, note, request_hash, idempotency_key_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![plan_id, reviewer_role, decision, note.trim(), request_hash, key_hash, now],
+        ).map_err(sqlite_error)?;
+        let review_id = transaction.last_insert_rowid();
+        if decision == "accepted" {
+            if let Some(manager_id) = manager_id {
+                backfill_prepared_worker_plan_refs(
+                    &transaction,
+                    manager_id,
+                    plan_id,
+                    &plan_json,
+                    now,
+                )?;
+            }
+        }
+        append_event(
+            &transaction,
+            "role_work_plan",
+            plan_id,
+            "role_work_plan_reviewed",
+            &json!({ "planId": plan_id, "reviewId": review_id, "reviewerRole": reviewer_role, "decision": decision }),
+            now,
+        )?;
+        let review = transaction.query_row(
+            "SELECT id, reviewer_role, decision, note, created_at FROM role_work_plan_reviews WHERE id = ?1",
+            params![review_id], role_work_plan_review_from_row,
+        ).map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(review)
+    }
+
+    pub fn get_role_work_plan(&self, id: i64) -> Result<Option<RoleWorkPlanRecord>, String> {
+        let connection = self.connection()?;
+        let row = connection.raw().query_row(
+            "SELECT id, project_id, run_id, plan_level, manager_delegation_id, revision, plan_json, plan_hash, created_at
+             FROM role_work_plans WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?, row.get::<_, String>(7)?, row.get::<_, i64>(8)?)),
+        ).optional().map_err(sqlite_error)?;
+        let Some((
+            id,
+            project_id,
+            run_id,
+            plan_level,
+            manager_delegation_id,
+            revision,
+            plan_json,
+            plan_hash,
+            created_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let plan = serde_json::from_str(&plan_json)
+            .map_err(|error| format!("stored role work plan is invalid: {error}"))?;
+        let latest_review = connection
+            .raw()
+            .query_row(
+                "SELECT id, reviewer_role, decision, note, created_at FROM role_work_plan_reviews
+             WHERE plan_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![id],
+                role_work_plan_review_from_row,
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        Ok(Some(RoleWorkPlanRecord {
+            id,
+            project_id,
+            run_id,
+            plan_level,
+            manager_delegation_id,
+            revision,
+            plan,
+            plan_hash,
+            created_at,
+            latest_review,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -447,6 +1301,7 @@ impl Store {
         role: &str,
         parent_delegation_id: Option<i64>,
         task_packet: &DelegationTaskPacket,
+        plan_task_key: Option<&str>,
         idempotency_key: &str,
         requested_model: Option<&str>,
         requested_effort: Option<&str>,
@@ -457,6 +1312,7 @@ impl Store {
         }
         let role = role.to_string();
         let task_packet = normalize_and_validate_packet(task_packet)?;
+        let plan_task_key = normalize_optional("planned Worker task key", plan_task_key, 80)?;
         let packet_json = serde_json::to_string(&task_packet)
             .map_err(|error| format!("cannot serialize delegation task packet: {error}"))?;
         let packet_hash = content_hash(&packet_json);
@@ -474,6 +1330,7 @@ impl Store {
             "role": role,
             "parentDelegationId": parent_delegation_id,
             "packetHash": packet_hash,
+            "planTaskKey": plan_task_key,
             "requestedModel": requested_model,
             "requestedEffort": requested_effort,
             "externalCorrelationHash": external_correlation_hash
@@ -551,6 +1408,67 @@ impl Store {
             &role,
             parent_delegation_id,
         )?;
+        let work_plan_ref = if role == "sub_overseer" {
+            if plan_task_key.is_some() {
+                return Err(
+                    "Project Manager assignments cannot reference a Worker plan task key"
+                        .to_string(),
+                );
+            }
+            let main_plan_id = transaction.query_row(
+                "SELECT id FROM role_work_plans WHERE project_id = ?1 AND run_id = ?2
+                 AND plan_level = 'main' ORDER BY revision DESC LIMIT 1",
+                params![project_id, run_id],
+                |row| row.get::<_, i64>(0),
+            ).optional().map_err(sqlite_error)?
+                .ok_or_else(|| "record the Main workflow brief for this project before preparing its Project Manager assignment".to_string())?;
+            Some((main_plan_id, None::<String>))
+        } else if let Some(parent_id) = parent_delegation_id {
+            let task_key = plan_task_key.as_deref().ok_or_else(|| "Worker assignments under a Project Manager require plan_task_key from the Main-approved Project Manager plan".to_string())?;
+            let (plan_id, plan_json): (i64, String) = transaction
+                .query_row(
+                    "SELECT id, plan_json FROM role_work_plans WHERE manager_delegation_id = ?1
+                 AND plan_level = 'project_manager' ORDER BY revision DESC LIMIT 1",
+                    params![parent_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_error)?
+                .ok_or_else(|| {
+                    "Project Manager must record a work plan before preparing Worker assignments"
+                        .to_string()
+                })?;
+            let plan_review: Option<String> = transaction.query_row(
+                "SELECT decision FROM role_work_plan_reviews WHERE plan_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![plan_id], |row| row.get(0),
+            ).optional().map_err(sqlite_error)?;
+            if plan_review.as_deref() != Some("accepted") {
+                return Err("Main Overseer must accept the Project Manager work plan before Worker assignments can be prepared".to_string());
+            }
+            let manager_plan: ProjectManagerWorkPlan = serde_json::from_str(&plan_json)
+                .map_err(|error| format!("stored Project Manager plan is invalid: {error}"))?;
+            let planned_task = manager_plan.worker_tasks.iter().find(|task| task.task_key == task_key)
+                .ok_or_else(|| format!("Worker task key {task_key} is not present in the accepted Project Manager plan"))?;
+            let planned_packet = normalize_and_validate_packet(&planned_task.task_packet)?;
+            if serde_json::to_string(&planned_packet)
+                .map_err(|error| format!("cannot encode planned Worker task: {error}"))?
+                != packet_json
+            {
+                return Err(
+                    "Worker task packet does not match the Main-approved Project Manager plan"
+                        .to_string(),
+                );
+            }
+            Some((plan_id, Some(task_key.to_string())))
+        } else {
+            if plan_task_key.is_some() {
+                return Err(
+                    "plan_task_key is only valid for a Worker assigned by a Project Manager"
+                        .to_string(),
+                );
+            }
+            None
+        };
         validate_packet_references(
             &transaction,
             project_id,
@@ -638,6 +1556,13 @@ impl Store {
             )
             .map_err(sqlite_error)?;
         let id = transaction.last_insert_rowid();
+        if let Some((plan_id, task_key)) = work_plan_ref {
+            transaction.execute(
+                "INSERT INTO delegation_work_plan_refs (delegation_id, plan_id, task_key, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, plan_id, task_key, now],
+            ).map_err(sqlite_error)?;
+        }
         if role == "sub_overseer" {
             let logical_role_key = format!("project-manager:{project_id}");
             transaction
@@ -755,6 +1680,15 @@ impl Store {
                 "Project Manager must be dispatched before its assignment can complete".to_string(),
             );
         }
+        let unresolved_actions =
+            unresolved_agent_action_count(&transaction, manager_delegation_id)?;
+        let unresolved_owner_requests =
+            unresolved_owner_approval_count(&transaction, manager_delegation_id)?;
+        if unresolved_actions > 0 || unresolved_owner_requests > 0 {
+            return Err(format!(
+                "Project Manager assignment {manager_delegation_id} cannot complete while {unresolved_actions} escalation(s) and {unresolved_owner_requests} owner request(s) remain unresolved"
+            ));
+        }
         let unresolved_children = unresolved_worker_count(&transaction, manager_delegation_id)?;
         if unresolved_children > 0 {
             let message = format!(
@@ -765,6 +1699,34 @@ impl Store {
                 manager.2,
                 Some(manager_delegation_id),
                 "project_manager_has_unfinished_workers",
+                &message,
+                now,
+                None,
+            )?;
+            transaction.commit().map_err(sqlite_error)?;
+            return Err(message);
+        }
+        let manager_report_review: Option<String> = transaction
+            .query_row(
+                "SELECT review.decision
+                 FROM worker_reports report
+                 JOIN worker_report_reviews review ON review.report_id = report.id
+                 WHERE report.delegation_id = ?1
+                 ORDER BY review.id DESC LIMIT 1",
+                params![manager_delegation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if manager_report_review.as_deref() != Some("accepted") {
+            let message = format!(
+                "Project Manager assignment {manager_delegation_id} cannot complete until Main accepts its project report"
+            );
+            record_admission_rejection(
+                &transaction,
+                manager.2,
+                Some(manager_delegation_id),
+                "project_manager_main_review_missing",
                 &message,
                 now,
                 None,
@@ -1385,17 +2347,39 @@ impl Store {
                 .ok_or_else(|| "idempotent worker report disappeared".to_string());
         }
 
-        let (delegation_status, run_id, packet_json): (String, i64, String) = transaction
-            .query_row(
-                "SELECT status, run_id, packet_json FROM delegations WHERE id = ?1",
-                params![delegation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(sqlite_error)?
-            .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        let (delegation_status, run_id, packet_json, role): (String, i64, String, String) =
+            transaction
+                .query_row(
+                    "SELECT status, run_id, packet_json, role FROM delegations WHERE id = ?1",
+                    params![delegation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(sqlite_error)?
+                .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
         if delegation_status != "dispatched" {
             return Err("worker reports require a dispatched delegation".to_string());
+        }
+        if !matches!(role.as_str(), "worker" | "sub_overseer") {
+            return Err(
+                "only Worker and Project Manager delegations can submit reports".to_string(),
+            );
+        }
+        if role == "sub_overseer" {
+            let unresolved_actions = unresolved_agent_action_count(&transaction, delegation_id)?;
+            let unresolved_owner_requests =
+                unresolved_owner_approval_count(&transaction, delegation_id)?;
+            if unresolved_actions > 0 || unresolved_owner_requests > 0 {
+                return Err(format!(
+                    "Project Manager cannot submit its result while {unresolved_actions} escalation(s) and {unresolved_owner_requests} owner request(s) remain unresolved"
+                ));
+            }
+            let unreviewed_children = unresolved_worker_count(&transaction, delegation_id)?;
+            if unreviewed_children > 0 {
+                return Err(format!(
+                    "Project Manager cannot submit its result until all {unreviewed_children} Worker report(s) are accepted or their tasks are cancelled"
+                ));
+            }
         }
         let packet: DelegationTaskPacket = serde_json::from_str(&packet_json)
             .map_err(|error| format!("stored delegation task packet is invalid: {error}"))?;
@@ -1532,6 +2516,7 @@ impl Store {
     pub fn review_delegation_report(
         &self,
         delegation_id: i64,
+        reviewer_role: &str,
         decision: &str,
         note: &str,
         idempotency_key: &str,
@@ -1555,18 +2540,53 @@ impl Store {
             .raw_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_error)?;
-        let report_id = transaction
+        let (report_id, report_role, parent_id): (i64, String, Option<i64>) = transaction
             .query_row(
-                "SELECT id FROM worker_reports WHERE delegation_id = ?1",
+                "SELECT report.id, delegation.role, delegation.parent_delegation_id
+                 FROM worker_reports report JOIN delegations delegation ON delegation.id = report.delegation_id
+                 WHERE report.delegation_id = ?1",
                 params![delegation_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("delegation {delegation_id} has no worker report to review"))?;
+        let expected_reviewer = if report_role == "sub_overseer" {
+            "main_overseer"
+        } else if parent_id.is_some() {
+            "project_manager"
+        } else {
+            "main_overseer"
+        };
+        if reviewer_role != expected_reviewer {
+            return Err(format!(
+                "{report_role} reports must be reviewed by {expected_reviewer}"
+            ));
+        }
+        if decision == "accepted" {
+            let unresolved_actions = unresolved_agent_action_count(&transaction, delegation_id)?;
+            if unresolved_actions > 0 {
+                return Err(format!(
+                    "{report_role} report cannot be accepted while {unresolved_actions} escalated action(s) remain unresolved"
+                ));
+            }
+            if report_role == "sub_overseer" {
+                let unresolved_owner_requests =
+                    unresolved_owner_approval_count(&transaction, delegation_id)?;
+                if unresolved_owner_requests > 0 {
+                    return Err(format!(
+                        "Project Manager report cannot be accepted while {unresolved_owner_requests} owner request(s) remain unresolved"
+                    ));
+                }
+            }
+        }
+        if !matches!(reviewer_role, "project_manager" | "main_overseer") {
+            return Err("reviewer_role must be project_manager or main_overseer".to_string());
+        }
         let request_hash = content_hash(
             &serde_json::to_string(&json!({
                 "reportId": report_id,
+                "reviewerRole": reviewer_role,
                 "decision": decision,
                 "note": note
             }))
@@ -1598,6 +2618,7 @@ impl Store {
             return Ok(WorkerReportReviewResult {
                 review_id,
                 delegation_id,
+                reviewer_role: reviewer_role.to_string(),
                 decision: existing_decision,
                 review_status,
             });
@@ -1605,10 +2626,11 @@ impl Store {
         transaction
             .execute(
                 "INSERT INTO worker_report_reviews
-                 (report_id, decision, note, request_hash, idempotency_key_hash, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (report_id, reviewer_role, decision, note, request_hash, idempotency_key_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     report_id,
+                    reviewer_role,
                     decision,
                     note,
                     request_hash,
@@ -1626,6 +2648,7 @@ impl Store {
             &json!({
                 "reportId": report_id,
                 "reviewId": review_id,
+                "reviewerRole": reviewer_role,
                 "decision": decision
             }),
             now,
@@ -1635,6 +2658,7 @@ impl Store {
         Ok(WorkerReportReviewResult {
             review_id,
             delegation_id,
+            reviewer_role: reviewer_role.to_string(),
             decision: decision.to_string(),
             review_status,
         })
@@ -2031,6 +3055,35 @@ impl Store {
                 return Err(message);
             }
         }
+        if to_status == "dispatched" && role == "sub_overseer" {
+            let has_main_plan_ref: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                   SELECT 1 FROM delegation_work_plan_refs ref
+                   JOIN role_work_plans plan ON plan.id = ref.plan_id
+                   WHERE ref.delegation_id = ?1 AND ref.task_key IS NULL
+                     AND plan.plan_level = 'main'
+                 )",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !has_main_plan_ref {
+                let message =
+                    format!("Project Manager delegation {id} has no linked Main workflow brief");
+                record_admission_rejection(
+                    &transaction,
+                    run_id,
+                    Some(id),
+                    "main_workflow_brief_missing",
+                    &message,
+                    now,
+                    None,
+                )?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Err(message);
+            }
+        }
         if to_status == "dispatched" && role == "worker" {
             if let Some(parent_id) = parent_delegation_id {
                 let parent = transaction
@@ -2056,6 +3109,33 @@ impl Store {
                         run_id,
                         Some(parent_id),
                         "worker_parent_not_active_at_dispatch",
+                        &message,
+                        now,
+                        None,
+                    )?;
+                    transaction.commit().map_err(sqlite_error)?;
+                    return Err(message);
+                }
+                let has_accepted_plan_ref: bool = transaction.query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM delegation_work_plan_refs ref
+                       JOIN role_work_plans plan ON plan.id = ref.plan_id
+                       JOIN role_work_plan_reviews review ON review.plan_id = plan.id
+                       WHERE ref.delegation_id = ?1 AND ref.task_key IS NOT NULL
+                         AND plan.plan_level = 'project_manager'
+                         AND review.id = (SELECT MAX(latest.id) FROM role_work_plan_reviews latest WHERE latest.plan_id = plan.id)
+                         AND review.decision = 'accepted'
+                     )",
+                    params![id],
+                    |row| row.get(0),
+                ).map_err(sqlite_error)?;
+                if !has_accepted_plan_ref {
+                    let message = format!("Worker delegation {id} has no accepted Project Manager task-plan reference");
+                    record_admission_rejection(
+                        &transaction,
+                        run_id,
+                        Some(parent_id),
+                        "worker_plan_reference_missing",
                         &message,
                         now,
                         None,
@@ -2433,6 +3513,202 @@ fn latest_review_status(transaction: &Transaction<'_>, report_id: i64) -> Result
         .map(|decision| decision.unwrap_or_else(|| "reported".to_string()))
 }
 
+fn normalize_main_workflow_brief(plan: &Value) -> Result<Value, String> {
+    let mut brief: MainWorkflowBrief = serde_json::from_value(plan.clone())
+        .map_err(|error| format!("invalid Main workflow brief: {error}"))?;
+    if brief.schema_version != 1 {
+        return Err("Main workflow brief schema_version must be 1".to_string());
+    }
+    brief.desired_outcome = normalize_required("desired outcome", &brief.desired_outcome, 2_000)?;
+    normalize_plan_items("workflow phases", &mut brief.phases, 12, true)?;
+    normalize_plan_items("project boundary", &mut brief.project_boundary, 24, true)?;
+    normalize_plan_items("workflow dependencies", &mut brief.dependencies, 24, false)?;
+    normalize_plan_items(
+        "workflow acceptance criteria",
+        &mut brief.acceptance_criteria,
+        24,
+        true,
+    )?;
+    normalize_plan_items(
+        "owner approval gates",
+        &mut brief.owner_approval_gates,
+        24,
+        false,
+    )?;
+    normalize_plan_items("known workflow risks", &mut brief.known_risks, 24, false)?;
+    serde_json::to_value(brief)
+        .map_err(|error| format!("cannot encode Main workflow brief: {error}"))
+}
+
+fn normalize_project_manager_plan(plan: &Value) -> Result<Value, String> {
+    let mut plan: ProjectManagerWorkPlan = serde_json::from_value(plan.clone())
+        .map_err(|error| format!("invalid Project Manager work plan: {error}"))?;
+    if plan.schema_version != 1 {
+        return Err("Project Manager work plan schema_version must be 1".to_string());
+    }
+    plan.summary = normalize_required("Project Manager plan summary", &plan.summary, 2_000)?;
+    normalize_plan_items(
+        "Project Manager actions",
+        &mut plan.manager_actions,
+        24,
+        false,
+    )?;
+    if plan.worker_tasks.len() > 16 {
+        return Err(
+            "Project Manager plan may contain at most 16 candidate Worker tasks".to_string(),
+        );
+    }
+    let mut task_keys = HashSet::new();
+    for task in &mut plan.worker_tasks {
+        task.task_key = normalize_required("Worker task key", &task.task_key, 80)?;
+        if !valid_action_key(&task.task_key) {
+            return Err(
+                "Worker task keys may contain only ASCII letters, numbers, '-', '_', and '.'"
+                    .to_string(),
+            );
+        }
+        if !task_keys.insert(task.task_key.clone()) {
+            return Err(format!(
+                "Project Manager plan repeats Worker task key {}",
+                task.task_key
+            ));
+        }
+        task.task_packet = normalize_and_validate_packet(&task.task_packet)?;
+    }
+    if plan.manager_actions.is_empty() && plan.worker_tasks.is_empty() {
+        return Err(
+            "Project Manager plan must define manager work or at least one Worker task".to_string(),
+        );
+    }
+    serde_json::to_value(plan)
+        .map_err(|error| format!("cannot encode Project Manager work plan: {error}"))
+}
+
+fn backfill_prepared_worker_plan_refs(
+    transaction: &Transaction<'_>,
+    manager_id: i64,
+    plan_id: i64,
+    plan_json: &str,
+    now: i64,
+) -> Result<(), String> {
+    let plan: ProjectManagerWorkPlan = serde_json::from_str(plan_json)
+        .map_err(|error| format!("stored Project Manager plan is invalid: {error}"))?;
+    let mut used_task_keys = transaction
+        .prepare("SELECT task_key FROM delegation_work_plan_refs WHERE plan_id = ?1 AND task_key IS NOT NULL")
+        .map_err(sqlite_error)?
+        .query_map(params![plan_id], |row| row.get::<_, String>(0))
+        .map_err(sqlite_error)?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(sqlite_error)?;
+    let prepared_children = transaction
+        .prepare(
+            "SELECT d.id, d.packet_json FROM delegations d
+             LEFT JOIN delegation_work_plan_refs ref ON ref.delegation_id = d.id
+             WHERE d.parent_delegation_id = ?1 AND d.role = 'worker'
+               AND d.status = 'prepared' AND ref.delegation_id IS NULL
+             ORDER BY d.id",
+        )
+        .map_err(sqlite_error)?
+        .query_map(params![manager_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sqlite_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    for (worker_id, worker_packet_json) in prepared_children {
+        let worker_packet: DelegationTaskPacket = serde_json::from_str(&worker_packet_json)
+            .map_err(|error| format!("stored Worker task packet is invalid: {error}"))?;
+        let worker_packet = normalize_and_validate_packet(&worker_packet)?;
+        let worker_packet_json = serde_json::to_string(&worker_packet)
+            .map_err(|error| format!("cannot encode stored Worker task packet: {error}"))?;
+        let matches = plan
+            .worker_tasks
+            .iter()
+            .filter(|task| !used_task_keys.contains(&task.task_key))
+            .filter_map(|task| {
+                normalize_and_validate_packet(&task.task_packet)
+                    .ok()
+                    .and_then(|packet| serde_json::to_string(&packet).ok())
+                    .filter(|packet_json| packet_json == &worker_packet_json)
+                    .map(|_| task.task_key.clone())
+            })
+            .collect::<Vec<_>>();
+        if let [task_key] = matches.as_slice() {
+            transaction
+                .execute(
+                    "INSERT INTO delegation_work_plan_refs (delegation_id, plan_id, task_key, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![worker_id, plan_id, task_key, now],
+                )
+                .map_err(sqlite_error)?;
+            used_task_keys.insert(task_key.clone());
+        }
+    }
+    Ok(())
+}
+
+fn normalize_plan_items(
+    name: &str,
+    items: &mut Vec<String>,
+    maximum: usize,
+    required: bool,
+) -> Result<(), String> {
+    for item in items.iter_mut() {
+        *item = normalize_update_text(name, item, 1_000)?;
+    }
+    if items.len() > maximum {
+        return Err(format!("{name} may contain at most {maximum} entries"));
+    }
+    validate_unique(name, items)?;
+    if required && items.is_empty() {
+        return Err(format!("{name} must contain at least one entry"));
+    }
+    Ok(())
+}
+
+fn role_work_plan_review_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RoleWorkPlanReviewRecord> {
+    Ok(RoleWorkPlanReviewRecord {
+        id: row.get(0)?,
+        reviewer_role: row.get(1)?,
+        decision: row.get(2)?,
+        note: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+fn owner_approval_request_base_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<OwnerApprovalRequestRecord> {
+    Ok(OwnerApprovalRequestRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        run_id: row.get(2)?,
+        manager_delegation_id: row.get(3)?,
+        source_action_event_id: row.get(4)?,
+        action_key: row.get(5)?,
+        request_summary: row.get(6)?,
+        owner_action: row.get(7)?,
+        reason: row.get(8)?,
+        request_hash: row.get(9)?,
+        created_at: row.get(10)?,
+        decision: None,
+    })
+}
+
+fn owner_approval_decision_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<OwnerApprovalDecisionRecord> {
+    Ok(OwnerApprovalDecisionRecord {
+        id: row.get(0)?,
+        decision: row.get(1)?,
+        response_summary: row.get(2)?,
+        decision_origin: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
 fn validate_parent_links(
     transaction: &Transaction<'_>,
     project_id: i64,
@@ -2592,7 +3868,51 @@ fn unresolved_worker_count(
              LEFT JOIN worker_reports wr ON wr.delegation_id = d.id
              WHERE d.parent_delegation_id = ?1
                AND d.status <> 'cancelled'
-               AND wr.id IS NULL",
+               AND (wr.id IS NULL OR COALESCE((
+                 SELECT review.decision FROM worker_report_reviews review
+                 WHERE review.report_id = wr.id ORDER BY review.id DESC LIMIT 1
+               ), 'reported') <> 'accepted')",
+            params![manager_delegation_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
+}
+
+fn unresolved_agent_action_count(
+    transaction: &Transaction<'_>,
+    delegation_id: i64,
+) -> Result<i64, String> {
+    transaction
+        .query_row(
+            "SELECT COUNT(*) FROM events action
+             WHERE action.aggregate_type = 'delegation'
+               AND action.aggregate_id = CAST(?1 AS TEXT)
+               AND action.event_type = 'agent_action_required'
+               AND NOT EXISTS (
+                 SELECT 1 FROM events newer
+                 WHERE newer.aggregate_type = action.aggregate_type
+                   AND newer.aggregate_id = action.aggregate_id
+                   AND json_extract(newer.payload_json, '$.actionKey') = json_extract(action.payload_json, '$.actionKey')
+                   AND newer.event_type IN ('agent_action_required', 'agent_action_resolved')
+                   AND newer.id > action.id
+               )",
+            params![delegation_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
+}
+
+fn unresolved_owner_approval_count(
+    transaction: &Transaction<'_>,
+    manager_delegation_id: i64,
+) -> Result<i64, String> {
+    transaction
+        .query_row(
+            "SELECT COUNT(*) FROM owner_approval_requests request
+             WHERE request.manager_delegation_id = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM owner_approval_decisions decision WHERE decision.request_id = request.id
+               )",
             params![manager_delegation_id],
             |row| row.get(0),
         )

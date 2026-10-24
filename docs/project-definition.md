@@ -2,19 +2,35 @@
 
 Status: NORMATIVE for product boundaries. Initial definition recorded 2026-10-20 from `CATHULU_PROJECT_KICKOFF.md` and refined through 2026-10-21 with the owner's platform, selector-surface, managed-memory, and optional specialist-model decisions.
 
+Rebaseline (2026-10-25): [ADR-0022](decisions/ADR-0022-mixed-provider-personal-project-os.md) changes the product direction. Purpose and the pivot scope below own current target intent. The existing actors, coding workflows and first-increment descriptions later in this document describe the compatibility baseline; their Codex-only wording does not constrain the provider-neutral target. Existing safety, evidence, memory and role-cap invariants remain in force. Detailed migration proposals and observed gaps are in the [migration assessment](pivot-migration.md).
+
 ## Purpose
 
-Cathulu is a local-first desktop application and evidence layer around the Codex app. Its control plane, SQLite authority, memory, and evidence references remain local. Optional specialist calls may use a remote provider only when explicitly configured and only with the minimum sanitized input required; all specialist capabilities default to disabled. Cathulu adds durable portfolio state, managed memory, workflow history, quality evidence, and observability around Codex. It should become better informed over time without proportional growth in active context. The owner continues to work through Codex. Cathulu is not a second chat surface or a general-purpose agent runtime.
+Cathulu is a persistent, local-first personal project operating system for one primary user. It owns canonical project/task/priority/decision state, curated memory, policy, evidence and continuity. Claude Code and Codex are replaceable cognition and execution resources beneath that authority. Projects, open work, blockers, priorities and checkpoint/resume queries should remain useful without either provider. Cathulu reuses provider tooling for model/tool loops and preserves local SQLite authority; no required hosted backend or model API billing is introduced.
 
-The product question is whether durable, selectively disclosed state improves verified software work, or achieves equivalent verified quality with less context reconstruction and resource use, compared with ordinary Codex use.
+The product question is whether Cathulu helps the Owner resume and advance useful accepted work with less context reconstruction, user attention and provider-capacity pressure while preserving verified quality. Comparative provider/workflow benefit requires measured evidence; routing defaults alone do not establish it.
+
+## Pivot scope and invariants
+
+The Owner remains the final authority for consequential decisions. Cathulu validates state transitions and disclosure; providers propose, implement or review inside granted scope. Logical roles persist independently of provider sessions. Current Main/PM/Worker responsibilities, one active PM per project and two Workers total per PM assignment remain unchanged until explicitly revised and validated. No new live provider or additional project scope is activated by planning this pivot.
+
+The first pivot increment is provider-free structured task/priority/dependency state followed by immutable project checkpoints and deterministic resume. [PLAN-020 M48-M49](plans/PLAN-020-mixed-provider-personal-project-os.md) defines its proofs. Later increments add controlled personal/non-code project state, typed artifacts, provider adapters, exclusive writer workspaces, availability routing and reviewed handoffs. Claude's cognitive/UX and Codex's bounded-execution preferences are configurable priors. Data privacy, deterministic QA, parent reviews, no-wait event routing, headless MCP and the desktop pause remain in force.
+
+No required cloud database, vector database, permanent swarm, transcript dump, automatic production deployment or silent API overflow belongs to V1. Personal/provider disclosure, actual subscription tooling, additional role types, paused UI resumption and calibrated routing claims have dependent gates in the [assessment](pivot-migration.md), [definition gate](readiness/definition-gate.md) and [kickoff state](kickoff-state.json).
+
+## Development and supervised use
+
+Under [ADR-0021](decisions/ADR-0021-continuous-supervised-development.md), exercising Cathulu's complete core workflow through already authorized work in other registered projects is part of Cathulu development. Development agents arrange those runs, capture source-backed results, and fix the integration defects they reveal. Cathulu itself is developed and repaired in a separate Codex development session, so its dispatcher cannot prevent its own repair.
+
+Bounded, supervised, reversible local core implementation and use may proceed after applicable safety, scope, correctness, and QA checks, before comparative benefit is proven. Implementation, built artifact, loaded process, live acceptance, and measured benefit are distinct evidence states. Milestones are validation checkpoints within the approved outcome; accepted work continues without a new Owner prompt solely because a checkpoint passed. Runtime bootstrap and recovery use the existing M42/M44 plans. Optional-provider consent, active-treatment approval, autonomous policy promotion, and production/data/access boundaries retain their own gates.
 
 ## Actors and ownership
 
 - **Project owner / maintainer:** the local developer who works through Codex and owns decisions, approvals, and release choices.
-- **Main Overseer:** the only user-facing agent, running inside Codex. It coordinates project work, uses Cathulu MCP for project/task/run and memory state, assigns one Project Manager per active project, monitors evidence, and escalates to the owner. It does not implement project work.
+- **Main Overseer:** one logical, owner-facing role. A Codex chat can temporarily represent it; the chat is not the identity. It coordinates project work, uses Cathulu state and memory, assigns one Project Manager per active project, resolves bounded cross-project decisions, and escalates owner-authority actions. It does not implement project work. Cathulu's current integration cannot guarantee one exclusive live chat; PLAN-015 proposes managed persistent role threads.
 - **Project Managers:** Codex-native agents, with at most one assigned to a project per orchestration request. They plan and supervise one project, use Cathulu MCP and scoped memory, and may dispatch no more than two worker agents total per assignment. Project Managers do not implement repository changes themselves.
 - **Workers:** Codex-native agents that perform bounded implementation, investigation, or verification work inside one Project Manager's project/task scope. They use Cathulu memory and evidence tools and return structured reports upward.
-- **Cathulu local services:** own durable state, Git reconciliation, telemetry normalization, workflow/quality state, and compact context resources.
+- **Cathulu local services:** own durable state, Git reconciliation, telemetry normalization, workflow/quality state, compact context resources, and the implemented asynchronous Codex role-thread dispatcher and event router. The default-on dispatcher becomes live after the matched MCP build is reloaded; end-to-end use remains subject to M42 verification.
 - **Read-only dashboard:** presents current local state and evidence; it does not issue commands or mutate project state.
 - **Selector surface:** Cathulu hosts model and effort selectors for the Main Overseer, default subagents, and named custom-agent roles in a settings surface separate from the read-only dashboard. Each preview offers project config, user base config, a named user profile, or export-only. Every file write requires an exact diff review and explicit Apply; stored or written values do not imply account availability or live-session effectiveness.
 
@@ -22,12 +38,12 @@ The product question is whether durable, selectively disclosed state improves ve
 
 1. The owner gives the Main Overseer a task and the registered project or projects it concerns; projects remain independent unless the owner explicitly declares a cross-project task.
 2. Main reads a compact portfolio snapshot, selects the project task/run, loads relevant scoped HOT memory, searches WARM knowledge selectively, and prepares an auditable context transfer.
-3. Main assigns one Project Manager to each active project and does no implementation work. Each Project Manager uses Cathulu MCP, plans work within one project, and may dispatch at most two workers total for the assignment.
-4. Project Managers transfer only relevant Cathulu memory to workers using the existing known-by and context-transfer ledger. Workers perform scoped project work and submit evidence-backed reports; managers review those reports and return concise status to Main.
-5. Main checks current Cathulu state, blockers, worker reports, and required QA gates, then reports status or asks the owner for a decision. The read-only dashboard presents only persisted runs, delegations, events, and quality evidence.
+3. Main assigns one Project Manager to each active project and does no implementation work. In the target event-driven flow, independent project dispatches proceed in parallel; a project that needs owner input pauses on its own while unrelated projects continue. Each PM uses Cathulu MCP, plans work within one project, and may dispatch at most two workers total for the assignment.
+4. Project Managers transfer only relevant Cathulu memory to workers using the existing known-by and context-transfer ledger. Workers perform scoped project work and submit evidence-backed reports; managers resolve routine in-scope choices and return only material decisions, blockers, owner actions, and results up the chain.
+5. The implemented event-driven flow queues independent PM work and ends Main's dispatch turn after queue acceptance; routine updates stay in Cathulu. Main resumes in a fresh short turn only when it must decide, route an escalation, handle owner input, or review a material result. The default-on dispatcher becomes live after reloading the published MCP build. Actual multi-project behavior, project tool access, Codex thread ownership, and recovery still require PLAN-015 M42 live verification. The read-only dashboard presents persisted runs, delegations, events, and quality evidence.
 6. A run becomes `verified_success` only after its acceptance criteria and all mandatory deterministic gates pass. A timeout or missing evidence is `blocked` or `inconclusive`, never success.
 
-See the normative [agent operating contract](agent-operating-contract.md) and [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md). The native Codex runtime must support nested Project Manager-to-Worker spawning and inherited Cathulu MCP access before the hierarchy is described as operational.
+See the normative [agent operating contract](agent-operating-contract.md), [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md), and [ADR-0016](decisions/ADR-0016-event-driven-role-orchestration.md). M21 observed one native PM-to-Worker chain; M36 verified the isolated app-server protocol and M40/M41 implemented the local dispatcher and event routing. Use a bounded, authorized real assignment to gather M42 evidence with the normal gates and honest unverified status. Claim operational readiness only for live behavior actually demonstrated; full M42 completion requires its acceptance criteria to pass.
 
 The dashboard's first views are Overview, Activity, Project/Scope, and Evidence. The first increment needs only the project registry and Git state path, with the other views introduced as their supporting state exists.
 
@@ -50,13 +66,12 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 
 ### Explicitly deferred
 
-- A custom agent/worker runtime or permanent model processes.
-- Cathulu spawning, steering, cancelling, or accepting changes from native Codex workers, or creating/moving/removing/merging their worktrees; Cathulu records structured packets, reconciles existing worktree evidence, and records lifecycle telemetry while Codex remains the execution owner.
+- A custom agent/worker reasoning runtime or permanent model processes. The planned local dispatcher may manage Codex role-thread lifecycle, but Codex remains the model and project execution harness.
 - Durable Sub-Overseers before measured repeated cross-project reconstruction.
 - Hosted Cathulu control-plane/storage services, embeddings/vector databases, graph databases, distributed/event-sourcing infrastructure, and reinforcement learning. Explicit, minimized calls to optional remote specialist providers are a separate Phase 9 experiment governed by [ADR-0007](decisions/ADR-0007-optional-specialist-model-optimization.md).
 - Automatic memory consolidation/promotion, semantic indexing, evidence compaction/garbage collection, and adaptive temperature or memory-policy automation until Phase 2 evidence justifies them.
-- Advanced convergence and adaptive routing before trustworthy run evidence exists.
-- Model/reasoning selectors in the first increment. M9 implements the later settings surface outside the read-only dashboard. Project/user/profile writes require a per-preview target choice and explicit apply; export-only remains available. Cathulu uses only the local CLI's whitelisted model/effort options, does not infer account availability, and does not claim runtime effectiveness.
+- Calibrated convergence claims and autonomous adaptive routing before trustworthy run evidence exists. Supervised local analysis and evaluation mechanics may be developed and exercised while insufficient evidence is reported explicitly.
+- Model/reasoning selectors in the first increment. M9 implements the later settings surface outside the project graph. Project/user/profile writes require a per-preview target choice and explicit apply; export-only remains available. The graph has one separate Owner-action exception: a two-step local approve/decline control records a decision for one exact request and never executes the requested operation. Cathulu uses only the local CLI's whitelisted model/effort options, does not infer account availability, and does not claim runtime effectiveness.
 - Optional specialist DecisionModel and ContextModel providers are a Phase 9 optimization layer. Jev and ScaleDown adapters are available for explicitly consented shadow trials, while all capabilities remain disabled by default. They do not replace Codex or become required dependencies. Any active workflow treatment requires separate evidence and explicit, reversible approval. Provider settings remain separate from the M9 Codex model/effort selectors.
 
 ## Domain terms and invariants
@@ -76,13 +91,13 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 
 Invariants:
 
-1. Codex remains the primary reasoning, coding, planning, debugging, and conversation system; Cathulu stores state and evidence and does not run agents. Optional specialists may only support bounded decisions or transform existing information.
+1. Codex remains the primary reasoning, coding, planning, debugging, and conversation system. Cathulu may coordinate and manage Codex role-thread lifecycle, but it does not replace Codex's reasoning or perform repository implementation. Optional specialists may only support bounded decisions or transform existing information.
 2. Events are append-only. Decisions and workflow versions are immutable; supersession creates a new record. Mutable current state is a transactional projection of events and domain operations.
 3. No agent report, timeout, or budget limit can bypass mandatory quality gates.
 4. The portfolio dashboard has no write actions. Project and run state changes come from Codex-facing semantic operations; selector settings are a separate Cathulu configuration boundary and can write only after a reviewed diff and explicit user apply.
 5. Cathulu's database, MCP server, memory, evidence references, and telemetry remain local. Remote specialist use is off by default, explicitly configured, visible in run attribution, and limited to minimum sanitized input. Full repositories, secrets, raw Cathulu memory, complete transcripts, and entire artifact stores are not sent by default.
 6. Context moves progressively from portfolio to project/scope to task and finally to exact evidence; raw transcripts are not propagated upward.
-7. Additional layers must earn their cost through measured improvement in verified outcomes.
+7. Additional layers must earn their cost through measured improvement in verified outcomes before benefit is claimed or autonomous promotion is justified. Supervised, reversible local core development and evaluation may generate that evidence under ADR-0021.
 8. Raw experience becomes durable agent memory only after useful knowledge is extracted and its provenance retained; raw evidence may have temporary retention.
 9. Memory class and temperature remain separate. Temperature changes update one stable record and do not duplicate or delete knowledge.
 10. Current and historical truth remain distinguishable through temporal validity and supersession; canonical knowledge is never silently overwritten.

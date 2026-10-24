@@ -29,3 +29,7 @@ The existing one-graph dashboard projects delegation lifecycle and optional Code
 - **Capture transcripts or every tool call:** rejected for privacy, context/storage growth, and signal-to-noise reasons.
 - **Add a separate dashboard/activity tab:** rejected; the owner requires one project-spanning graph and a compact support surface.
 - **Wait until every PM/Worker completes before reporting:** rejected because independent project work can proceed while one task is blocked or waiting for owner input.
+
+## Scheduling amendment — 2026-10-22
+
+M28 added durable progress and owner-action evidence, but its first-update-then-monitor instruction still keeps Main's generation active. The event ledger and dashboard projection remain valid; the scheduling behavior is insufficient for the owner's no-wait requirement. PLAN-015 supersedes it with passive routine progress and fresh short Main turns only for actionable events or material results. The current MCP cannot yet provide that dispatcher or wake-up behavior.

@@ -1,16 +1,16 @@
 # PLAN-003 — Evidence-gated scaling: scopes, structural retrieval, and policy learning
 
-Status: M9 is validated and published to `main`; M11 is implemented, validated, and published to `main` as `e18dc46` (PR #1). M10 is not currently eligible because no qualifying recurring cross-project workflow has been observed. M12-M14 remain conditional on their evidence gates below.
+Status: M9 and M11 are validated and published to `main`; M11 is `e18dc46` (PR #1). Under ADR-0021, bounded supervised core development/use generates real evidence. M12/M13 mechanics may proceed with explicit insufficient-evidence results; calibration, benefit claims, and promotion retain the gates below. M10's additional cross-project scope requires an actual scope need and does not gate independent PM coordination. M14 remains bounded offline/advisory research.
 Created: 2026-10-21
-Last updated: 2026-10-21
+Last updated: 2026-10-24
 
 ## Objective
 
-Complete the roadmap's remaining Phase 4-8 capabilities only when Cathulu's local, verified run data demonstrates their need and expected benefit. Add durable scopes, structural retrieval, convergence signals, workflow experiments, and bounded policy research without duplicating memory authority, exposing private evidence, or automating unsupported decisions.
+Develop and exercise the roadmap's Phase 4-8 core capabilities through bounded supervised work, using real authorized project tasks to generate local evidence. Demonstrate benefit before claiming improvement or promoting autonomous behavior. Add only scoped capabilities without duplicating memory authority, exposing private evidence, or automating unsupported decisions. [ADR-0021](../decisions/ADR-0021-continuous-supervised-development.md) governs this development policy.
 
 ## Motivation
 
-The roadmap deliberately conditions M10 on repeated cross-project context reconstruction, M11 on a useful Graphify snapshot source, and M12-M14 on enough comparable run evidence. M11's product-value gate has passed. The local Cathulu MCP server is now configured and the Cathulu repository is registered, but no qualifying recurring cross-project workflow is currently available to measure. This plan defines how to evaluate the remaining gates and what to build only after they are met; synthetic fixtures validate mechanics but do not satisfy product-evidence gates.
+The original plan conditioned implementation on product-benefit evidence and assigned real run generation to the Owner. ADR-0021 makes arranging authorized real runs part of development and permits supervised, reversible local core implementation/use after applicable safety and correctness checks. M11's recorded pilot remains valid. M10 still requires a genuine cross-project scope need; independent projects do not need that extra layer. Real comparable data remains necessary for calibrated signals, trustworthy comparisons, and policy promotion; fixtures establish mechanics only.
 
 ## Current state
 
@@ -28,28 +28,28 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 - Structural retrieval, if justified, consumes local, identified Graphify snapshots as retrieval input; SQLite remains the authority for memory and decisions.
 - Convergence and workflow evaluation distinguish observed evidence from inferred labels and compare only like-for-like runs.
 - Policy changes remain versioned proposals with owner review. Learned routing is offline and advisory; no autonomous policy changes or reinforcement learning are in the MVP.
-- Each phase has a documented entry decision, validation evidence, and a recorded outcome. A gate that lacks evidence remains open; fixtures do not substitute for live evidence.
+- Each phase records implementation, supervised use, calibration/comparison, and promotion evidence separately. Missing benefit evidence leaves the corresponding claim or promotion open; it does not block safe local core mechanics. Fixtures do not substitute for live evidence.
 
 ## Scope
 
 - Define measurable entry gates for M10-M14 using the existing M4 telemetry and policy-evaluation records.
-- Add only the smallest schema, domain, MCP, and dashboard extensions needed after each gate passes.
+- Add only the smallest scoped schema, domain, and MCP extensions after applicable correctness/safety checks; use supervised runs to evaluate them. Desktop UI remains on hold. Apply the data gates to calibration, comparative claims, and promotion.
 - Benchmark each optional subsystem against the simplest existing retrieval or workflow baseline.
 - Preserve local-only operation, SQLite authority, provenance, stable identities, and existing scope/transfer records.
 
 ## Out of scope
 
-- Building Sub-Overseer coordination before the M10 evidence gate passes.
+- Inventing a cross-project scope or dependency to manufacture M10 evidence. Independent-project orchestration follows PLAN-015 without depending on M10.
 - Embedding or uploading Cathulu repositories, transcripts, or evidence to an external service.
 - Adding Graphify invalidation without an identified, locally available snapshot source and reproducible freshness identity.
 - Calling synthetic test results proof of user benefit or sufficient run volume.
-- Autonomous agent spawning, merging, approval changes, or Codex configuration writes.
+- Agent spawning, merging, approval changes, or Codex configuration writes outside the existing task authorization and role/approval contracts.
 - Reinforcement learning or automatic policy/routing changes; M14 remains bounded research and owner-reviewed recommendations.
 
 ## Source-of-truth impact
 
 - `docs/roadmap.md`: link these phase gates and report whether each is eligible, active, validated, or still waiting on evidence.
-- `docs/architecture.md`: update only when a gate passes and implementation changes actual data authority or retrieval behavior.
+- `docs/architecture.md`: update when intended authority/retrieval behavior changes, distinguishing supervised implementation from validated adoption and measured benefit.
 - `docs/decisions/`: add an ADR for material Graphify, scope ownership, evaluation, or automation-boundary decisions.
 - `docs/plans/PLAN-003-evidence-gated-scaling.md`: record gate evidence, baselines, implementation, and validation per milestone.
 - `docs/project-definition.md`: change only if the product boundary or MVP changes.
@@ -61,7 +61,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 - Scopes reuse stable existing identities and must not create a second project, task, or memory authority.
 - Git, contracts, dependencies, and graph snapshots invalidate only knowledge that declares a matching freshness basis.
 - Graphify is retrieval infrastructure and a freshness source, not a second memory authority.
-- Human review remains required for policy promotion and any change that can affect Codex configuration or execution.
+- Human review remains required for policy promotion and actions crossing the existing Owner-authority boundary. Routine scoped execution follows existing task authorization and parent-role reviews; a passed milestone does not by itself require another Owner prompt.
 
 ## Supporting skills / tools
 
@@ -74,7 +74,7 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 - M9 validated before M10 starts, so delegation settings and requested/effective values are represented accurately.
 - M4 memory and measurement substrate; M6-M8 delegation, worker report, and worktree evidence.
-- A real local Cathulu run history to evaluate M10/M12/M13/M14. The owner must generate representative runs through normal work; test fixtures alone do not pass these gates.
+- Cathulu development agents arrange and record real local runs through already authorized work in other registered projects, with Cathulu itself developed separately. Use those runs to evaluate M10/M12/M13/M14 when applicable. Request only essential missing information or actions requiring Owner authority; representative run generation is part of development. Fixtures alone do not satisfy calibration, comparative-benefit, or promotion gates.
 - For M11, a reproducible local Graphify output format/version and a local snapshot source. Any model-backed extraction or network access requires a separate product/privacy decision.
 
 ## Risks and unknowns
@@ -89,14 +89,14 @@ The roadmap deliberately conditions M10 on repeated cross-project context recons
 
 ### M10 — Durable scoped context and Sub-Overseers
 
-Goal: reduce measured cross-project context reconstruction with resumable, bounded logical scopes, but only when evidence shows that scope maintenance costs less than repeated reconstruction.
+Goal: reduce cross-project context reconstruction with resumable, bounded logical scopes when an actual recurring scope need exists. This additional layer does not gate independent PM coordination or other core development. A bounded supervised prototype can establish mechanics; adoption and benefit claims require the comparison below.
 
 Entry gate:
 
 - Collect a real, local baseline showing repeated cross-project context reconstruction for the same recurring work pattern.
 - Current applicability: available evidence contains no qualifying recurring cross-project task. Do not start M10 evidence collection until one exists.
 - Measure context bytes/tokens when observable, reintroduction, delay/rework, task outcomes, and the expected maintenance/coordination cost.
-- Agree on the comparison method and decision threshold before implementation. Do not use synthetic fixtures or an arbitrary run count as the product-value proof.
+- Agree on the comparison method and decision threshold before the first scored comparison or adoption decision. Do not use synthetic fixtures or an arbitrary run count as product-value proof.
 
 Evidence collection protocol (complete before the first scored pair):
 
@@ -116,7 +116,7 @@ Subtasks:
 
 Affected areas: memory scope domain, delegation contracts, migrations if needed, local MCP, Tauri snapshot, read-only dashboard, integration tests, docs.
 
-Dependencies: M9; measured M4 transfer and run data; accepted entry-gate result.
+Dependencies: M9 and M4 infrastructure; a real scope need for supervised implementation. Measured transfer/run data and the accepted comparison govern adoption and benefit claims.
 
 Acceptance criteria:
 
@@ -129,7 +129,7 @@ Validation:
 
 - Public MCP/Tauri/restart tests for scope creation, resume, delta, freshness, isolation, and bounded activation.
 - Paired local tasks with a declared baseline and held-out confirmation; preserve the evidence and limitations in the plan.
-- If the entry gate fails, validate the gate computation and record M10 as not eligible; do not implement the coordination subsystem.
+- If no genuine scope need exists, record M10 as not applicable and do not manufacture a cross-project prototype. If benefit evidence is insufficient, record that limit and withhold default adoption/benefit claims. Independent PM coordination and other safe core work continue.
 
 Documentation updates: architecture, roadmap, PLAN-003, and an ADR if ownership or authority changes.
 
@@ -190,7 +190,7 @@ Expected Git checkpoint: validated local snapshot/retrieval checkpoint or docume
 
 Goal: identify stalled, looping, oscillating, or regressing work from explainable state differences and verified run evidence.
 
-Entry gate:
+Calibration gate (local mechanics and explicitly uncalibrated supervised candidates may be developed before it passes):
 
 - Collect enough comparable real runs and repeated failure/stall examples to define and hold out a validation set.
 - Declare signal definitions and acceptable false-positive/false-negative tradeoffs before fitting thresholds.
@@ -203,7 +203,7 @@ Subtasks:
 
 Affected areas: run analysis, event projections, dashboard evidence, experiments, tests, docs.
 
-Dependencies: M10-M11 only where their evidence changes the state signature; sufficiently varied real runs.
+Dependencies: M10-M11 only where their evidence changes the state signature. Sufficiently varied real runs are required for calibrated thresholds and claims, not for local deterministic mechanics.
 
 Acceptance criteria:
 
@@ -215,7 +215,7 @@ Validation:
 
 - Deterministic fixtures for known stall/loop/oscillation/regression and negative cases.
 - Held-out real-run evaluation, false-positive review, and restart/replay equivalence.
-- If data is insufficient, record the gap and defer thresholds or feature enablement.
+- If data is insufficient, report uncalibrated/insufficient-evidence results and defer validated threshold claims or autonomous responses. Continue bounded supervised analysis and data collection.
 
 Documentation updates: architecture, dashboard evidence contract, roadmap, PLAN-003, and an ADR if quality semantics change.
 
@@ -227,7 +227,7 @@ Expected Git checkpoint: validated explainable signal checkpoint; no live automa
 
 Goal: compare workflow versions on similar task classes and recommend evidence-backed changes without automatic promotion.
 
-Entry gate:
+Comparison gate (aggregation/proposal mechanics may be built and supervised with explicit insufficient-evidence results before it passes):
 
 - Retain enough completed, quality-verified, comparable runs across workflow versions to estimate the chosen outcomes.
 - Pre-register task classes, baseline version, measurements, regression guards, and stopping/decision rules.
@@ -241,7 +241,7 @@ Subtasks:
 
 Affected areas: existing workflow/policy evaluation tables, aggregation, MCP read/review operation, dashboard, tests, docs.
 
-Dependencies: M12 quality evidence where useful; enough comparable real runs; no new experiment database if existing SQLite structures suffice.
+Dependencies: M12 quality evidence where useful; enough comparable real runs for scored comparisons. Local mechanics can precede that cohort. Reuse existing SQLite structures rather than creating another experiment database.
 
 Acceptance criteria:
 
@@ -308,7 +308,11 @@ Run the M10-M14 scenarios with local, disposable fixtures and then with prospect
 
 Prefer additive schema and deterministic projections. Keep prior snapshots, source run references, and workflow/policy versions immutable. Disable optional retrieval or suggestions by configuration without deleting source evidence. Preserve any imported Graphify file unchanged; on parser/version failure, mark the snapshot unavailable and fall back to current SQLite/SQL/FTS retrieval. Never activate an experimental policy as part of rollback or cleanup.
 
-## Progress
+## Current development sequence (2026-10-24)
+
+ADR-0021 supersedes evidence-before-supervised-core-implementation restrictions in this plan. First exercise and repair the existing PLAN-015 M42 / PLAN-017 M44 operational path using already authorized external-project work. Development agents capture the resulting cohort and continue bounded M12/M13 mechanics when scoped; current insufficient evidence remains explicit. M10 applicability and M14 autonomous-policy boundaries remain specific to those features. The dated progress and results below retain their historical meaning.
+
+## Historical progress (through 2026-10-21)
 
 - [x] Inspect the existing M10-M14 roadmap goals and M4 memory/telemetry substrate.
 - [x] Initial pre-onboarding audit on 2026-10-21: no database in the process/user/default Cathulu locations, no Cathulu MCP entry in the current Codex profile, and no project-root Graphify snapshot were found.
@@ -339,7 +343,7 @@ Prefer additive schema and deterministic projections. Keep prior snapshots, sour
 - 2026-10-21: M12-M14 cannot be evaluated from this checkout without real completed and comparable run evidence. Synthetic fixtures will validate mechanics only and will not satisfy these gates.
 - 2026-10-21: Context7 resolution is currently unavailable because its monthly quota is exhausted; current official OpenAI docs were fetched for M9. Resolve the app-specific account catalog through a supported local Codex source and do not infer account entitlement from public docs.
 
-## Completion evidence
+## Historical completion evidence (2026-10-21)
 
 M11 is complete: `cargo fmt --all -- --check` passed; `cargo test --offline --workspace` passed with 37 tests and one dedicated desktop/MCP smoke test ignored for its PowerShell harness; all three focused Graphify MCP tests passed; the offline Windows release MCP build passed; and `git diff --check` passed. The migration tests exercise version-four and version-five data through v9. SQLite remains authoritative and no Graphify dependency or bundled code was added.
 

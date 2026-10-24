@@ -88,8 +88,10 @@ if (-not $BuildOnly -and (Test-Path -LiteralPath $currentBuildPath -PathType Lea
     if ($activeBuild.sourceFingerprint -eq $sourceFingerprint -and
         (Test-Path -LiteralPath (Join-Path $currentPointer 'cathulu-mcp.exe') -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $currentPointer 'cathulu-desktop.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $currentPointer 'cathulu-monitor.exe') -PathType Leaf) -and
         (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $currentPointer 'cathulu-mcp.exe')).Hash -eq $activeBuild.mcpSha256 -and
-        (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $currentPointer 'cathulu-desktop.exe')).Hash -eq $activeBuild.desktopSha256) {
+        (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $currentPointer 'cathulu-desktop.exe')).Hash -eq $activeBuild.desktopSha256 -and
+        (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $currentPointer 'cathulu-monitor.exe')).Hash -eq $activeBuild.monitorSha256) {
         Write-Host "Current source is already published at $currentPointer; no duplicate build created."
         return
     }
@@ -102,7 +104,7 @@ try {
 
     Push-Location $repoRoot
     try {
-        Invoke-Native 'cargo' @('build', '--locked', '--offline', '--release', '--bin', 'cathulu-mcp')
+        Invoke-Native 'cargo' @('build', '--locked', '--offline', '--release', '--bin', 'cathulu-mcp', '--bin', 'cathulu-monitor')
         Push-Location (Join-Path $repoRoot 'apps\desktop')
         try {
             Invoke-Native 'cargo' @('tauri', 'build', '--no-bundle', '--features', 'custom-protocol')
@@ -117,7 +119,8 @@ try {
 
     $stagedMcp = Join-Path $stagingRelease 'cathulu-mcp.exe'
     $stagedDesktop = Join-Path $stagingRelease 'cathulu-desktop.exe'
-    foreach ($binary in @($stagedMcp, $stagedDesktop)) {
+    $stagedMonitor = Join-Path $stagingRelease 'cathulu-monitor.exe'
+    foreach ($binary in @($stagedMcp, $stagedDesktop, $stagedMonitor)) {
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw "Expected release binary was not produced: $binary"
         }
@@ -135,6 +138,7 @@ try {
         workingTreeDirty = ($dirtyLines.Count -gt 0)
         mcpSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedMcp).Hash
         desktopSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedDesktop).Hash
+        monitorSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedMonitor).Hash
         desktopFeature = 'custom-protocol'
     }
 
@@ -157,22 +161,27 @@ try {
         }
         $existingMcp = Join-Path $versionDirectory 'cathulu-mcp.exe'
         $existingDesktop = Join-Path $versionDirectory 'cathulu-desktop.exe'
+        $existingMonitor = Join-Path $versionDirectory 'cathulu-monitor.exe'
         if (-not (Test-Path -LiteralPath $existingMcp -PathType Leaf) -or
             -not (Test-Path -LiteralPath $existingDesktop -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $existingMonitor -PathType Leaf) -or
             (Get-FileHash -Algorithm SHA256 -LiteralPath $existingMcp).Hash -ne $manifest.mcpSha256 -or
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $existingDesktop).Hash -ne $manifest.desktopSha256) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $existingDesktop).Hash -ne $manifest.desktopSha256 -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $existingMonitor).Hash -ne $manifest.monitorSha256) {
             throw "Version directory binaries do not match its manifest: $versionDirectory"
         }
     }
     else {
         New-Item -ItemType Directory -Path $candidateVersion | Out-Null
-        Copy-Item -LiteralPath $stagedMcp, $stagedDesktop -Destination $candidateVersion
+        Copy-Item -LiteralPath $stagedMcp, $stagedDesktop, $stagedMonitor -Destination $candidateVersion
         $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $candidateVersion 'build-manifest.json') -Encoding utf8
 
         $candidateMcp = Join-Path $candidateVersion 'cathulu-mcp.exe'
         $candidateDesktop = Join-Path $candidateVersion 'cathulu-desktop.exe'
+        $candidateMonitor = Join-Path $candidateVersion 'cathulu-monitor.exe'
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $candidateMcp).Hash -ne $manifest.mcpSha256 -or
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateDesktop).Hash -ne $manifest.desktopSha256) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateDesktop).Hash -ne $manifest.desktopSha256 -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateMonitor).Hash -ne $manifest.monitorSha256) {
             throw 'Staged binary hashes changed before publishing; the current pointer was left untouched.'
         }
         Move-Item -LiteralPath $candidateVersion -Destination $versionDirectory
@@ -193,8 +202,10 @@ try {
         Move-Item -LiteralPath $nextPointer -Destination $currentPointer
         $currentMcp = Join-Path $currentPointer 'cathulu-mcp.exe'
         $currentDesktop = Join-Path $currentPointer 'cathulu-desktop.exe'
+        $currentMonitor = Join-Path $currentPointer 'cathulu-monitor.exe'
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $currentMcp).Hash -ne $manifest.mcpSha256 -or
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $currentDesktop).Hash -ne $manifest.desktopSha256) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $currentDesktop).Hash -ne $manifest.desktopSha256 -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $currentMonitor).Hash -ne $manifest.monitorSha256) {
             throw 'Current junction does not resolve to the validated MCP/desktop pair.'
         }
     }
@@ -221,6 +232,7 @@ try {
     Write-Host "Stable Codex path: $currentPointer\cathulu-mcp.exe"
     Write-Host "SHA-256 MCP:     $($manifest.mcpSha256)"
     Write-Host "SHA-256 desktop: $($manifest.desktopSha256)"
+    Write-Host "SHA-256 monitor: $($manifest.monitorSha256)"
     Write-Host 'A running MCP keeps its loaded version until Codex restarts that server. This script never stops or restarts Codex.'
 }
 finally {

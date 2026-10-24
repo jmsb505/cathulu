@@ -1,5 +1,6 @@
 use cathulu_core::{
     delegation::DelegationTaskPacket,
+    memory::{FreshnessBasis, MemoryCreateInput, MemorySource},
     optimization::{
         parse_decision_result, CapabilitySettings, DecisionModel, DecisionModelFuture,
         DecisionRequest, DecisionResult, InvocationStatus, ModelCallFailure, ModelResponse,
@@ -47,6 +48,39 @@ impl Fixture {
         git(&repo, &["commit", "--quiet", "-m", "fixture"]);
         let store = Store::open(root.join("data")).expect("open local store");
         let project_id = store.register_project(&repo).expect("register project").id;
+        let profile = store
+            .create_memory(&MemoryCreateInput {
+                scope_type: "project".to_string(),
+                scope_id: Some(project_id.to_string()),
+                memory_class: "canonical".to_string(),
+                temperature: "hot".to_string(),
+                kind: "summary".to_string(),
+                body: "This local repository is a fixture for DecisionModel shadow workflow tests."
+                    .to_string(),
+                sources: vec![
+                    MemorySource {
+                        source_type: "project".to_string(),
+                        source_id: project_id.to_string(),
+                    },
+                    MemorySource {
+                        source_type: "source_file".to_string(),
+                        source_id: "README.md".to_string(),
+                    },
+                ],
+                artifact_ids: Vec::new(),
+                valid_from: None,
+                valid_until: None,
+                supersedes_id: None,
+                freshness_basis: FreshnessBasis::default(),
+                importance: 0.9,
+                confidence: 0.95,
+                active: true,
+                protected: false,
+            })
+            .expect("create project summary");
+        store
+            .review_memory_candidate(profile.id, "accepted")
+            .expect("accept project summary");
         Self {
             root,
             store,
@@ -71,6 +105,17 @@ impl Fixture {
             .start_run_with_optimization(self.project_id, objective_id, task_id, None, config)
             .expect("start run")
             .id
+    }
+
+    fn review_memory(&self, run_id: i64) {
+        self.store
+            .record_project_memory_review(
+                run_id,
+                "no_durable_change",
+                "task_produced_no_reusable_knowledge",
+                &[],
+            )
+            .expect("review project memory for run");
     }
 
     fn objective_and_task(&self) -> (i64, i64) {
@@ -288,6 +333,7 @@ fn routing_state_is_derived_from_sqlite_and_excludes_free_form_or_repository_con
             "worker",
             None,
             &packet,
+            None,
             "m16-worker-idempotency",
             None,
             None,
@@ -438,6 +484,7 @@ async fn post_run_shadow_review_links_prediction_to_qa_and_final_outcome_events(
         .store
         .record_quality_check(run_id, "test", true, "passed", &json!({}))
         .expect("record deterministic QA");
+    fixture.review_memory(run_id);
     let finished = fixture
         .store
         .finish_run(run_id, "Mandatory QA passed.")

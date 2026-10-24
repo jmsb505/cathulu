@@ -8,7 +8,9 @@ use cathulu_core::{
         CodexConfigPreview, CodexConfigTarget, ConfigFileLocation, PreparedCodexConfigPreview,
     },
     dashboard::DashboardSnapshot,
-    default_data_dir, ProjectSnapshot, Store,
+    default_data_dir,
+    delegation::OwnerApprovalDecisionRecord,
+    ProjectSnapshot, Store,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +50,20 @@ fn project_snapshot(state: State<'_, DesktopState>) -> Result<Vec<ProjectSnapsho
 #[tauri::command]
 fn dashboard_snapshot(state: State<'_, DesktopState>) -> Result<DashboardSnapshot, String> {
     state.store.dashboard_snapshot()
+}
+
+#[tauri::command]
+fn decide_owner_approval_request(
+    request_id: i64,
+    expected_request_hash: String,
+    decision: String,
+    state: State<'_, DesktopState>,
+) -> Result<OwnerApprovalDecisionRecord, String> {
+    state.store.record_owner_approval_decision_from_desktop(
+        request_id,
+        &expected_request_hash,
+        &decision,
+    )
 }
 
 #[tauri::command]
@@ -409,6 +425,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             project_snapshot,
             dashboard_snapshot,
+            decide_owner_approval_request,
             codex_selector_snapshot,
             save_codex_selector_preference,
             preview_codex_config,

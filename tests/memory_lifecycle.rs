@@ -48,6 +48,13 @@ impl Fixture {
     }
 
     fn verified_run(&self, project_id: i64) -> i64 {
+        let project_scope_id = project_id.to_string();
+        let has_profile = self
+            .store
+            .list_memories("project", Some(&project_scope_id), false, false)
+            .expect("read project memory before run")
+            .iter()
+            .any(|memory| memory.memory_class == "canonical" && memory.kind == "summary");
         let workflow = self
             .store
             .create_workflow_version(
@@ -64,12 +71,111 @@ impl Fixture {
         self.store
             .record_quality_check(run.id, "test", true, "passed", &json!({}))
             .expect("record passing check");
+        assert!(self
+            .store
+            .finish_run(run.id, "A run cannot close without memory review.")
+            .is_err());
+        let (disposition, reason_code, memory_ids) = if has_profile {
+            (
+                "no_durable_change",
+                "existing_knowledge_remains_current",
+                vec![],
+            )
+        } else {
+            assert!(self
+                .store
+                .record_project_memory_review(
+                    run.id,
+                    "no_durable_change",
+                    "task_produced_no_reusable_knowledge",
+                    &[],
+                )
+                .is_err());
+            let profile = self.project_profile(project_id);
+            (
+                "knowledge_saved",
+                "project_profile_initialized",
+                vec![profile],
+            )
+        };
+        self.store
+            .record_project_memory_review(run.id, disposition, reason_code, &memory_ids)
+            .expect("record project memory review");
+        self.store
+            .record_project_memory_review(run.id, disposition, reason_code, &memory_ids)
+            .expect("exact review retry is idempotent");
+        let conflicting = if disposition == "no_durable_change" {
+            self.store.record_project_memory_review(
+                run.id,
+                "knowledge_saved",
+                "durable_knowledge_updated",
+                &[],
+            )
+        } else {
+            self.store.record_project_memory_review(
+                run.id,
+                "no_durable_change",
+                "task_produced_no_reusable_knowledge",
+                &[],
+            )
+        };
+        assert!(conflicting.is_err());
         let finished = self
             .store
             .finish_run(run.id, "Memory lifecycle fixture passed.")
             .expect("finish run");
         assert_eq!(finished.status, "verified_success");
+        let review_event = self
+            .store
+            .list_events("run", &run.id.to_string())
+            .expect("read run events")
+            .into_iter()
+            .find(|event| event.event_type == "project_memory_reviewed")
+            .expect("project memory review receipt");
+        assert_eq!(review_event.payload.as_object().unwrap().len(), 4);
+        assert!(review_event.payload.get("body").is_none());
+        assert!(review_event.payload.get("transcript").is_none());
+        self.store
+            .record_project_memory_review(run.id, disposition, reason_code, &memory_ids)
+            .expect("exact retry remains idempotent after run closeout");
         finished.id
+    }
+
+    fn project_profile(&self, project_id: i64) -> i64 {
+        let memory = self
+            .store
+            .create_memory(&MemoryCreateInput {
+                scope_type: "project".to_string(),
+                scope_id: Some(project_id.to_string()),
+                memory_class: "canonical".to_string(),
+                temperature: "hot".to_string(),
+                kind: "summary".to_string(),
+                body: "This test repository exercises Cathulu's local memory lifecycle. Its README identifies the fixture; the Rust integration tests define the behavior under test.".to_string(),
+                sources: vec![
+                    MemorySource {
+                        source_type: "project".to_string(),
+                        source_id: project_id.to_string(),
+                    },
+                    MemorySource {
+                        source_type: "source_file".to_string(),
+                        source_id: "README.md".to_string(),
+                    },
+                ],
+                artifact_ids: Vec::new(),
+                valid_from: None,
+                valid_until: None,
+                supersedes_id: None,
+                freshness_basis: FreshnessBasis::default(),
+                importance: 0.9,
+                confidence: 0.95,
+                active: true,
+                protected: false,
+            })
+            .expect("create canonical project profile");
+        self.store
+            .review_memory_candidate(memory.id, "accepted")
+            .expect("accept source-backed project profile")
+            .id
     }
 }
 

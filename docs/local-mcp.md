@@ -1,5 +1,10 @@
 # Connect the local MCP server to Codex
 
+## Terminal monitor
+
+Run `target\mcp-current\cathulu-monitor.exe --watch` from a terminal you opened to see Cathulu's recorded project, role, attention, QA, and memory state. Use `--once` for a single human-readable snapshot or `--json` for the complete read-only dashboard projection. Set `CATHULU_DATA_DIR` to select another existing Cathulu store. The monitor does not start Codex, open a window, or write to SQLite. `--watch` refreshes in place and stops with Ctrl+C. MCP stdout remains reserved for JSON-RPC.
+
+
 Cathulu exposes local project, workflow, quality, evidence, and memory operations through an MCP stdio server. The server writes Cathulu's SQLite state and reads Git metadata; it does not modify repository contents. Keep MCP tools approval-gated in Codex.
 
 ## Persistent Main and Project Manager roles
@@ -9,6 +14,16 @@ Read `cathulu://roles` to get the authoritative logical-role catalog. It contain
 A Codex chat is a temporary occupant of a logical role. A replacement Main chat resumes `main-overseer`; a replacement Project Manager chat resumes the existing PM role and assignment when one is active. It must reuse that role's memory receiver scope rather than making a chat-specific scope. For a PM, pass the raw ID (for example `project-manager:42`) with `receiver_scope_type: "scope"`; the persisted receiver key is `scope:project-manager:42`. Cathulu rejects new PM search receipts and activation receipts that use another receiver scope, and checks that a ready receipt matches the role before dispatch. This preserves known-by state across chats without replaying transcripts or duplicating role records.
 
 Only one PM task assignment can be active per project, and each assignment keeps the existing two-worker total. Finish or cancel the old assignment before preparing a new one; a replacement chat continuing the same assignment does not prepare a second PM seat. Workers remain task-scoped children. `tool_profile_key` names the role's intended tool contract; it does not confirm that a Codex chat has a particular MCP tool or native chat identity. Verify tool availability in the current Codex client and report unknown identity honestly.
+
+## Hierarchical plans, reviews, and owner actions
+
+Schema v13 adds deterministic workflow-order gates. Before preparing a PM, Main records a separate `main` plan for that project's run with `record_role_work_plan`. A PM then records a `project_manager` plan with bounded `worker_tasks`; Main reviews it through `review_role_work_plan`. A Worker child must pass its exact `plan_task_key` to `prepare_delegation`, and its packet must match the reviewed task. `dispatch_prepared_delegations` queues prepared assignments for the local Codex dispatcher; it returns after durable queue acceptance and does not wait for a role turn to finish.
+
+Workers submit reports with `submit_delegation_report`; their PM reviews via `review_delegation_report` with `reviewer_role: "project_manager"`. A PM cannot submit its result until its Worker reports are accepted or cancelled. Main reviews the PM plan and report using `review_role_work_plan` and `review_delegation_report` with `reviewer_role: "main_overseer"`. PM completion is blocked until Main accepts the PM report. Deterministic QA remains separate and authoritative.
+
+Use `record_delegation_update` for a keyed `action_required`: a Worker action routes to its PM and a PM action routes to Main. Main raises `request_owner_approval` only when an unresolved PM escalation crosses the Owner's authority boundary. It is exposed separately in `cathulu://dashboard` and `cathulu://owner-approvals/{id}`. The MCP does not provide a tool for recording an Owner decision. Open the Main or relevant PM node in Cathulu's desktop dashboard and use the two-step approve/decline control for the exact displayed request. Cathulu checks the request hash has not changed, records one append-only decision with origin `desktop_owner_ui`, and never performs the approved operation. The dispatcher routes the decision to Main, which relays it only to the affected PM; the underlying action remains open until its outcome is reported. Unresolved action/approval state blocks PM result closure. Do not label ordinary PM/Worker routing as “Needs you.”
+
+The hierarchical tools enforce sequence and scope from stored records. Ordinary MCP calls do not authenticate the Codex chat that made them; dispatcher-created role turns use a short-lived capability scoped to the logical role, project, and assignment. The Main event thread has review/coordination tools but no implementation or Worker-dispatch tools. The user's project-workspace tool catalog, provider behavior, and visible Codex thread ownership still need live verification. The dispatcher checks each thread's required Cathulu tools before sending a model turn and blocks that task if any are missing. Never emulate asynchronous fan-out with Main waiting on PMs.
 
 ## 1. Build the matched server and dashboard
 
@@ -33,7 +48,9 @@ tool_timeout_sec = 60
 default_tools_approval_mode = "prompt"
 ```
 
-When Codex starts the MCP server, it schedules the matching sibling desktop executable in the background without taking keyboard focus; MCP stdio becomes ready immediately and does not wait for WebView startup. Repeated MCP starts leave the existing window as-is, including when it is minimized. Open it from the taskbar when you want to interact with the dashboard. Keep the two release executables from the same build together. Restart Codex or reload MCP servers after saving. You can also use Codex's MCP settings interface when available.
+When Codex starts Cathulu MCP, it starts only the stdio service and its background role dispatcher. It never launches the sibling desktop or a terminal window. The dispatcher launches a hidden Codex app-server only when queued work exists. Its process disables MCP servers from the user's global Codex config; each role thread receives only its scoped Cathulu MCP configuration. Background CLI processes suppress Windows console creation. Keep the matched release executables together. Start `target\mcp-current\cathulu-desktop.exe` manually if you want the desktop dashboard, or use the terminal monitor documented above. Restart Codex or reload MCP servers after saving configuration.
+
+Workflow definitions and role work plans are JSON objects. Their MCP input schemas declare that object shape explicitly so Codex can expose `create_workflow_version` and `record_role_work_plan`; Cathulu still validates the exact contents when those tools are called.
 
 ## 3. Optional local Codex activity hooks
 
@@ -147,6 +164,14 @@ Follow the role and memory protocol in [agent-operating-contract.md](agent-opera
 
 M21's repository-free capability probe confirmed that the current client can spawn a Worker from a Project Manager and that Main, PM, and Worker can reach Cathulu MCP. Tool availability differed by role: the PM could read `cathulu://dashboard`, but `read_memories` was unavailable in its tool context; the Worker successfully called `read_memories`. HOT/WARM memory was empty, and the run recorded “no relevant memory” for the PM. `prepare_context_transfer` requires a memory ID, so it cannot currently create an empty transfer receipt. M23 must add a structured no-relevant-memory activation receipt and validate role-specific tool availability before memory-gated dispatch. No hook events or hook metadata surfaced in the probe; do not infer a hierarchy edge from agent names or nested spawn alone. See [ADR-0009](decisions/ADR-0009-bounded-project-agent-hierarchy.md) and [PLAN-006](plans/PLAN-006-bounded-project-agent-hierarchy.md).
 
+### No-wait orchestration status
+
+The M21 result proves one nested PM → Worker activation only. M40/M41 provide a default-on local app-server dispatcher with a durable SQLite outbox, singleton lease, persistent logical role-thread bindings, scoped capabilities, and an actionable event inbox. Set `CATHULU_ROLE_DISPATCHER_ENABLED=0` to disable it. Normal MCP startup starts no app-server; the hidden app-server runs only when queued work exists. Prepared PM/Worker assignments are submitted independently, with no wait for completion. New actionable events route Worker → PM → Main → Owner as needed, and Main reviews/Owner decisions return only to the affected PM. Routine checkpoints remain passive. The Main event thread uses one global logical binding, so a replacement thread occupies the same Main role. The dashboard and `cathulu://dispatches` expose dispatch/inbox state. Missing Cathulu tools block before model execution; app-server approval/interaction requests are rejected, never auto-approved. Schema-v17 cursor initialization prevents historical events from being replayed after migration. Live provider/account behavior, target project workspace/tool parity, UI ownership, and real parallel/restart behavior are not yet verified. After the owner reloads the matched build, validate those capabilities using an explicitly assigned safe project task. Never emulate asynchronous orchestration with `wait_threads`, polling, or one long-running Main turn.
+
+### Role authority and escalation
+
+Workers raise project questions to their Project Manager. PMs resolve routine choices within the owner's task scope and escalate only issues they cannot resolve or actions requiring owner authority. Main resolves bounded cross-project coordination and reversible choices within the explicit scope. Owner approval is required before creating an account; creating, entering, or changing a password, API key, or other credential; changing permissions/access; spending money; disclosing data outside the approved local boundary; taking destructive or irreversible actions; deploying, releasing, or publishing to production; making third-party commitments; or exceeding the authorized task scope. Pause only the affected project while awaiting the owner; keep unrelated projects moving. Routine progress checkpoints update Cathulu/dashboard state and must not wake Main.
+
 - `register_project` accepts a local Git repository path. It stores the canonical repository root and an initial branch, HEAD, dirty flag, and changed-path list.
 - `reconcile_project` refreshes the Git snapshot for a registered project ID.
 - `trace_code_path` optionally traces a directed path between exact code symbols in `<repository>\graphify-out\graph.json`. It defaults to three hops (maximum four), accepts optional repository-relative source/target file filters, and returns node IDs, edge relation/confidence, and current source locations without source contents. Graphify metadata is recorded in SQLite; a changed or unavailable snapshot invalidates only memories that name the previous graph snapshot. Missing, stale, malformed, or unsupported snapshots return no candidates so current SQLite/SQL/FTS and source inspection remain the fallback.
@@ -180,7 +205,7 @@ M21's repository-free capability probe confirmed that the current client can spa
 - `cathulu://objectives/{id}`, `cathulu://tasks/{id}`, `cathulu://dependencies/{id}`, and `cathulu://artifacts/{id}` read current domain records and protection metadata.
 - `cathulu://events/run/{id}` reads a run's append-only event history.
 
-The dashboard polls the same local store through the read-only `dashboard_snapshot` Tauri command. It shows one project-spanning role graph, recent agent checkpoints, unresolved explicit owner actions, stale/unconfirmed activity signals, blocked tasks, failed required checks, compact memory health, and up to ten recently active delegations with their report/review status, parent-run status, coarse worktree verification, and observed worker model when available. Agent-reported updates remain distinct from hook telemetry, Git verification, artifacts, and parent-run QA. It does not provide registration, reconciliation, review, dispatch, memory, model, or effort controls. The compact monitor uses the same snapshot and signals pending owner actions or projects with no fresh agent activity.
+The dashboard reads the same local store through `dashboard_snapshot`. It shows one project-spanning role graph, recent agent checkpoints, unresolved explicit owner actions, stale/unconfirmed activity signals, blocked tasks, failed required checks, compact memory health, and up to ten recently active delegations with their report/review status, parent-run status, coarse worktree verification, and observed worker model when available. Agent-reported updates remain distinct from hook telemetry, Git verification, artifacts, and parent-run QA. The selected Main/PM dossier has one narrowly scoped control to record an explicit Owner approval or decline; the UI cannot dispatch work or execute the action. Registration, reconciliation, role reviews, dispatch, memory, model, and effort remain outside the dashboard. The compact monitor remains read-only and signals pending Owner actions or projects with no fresh agent activity.
 
 ### Manual native worktree handoff and recovery
 
@@ -224,5 +249,7 @@ The prompt requires `ARCHIVE N` for the exact previewed ID set. Cathulu rechecks
 ## Data location
 
 By default the database is `%LOCALAPPDATA%\Cathulu\cathulu.sqlite3`. If you set `CATHULU_DATA_DIR`, use the same absolute path in both the MCP server and desktop app environments. Otherwise the dashboard may open the default database while MCP writes to the override. Cathulu retains local domain state, bounded event metadata, distilled memory records, provenance links, and artifact references. Do not add secrets, raw prompts, or full transcripts. Detailed artifacts should remain local and be referenced by local paths or artifact identifiers.
+
+MCP startup is always headless. The former `CATHULU_DISABLE_DASHBOARD_AUTOLAUNCH` setting is obsolete and has no effect.
 
 Codex uses `[mcp_servers.<name>]` tables in `config.toml` for local stdio servers. Review the current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) before changing this setup.

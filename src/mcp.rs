@@ -1,4 +1,5 @@
 use crate::delegation::{ActivationMemoryReference, DelegationTaskPacket, WorkerReport};
+use crate::dispatcher::{role_allowed_tools, RoleCapabilityScope, RoleDispatcherService};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::optimization::{
@@ -11,9 +12,11 @@ use crate::workflow::EventRecord;
 use crate::{default_data_dir, Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    Implementation, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
+    Resource, ResourceContents, ResourceTemplate, ResultType, ServerCapabilities, ServerConfig,
+    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
@@ -24,12 +27,18 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
+// The deterministic role scopes and event routes are validated. Live Codex provider/UI parity
+// remains a runtime check; dispatch is now available by default and can be explicitly disabled.
+const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = true;
+
 const SERVER_NAME: &str = "cathulu";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
 struct CathuluServer {
     store: Store,
+    dispatcher_enabled: bool,
+    role_capability: Option<RoleCapabilityScope>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -97,6 +106,7 @@ struct CreateWorkflowVersionArgs {
     workflow_key: String,
     name: String,
     version: i64,
+    #[schemars(schema_with = "json_object_input_schema")]
     definition: Value,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -135,6 +145,8 @@ struct PrepareDelegationArgs {
     #[serde(default)]
     parent_delegation_id: Option<i64>,
     task_packet: DelegationTaskPacket,
+    #[serde(default)]
+    plan_task_key: Option<String>,
     idempotency_key: String,
     #[serde(default)]
     requested_model: Option<String>,
@@ -162,6 +174,11 @@ struct DelegationIdArgs {
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct DispatchPreparedDelegationsArgs {
+    delegation_ids: Vec<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct RecordDelegationUpdateArgs {
     delegation_id: i64,
     update_type: String,
@@ -185,10 +202,55 @@ struct SubmitDelegationReportArgs {
 #[serde(deny_unknown_fields)]
 struct ReviewDelegationReportArgs {
     delegation_id: i64,
+    reviewer_role: String,
     decision: String,
     #[serde(default)]
     note: String,
     idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RecordRoleWorkPlanArgs {
+    project_id: i64,
+    run_id: i64,
+    plan_level: String,
+    #[serde(default)]
+    manager_delegation_id: Option<i64>,
+    #[schemars(schema_with = "json_object_input_schema")]
+    plan: Value,
+    idempotency_key: String,
+}
+
+fn json_object_input_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+    })
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReviewRoleWorkPlanArgs {
+    plan_id: i64,
+    reviewer_role: String,
+    decision: String,
+    note: String,
+    idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RequestOwnerApprovalArgs {
+    manager_delegation_id: i64,
+    action_key: String,
+    request_summary: String,
+    owner_action: String,
+    reason: String,
+    idempotency_key: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RelayOwnerApprovalArgs {
+    request_id: i64,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -280,6 +342,15 @@ struct CreateMemoryArgs {
 struct ReviewMemoryArgs {
     memory_id: i64,
     decision: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectMemoryReviewArgs {
+    run_id: i64,
+    disposition: String,
+    reason_code: String,
+    #[serde(default)]
+    memory_ids: Vec<i64>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SetMemoryTemperatureArgs {
@@ -640,7 +711,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Prepare an auditable native-Codex delegation packet for an existing task and run. This records the request only; it does not spawn a worker or change Codex configuration."
+        description = "Prepare a bounded native-Codex assignment. A Project Manager assignment requires a recorded Main workflow brief for that project/run. A Worker under a Project Manager requires an accepted PM plan, its exact plan_task_key, and a task packet matching that plan. Preparation records state only; it does not spawn a chat."
     )]
     fn prepare_delegation(
         &self,
@@ -654,10 +725,50 @@ impl CathuluServer {
                 &a.role,
                 a.parent_delegation_id,
                 &a.task_packet,
+                a.plan_task_key.as_deref(),
                 &a.idempotency_key,
                 a.requested_model.as_deref(),
                 a.requested_effort.as_deref(),
                 a.external_correlation.as_deref(),
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record an immutable, versioned Main workflow brief or Project Manager task plan. Main briefs are required before preparing a PM assignment. PM plans require Main review before any Worker assignment can be prepared. Keep each project brief independent unless the owner declared a dependency."
+    )]
+    fn record_role_work_plan(
+        &self,
+        Parameters(a): Parameters<RecordRoleWorkPlanArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_role_work_plan(
+                a.project_id,
+                a.run_id,
+                &a.plan_level,
+                a.manager_delegation_id,
+                &a.plan,
+                &a.idempotency_key,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record Main Overseer's review of a Project Manager work plan. Worker assignments stay blocked until the latest plan review is accepted. This records review evidence; it does not dispatch work."
+    )]
+    fn review_role_work_plan(
+        &self,
+        Parameters(a): Parameters<ReviewRoleWorkPlanArgs>,
+    ) -> CallToolResult {
+        self.store
+            .review_role_work_plan(
+                a.plan_id,
+                &a.reviewer_role,
+                &a.decision,
+                &a.note,
+                &a.idempotency_key,
             )
             .map(success)
             .unwrap_or_else(tool_error)
@@ -699,6 +810,25 @@ impl CathuluServer {
     }
 
     #[tool(
+        description = "Queue up to 32 prepared PM or Worker assignments for Cathulu's local asynchronous Codex dispatcher. Returns after durable queue acceptance; it never waits for a model turn. The local dispatcher starts with the normal MCP server by default; set CATHULU_ROLE_DISPATCHER_ENABLED=0 to disable it. Planning, memory, scope, and QA gates still apply. A queued item is not success; inspect cathulu://dashboard for queued, running, blocked, or reconciliation-required state."
+    )]
+    fn dispatch_prepared_delegations(
+        &self,
+        Parameters(a): Parameters<DispatchPreparedDelegationsArgs>,
+    ) -> CallToolResult {
+        if !self.dispatcher_enabled {
+            return tool_error(
+                "local role dispatch is unavailable: its environment flag is not enabled or required role-identity/event-routing safeguards have not been validated; no delegation was queued or started"
+                    .to_string(),
+            );
+        }
+        self.store
+            .enqueue_role_dispatches(&a.delegation_ids)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
         description = "Mark a prepared or dispatched delegation as cancelled in Cathulu's audit record."
     )]
     fn cancel_delegation(&self, Parameters(a): Parameters<DelegationIdArgs>) -> CallToolResult {
@@ -715,8 +845,12 @@ impl CathuluServer {
         &self,
         Parameters(a): Parameters<RecordDelegationUpdateArgs>,
     ) -> CallToolResult {
-        self.store
-            .record_delegation_update(
+        let record = if self
+            .role_capability
+            .as_ref()
+            .is_some_and(|capability| capability.role_kind == "main_overseer")
+        {
+            self.store.record_main_delegation_update(
                 a.delegation_id,
                 &a.update_type,
                 a.phase.as_deref(),
@@ -725,8 +859,18 @@ impl CathuluServer {
                 a.owner_action.as_deref(),
                 &a.idempotency_key,
             )
-            .map(success)
-            .unwrap_or_else(tool_error)
+        } else {
+            self.store.record_delegation_update(
+                a.delegation_id,
+                &a.update_type,
+                a.phase.as_deref(),
+                &a.summary,
+                a.action_key.as_deref(),
+                a.owner_action.as_deref(),
+                &a.idempotency_key,
+            )
+        };
+        record.map(success).unwrap_or_else(tool_error)
     }
 
     #[tool(
@@ -743,7 +887,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Submit one bounded, idempotent worker report for a dispatched delegation. Reported claims and referenced evidence remain separate from parent-run verification."
+        description = "Submit one bounded, idempotent report for a dispatched Worker or Project Manager assignment. A PM may report its project result only after its Worker reports have been accepted. Reports remain self-reported until the parent role reviews them; deterministic QA remains authoritative."
     )]
     fn submit_delegation_report(
         &self,
@@ -756,14 +900,53 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Append an explicit review decision for a worker report: accepted, rejected, or needs_follow_up. This does not accept code or change parent-run quality state."
+        description = "Append the parent role's review of a Worker or Project Manager report. reviewer_role must be project_manager for a Worker and main_overseer for a PM. PM completion is blocked until Main accepts its report; this never marks code or a run verified."
     )]
     fn review_delegation_report(
         &self,
         Parameters(a): Parameters<ReviewDelegationReportArgs>,
     ) -> CallToolResult {
         self.store
-            .review_delegation_report(a.delegation_id, &a.decision, &a.note, &a.idempotency_key)
+            .review_delegation_report(
+                a.delegation_id,
+                &a.reviewer_role,
+                &a.decision,
+                &a.note,
+                &a.idempotency_key,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Create an explicit request for owner input only after an active Project Manager has escalated an unresolved action and Main determines neither PM nor Main can safely resolve it. The request appears in Cathulu's local dashboard for an explicit Owner decision. Model tools cannot record that decision, and this request does not execute the action or pause any other project."
+    )]
+    fn request_owner_approval(
+        &self,
+        Parameters(a): Parameters<RequestOwnerApprovalArgs>,
+    ) -> CallToolResult {
+        self.store
+            .request_owner_approval(
+                a.manager_delegation_id,
+                &a.action_key,
+                &a.request_summary,
+                &a.owner_action,
+                &a.reason,
+                &a.idempotency_key,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Relay a completed local Owner decision through Main to the affected active Project Manager. This records a durable event for that project only; it does not execute the requested action or mark it complete."
+    )]
+    fn relay_owner_decision_to_project_manager(
+        &self,
+        Parameters(a): Parameters<RelayOwnerApprovalArgs>,
+    ) -> CallToolResult {
+        self.store
+            .relay_owner_approval_decision(a.request_id)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -811,7 +994,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Finish a run. Verified success requires all mandatory workflow checks to pass."
+        description = "Finish a run after recording its project memory review with record_project_memory_review. Verified success also requires all mandatory workflow checks to pass."
     )]
     fn finish_run(&self, Parameters(a): Parameters<FinishRunArgs>) -> CallToolResult {
         self.store
@@ -861,7 +1044,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Create a durable memory candidate with provenance, freshness, temporal validity, and stable identity."
+        description = "Create a concise, distilled memory candidate with provenance, freshness, temporal validity, and stable identity. Use this to establish a source-backed canonical project summary during first project analysis and to preserve later verified reusable knowledge. Memory is project knowledge, never a chat transcript, private reasoning, prompt, or raw tool history. Review canonical claims against their cited sources before accepting them."
     )]
     fn create_memory(&self, Parameters(a): Parameters<CreateMemoryArgs>) -> CallToolResult {
         let input = MemoryCreateInput {
@@ -888,13 +1071,28 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
-    #[tool(description = "Accept or reject a memory candidate after review.")]
+    #[tool(
+        description = "Accept or reject a memory candidate after checking its distilled claims against the cited project sources. Never accept transcripts, private reasoning, or raw tool histories as memory."
+    )]
     fn review_memory_candidate(
         &self,
         Parameters(a): Parameters<ReviewMemoryArgs>,
     ) -> CallToolResult {
         self.store
             .review_memory_candidate(a.memory_id, &a.decision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Record the required compact memory review before finishing a project run. Use knowledge_saved with accepted, current project memory IDs, or no_durable_change only if a current canonical project summary already existed before this run. The reason_code is a fixed enum; this receipt stores no free text, memory body, transcript, prompt, or tool output."
+    )]
+    fn record_project_memory_review(
+        &self,
+        Parameters(a): Parameters<ProjectMemoryReviewArgs>,
+    ) -> CallToolResult {
+        self.store
+            .record_project_memory_review(a.run_id, &a.disposition, &a.reason_code, &a.memory_ids)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -1120,6 +1318,57 @@ impl CathuluServer {
 
 #[tool_handler]
 impl ServerHandler for CathuluServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        if let Some(capability) = &self.role_capability {
+            let arguments = Value::Object(request.arguments.clone().unwrap_or_default());
+            self.store
+                .authorize_role_tool_call(capability, request.name.as_ref(), &arguments)
+                .map_err(|message| McpError::invalid_params(message, None))?;
+        }
+        let tool_context =
+            rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        CathuluServer::tool_router().call(tool_context).await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let mut tools = CathuluServer::tool_router().list_all();
+        if let Some(capability) = &self.role_capability {
+            tools.retain(|tool| {
+                role_allowed_tools(&capability.role_kind).contains(&tool.name.as_ref())
+            });
+        }
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(CacheScope::Private),
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        if self
+            .role_capability
+            .as_ref()
+            .is_some_and(|capability| !role_allowed_tools(&capability.role_kind).contains(&name))
+        {
+            return None;
+        }
+        CathuluServer::tool_router().get(name).cloned()
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
@@ -1129,7 +1378,7 @@ impl ServerHandler for CathuluServer {
         )
         .with_server_info(Implementation::new(SERVER_NAME, SERVER_VERSION))
         .with_instructions(
-            "Cathulu stores local project evidence. Register or reconcile repositories with tools; read current snapshots through resources. The dashboard is read-only.",
+            "Cathulu stores local project evidence. Register or reconcile repositories with tools; read current snapshots through resources. The desktop dashboard is observational except for its explicit local Owner-action decision control; it never executes the requested action.",
         )
     }
 
@@ -1150,10 +1399,18 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             Resource::new("cathulu://dashboard", "Cathulu dashboard snapshot")
                 .with_description(
-                    "Read-only project and agent graph with recent self-reported progress checkpoints, unresolved owner actions, blockers, required quality failures, and memory-health summary.",
+                    "Read-only project and agent graph with recent progress, role dispatch queue state, unresolved owner actions, blockers, quality failures, and memory health.",
                 )
                 .with_mime_type("application/json"),
+            Resource::new("cathulu://dispatches", "Cathulu role dispatch queue")
+                .with_description("Recent asynchronous role dispatches. Queue state is execution metadata, not proof of task correctness.")
+                .with_mime_type("application/json"),
         ];
+        if self.role_capability.is_some() {
+            result
+                .resources
+                .retain(|resource| resource.uri == "cathulu://projects");
+        }
         Ok(result)
     }
 
@@ -1164,6 +1421,9 @@ impl ServerHandler for CathuluServer {
     ) -> Result<ListResourceTemplatesResult, McpError> {
         let mut result = ListResourceTemplatesResult::default();
         result.resource_templates = vec![
+            ResourceTemplate::new("cathulu://dispatches", "Cathulu role dispatch queue")
+                .with_description("Recent asynchronous role dispatches. Queue state is execution metadata, not proof of task correctness.")
+                .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://projects/{id}", "Cathulu project")
                 .with_description("One registered repository and its latest Git snapshot.")
                 .with_mime_type("application/json"),
@@ -1178,6 +1438,12 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://delegations/{id}", "Cathulu delegation")
                 .with_description("One bounded task packet, requested settings, append-only lifecycle history, and any worker report with review history.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://work-plans/{id}", "Cathulu role work plan")
+                .with_description("One immutable Main workflow brief or Project Manager task plan, including the latest parent review when present.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://owner-approvals/{id}", "Cathulu owner approval request")
+                .with_description("One explicit owner request and its recorded response, if any.")
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://decisions/{id}", "Cathulu decision")
                 .with_description("One immutable project decision and its supersession link.")
@@ -1206,6 +1472,30 @@ impl ServerHandler for CathuluServer {
                 .with_description("Append-only event history for a run.")
                 .with_mime_type("application/json"),
         ];
+        if self.role_capability.is_some() {
+            result.resource_templates.retain(|template| {
+                if self
+                    .role_capability
+                    .as_ref()
+                    .is_some_and(|capability| capability.role_kind == "main_overseer")
+                {
+                    matches!(
+                        template.uri_template.as_str(),
+                        "cathulu://projects/{id}"
+                            | "cathulu://delegations/{id}"
+                            | "cathulu://work-plans/{id}"
+                            | "cathulu://owner-approvals/{id}"
+                            | "cathulu://runs/{id}"
+                            | "cathulu://events/run/{id}"
+                    )
+                } else {
+                    matches!(
+                        template.uri_template.as_str(),
+                        "cathulu://projects/{id}" | "cathulu://delegations/{id}"
+                    )
+                }
+            });
+        }
         Ok(result)
     }
 
@@ -1214,14 +1504,56 @@ impl ServerHandler for CathuluServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if let Some(capability) = &self.role_capability {
+            let allowed = if capability.role_kind == "main_overseer" {
+                matches!(
+                    request.uri.as_str(),
+                    "cathulu://projects"
+                        | "cathulu://roles"
+                        | "cathulu://dashboard"
+                        | "cathulu://dispatches"
+                ) || request.uri.starts_with("cathulu://projects/")
+                    || request.uri.starts_with("cathulu://delegations/")
+                    || request.uri.starts_with("cathulu://work-plans/")
+                    || request.uri.starts_with("cathulu://owner-approvals/")
+                    || request.uri.starts_with("cathulu://runs/")
+                    || request.uri.starts_with("cathulu://events/run/")
+            } else if request.uri == "cathulu://projects" {
+                true
+            } else if let Some(project_id) = request.uri.strip_prefix("cathulu://projects/") {
+                project_id.parse::<i64>().ok() == capability.project_id
+            } else if let Some(delegation_id) = request.uri.strip_prefix("cathulu://delegations/") {
+                delegation_id.parse::<i64>().ok().is_some_and(|id| {
+                    self.store
+                        .role_capability_can_read_delegation(capability, id)
+                        .unwrap_or(false)
+                })
+            } else {
+                false
+            };
+            if !allowed {
+                return Err(McpError::invalid_params(
+                    "role capability cannot read this resource",
+                    None,
+                ));
+            }
+        }
         let data = if request.uri == "cathulu://projects" {
-            serde_json::to_string(&self.store.list_projects().map_err(internal_error)?)
-                .map_err(internal_error)?
+            let mut projects = self.store.list_projects().map_err(internal_error)?;
+            if let Some(capability) = &self.role_capability {
+                if let Some(project_id) = capability.project_id {
+                    projects.retain(|project| project.id == project_id);
+                }
+            }
+            serde_json::to_string(&projects).map_err(internal_error)?
         } else if request.uri == "cathulu://roles" {
             serde_json::to_string(&self.store.logical_agent_roles().map_err(internal_error)?)
                 .map_err(internal_error)?
         } else if request.uri == "cathulu://dashboard" {
             serde_json::to_string(&self.store.dashboard_snapshot().map_err(internal_error)?)
+                .map_err(internal_error)?
+        } else if request.uri == "cathulu://dispatches" {
+            serde_json::to_string(&self.store.role_dispatches(100).map_err(internal_error)?)
                 .map_err(internal_error)?
         } else if let Some(delegation_id) = request.uri.strip_prefix("cathulu://delegations/") {
             let delegation_id = parse_resource_id(delegation_id, &request.uri)?;
@@ -1236,6 +1568,32 @@ impl ServerHandler for CathuluServer {
                     )
                 })?;
             serde_json::to_string(&delegation).map_err(internal_error)?
+        } else if let Some(plan_id) = request.uri.strip_prefix("cathulu://work-plans/") {
+            let plan_id = parse_resource_id(plan_id, &request.uri)?;
+            let plan = self
+                .store
+                .get_role_work_plan(plan_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "work_plan_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&plan).map_err(internal_error)?
+        } else if let Some(request_id) = request.uri.strip_prefix("cathulu://owner-approvals/") {
+            let request_id = parse_resource_id(request_id, &request.uri)?;
+            let approval = self
+                .store
+                .get_owner_approval_request(request_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "owner_approval_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&approval).map_err(internal_error)?
         } else if let Some(run_id) = request.uri.strip_prefix("cathulu://runs/") {
             let run_id = parse_resource_id(run_id, &request.uri)?;
             let run = self
@@ -1392,14 +1750,45 @@ impl ServerHandler for CathuluServer {
 
 pub async fn run_stdio() -> Result<(), String> {
     let store = Store::open(default_data_dir()?)?;
-    let service = CathuluServer { store }
-        .serve(rmcp::transport::stdio())
-        .await
-        .map_err(|error| format!("cannot start MCP stdio service: {error}"))?;
+    let role_capability = match std::env::var("CATHULU_ROLE_CAPABILITY") {
+        Ok(token) => Some(store.resolve_role_thread_capability(&token)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => {
+            return Err("Cathulu role capability environment is not valid Unicode".to_string())
+        }
+    };
+    let dispatcher_requested =
+        std::env::var("CATHULU_ROLE_DISPATCHER_ENABLED").map_or(true, |value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        });
+    let dispatcher_client_requested = std::env::var("CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED")
+        .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
+    let dispatcher_enabled = (dispatcher_requested || dispatcher_client_requested)
+        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED;
+    let dispatcher = if dispatcher_requested
+        && role_capability.is_none()
+        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
+    {
+        Some(RoleDispatcherService::start(store.clone())?)
+    } else {
+        None
+    };
+    let service = CathuluServer {
+        store,
+        dispatcher_enabled,
+        role_capability,
+    }
+    .serve(rmcp::transport::stdio())
+    .await
+    .map_err(|error| format!("cannot start MCP stdio service: {error}"))?;
     service
         .waiting()
         .await
         .map_err(|error| format!("MCP stdio service stopped unexpectedly: {error}"))?;
+    drop(dispatcher);
     Ok(())
 }
 
@@ -1425,4 +1814,34 @@ fn tool_error(error: String) -> CallToolResult {
 
 fn internal_error(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::CathuluServer;
+
+    #[test]
+    fn structured_json_tool_inputs_have_explicit_object_schemas() {
+        let tools = CathuluServer::tool_router().list_all();
+        for (tool_name, field_name) in [
+            ("create_workflow_version", "definition"),
+            ("record_role_work_plan", "plan"),
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name.as_ref() == tool_name)
+                .expect("tool is registered");
+            let input = serde_json::to_value(&tool.input_schema).unwrap();
+            let field = input
+                .pointer(&format!("/properties/{field_name}"))
+                .expect("field schema exists");
+            assert_eq!(
+                field.get("type").and_then(serde_json::Value::as_str),
+                Some("object")
+            );
+            assert!(field
+                .get("properties")
+                .is_some_and(serde_json::Value::is_object));
+        }
+    }
 }

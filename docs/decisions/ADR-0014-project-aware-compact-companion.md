@@ -16,6 +16,7 @@ The separate floating monitor was designed as a tiny transparent pill, but its p
 4. Keep the project overview bounded and scrollable. The expanded view remains a per-project status surface, not a miniaturized dashboard or a new navigation tab.
 5. Honor reduced-motion preferences and preserve pinning, drag, dashboard restore, and close behavior. Project data remains local and read-only.
 6. Do not open, focus, or restart the monitor or MCP during a build or milestone delivery.
+7. Include a compact workflow pulse (live projects, agents with current working signals, and owner actions) and memory-class distribution in the expanded companion. Derive both from the same `DashboardSnapshot` as the home dashboard. Keep the collapsed pill unchanged, and do not add memory mutation or new telemetry.
 
 This refines ADR-0008's monitor interaction and evidence presentation. Its existing window model, read path, transparent surface, and separation from the main graph remain in force.
 
@@ -26,9 +27,11 @@ This refines ADR-0008's monitor interaction and evidence presentation. Its exist
 - **Open the full dashboard when a bubble is clicked:** rejected because the separate companion should expose project detail without focus-stealing.
 - **Add a new telemetry API or UI dependency:** rejected because the existing snapshot already contains relevant recorded evidence.
 - **Show synthetic percentages or inferred task progress:** rejected because no deterministic progress source exists.
+- **Repeat every home-dashboard statistic in the companion:** rejected because the companion needs only the few values that support immediate monitoring; the main dashboard remains the detailed metrics view.
 
 ## Consequences
 
 - The compact pill communicates state quickly while hover/accessible names and expansion provide project identity and evidence.
 - The expanded companion requires slightly more vertical space and may scroll when several projects are registered.
+- The expanded companion now summarizes workflow state and memory-class counts; the dashboard snapshot remains the source of those figures.
 - Native transparency and interaction still need manual visual review in the user's desktop session.

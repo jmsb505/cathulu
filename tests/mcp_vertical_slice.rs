@@ -1,4 +1,5 @@
 use cathulu_core::{telemetry::CodexHookEvent, Store};
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
@@ -126,6 +127,7 @@ fn request(id: u64, method: &str, params: Value) -> Value {
 fn run_server(data_dir: &Path, messages: &[Value]) -> Vec<Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"))
         .env("CATHULU_DATA_DIR", data_dir)
+        .env("CATHULU_ROLE_DISPATCHER_ENABLED", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,6 +162,7 @@ fn run_server_without_provider_credentials(data_dir: &Path, messages: &[Value]) 
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"))
         .env("CATHULU_DATA_DIR", data_dir)
+        .env("CATHULU_ROLE_DISPATCHER_ENABLED", "0")
         .env("CATHULU_ENV_FILE", env_file)
         .env_remove("CATHULU_DECISION_PROVIDER_API_KEY")
         .env_remove("CATHULU_CONTEXT_PROVIDER_API_KEY")
@@ -308,13 +311,21 @@ fn register_reconcile_read_and_reopen_through_mcp() {
         reconcile_tool.pointer("/inputSchema/properties/project_id/type"),
         Some(&json!("integer"))
     );
-    assert_eq!(
-        response(&discovery, 3)
-            .pointer("/result/resources")
-            .and_then(Value::as_array)
-            .map(Vec::len),
-        Some(3)
-    );
+    let resource_uris = response(&discovery, 3)
+        .pointer("/result/resources")
+        .and_then(Value::as_array)
+        .expect("MCP resource list is an array")
+        .iter()
+        .filter_map(|resource| resource["uri"].as_str())
+        .collect::<Vec<_>>();
+    for required in [
+        "cathulu://projects",
+        "cathulu://roles",
+        "cathulu://dashboard",
+        "cathulu://dispatches",
+    ] {
+        assert!(resource_uris.contains(&required), "missing {required}");
+    }
 
     let registration = run_initialized_server(
         &data_dir,
@@ -915,7 +926,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 12);
+    assert_eq!(schema_version, 18);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");
@@ -949,6 +960,18 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
     migrated_database
         .prepare("SELECT agent_id_hash, model_slug FROM codex_subagent_hook_events LIMIT 0")
         .expect("version-seven privacy-preserving subagent hook metadata");
+    migrated_database
+        .prepare("SELECT delegation_id, status FROM role_dispatch_outbox LIMIT 0")
+        .expect("version-fourteen durable role dispatch queue");
+    migrated_database
+        .prepare("SELECT capability_hash FROM role_thread_capabilities LIMIT 0")
+        .expect("version-sixteen scoped role capabilities");
+    migrated_database
+        .prepare("SELECT source_event_id, status FROM role_turn_inbox LIMIT 0")
+        .expect("version-seventeen durable role event inbox");
+    migrated_database
+        .prepare("SELECT role_key, capability_hash FROM main_overseer_capability LIMIT 0")
+        .expect("version-eighteen global Main capability");
     drop(migrated_database);
     fs::remove_dir_all(root).expect("remove migration fixture");
 }
@@ -1108,6 +1131,7 @@ fn workflow_runs_require_every_declared_mandatory_check_and_keep_an_event_journa
         workflow_version_id,
     );
     record_check(&data_dir, blocked_run, "format", true, "passed");
+    record_project_memory_review_for_test(&data_dir, blocked_run);
     database
         .execute_batch(
             "CREATE TRIGGER reject_finish_event BEFORE INSERT ON events
@@ -1842,12 +1866,112 @@ fn record_check(data_dir: &Path, run_id: i64, key: &str, mandatory: bool, status
 }
 
 fn finish_test_run(data_dir: &Path, run_id: i64) -> Value {
+    record_project_memory_review_for_test(data_dir, run_id);
     let response = call_tool(
         data_dir,
         "finish_run",
         json!({ "run_id": run_id, "summary": "Finished test run." }),
     );
     tool_text(&response)
+}
+
+fn record_project_memory_review_for_test(data_dir: &Path, run_id: i64) {
+    let database = rusqlite::Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open test store for project memory review fixture");
+    let existing_review: Option<String> = database
+        .query_row(
+            "SELECT payload_json FROM events
+             WHERE aggregate_type = 'run' AND aggregate_id = ?1
+               AND event_type = 'project_memory_reviewed' ORDER BY id LIMIT 1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("query existing memory review");
+    if let Some(payload) = existing_review {
+        let review: Value = serde_json::from_str(&payload).expect("decode existing review");
+        tool_text(&call_tool(
+            data_dir,
+            "record_project_memory_review",
+            json!({
+                "run_id": run_id,
+                "disposition": review["disposition"],
+                "reason_code": review["reasonCode"],
+                "memory_ids": review["memoryIds"]
+            }),
+        ));
+        return;
+    }
+    let project_id: i64 = database
+        .query_row(
+            "SELECT project_id FROM runs WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .expect("read run project ID");
+    let project_scope = format!("project:{project_id}");
+    let existing_profile: Option<i64> = database
+        .query_row(
+            "SELECT id FROM memories
+             WHERE scope_key = ?1 AND memory_class = 'canonical' AND kind = 'summary'
+               AND review_state = 'accepted' AND temperature IN ('hot', 'warm')
+               AND superseded_by_id IS NULL AND invalidated_at IS NULL
+             ORDER BY id DESC LIMIT 1",
+            [&project_scope],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("query project summary");
+    let (disposition, reason_code, memory_ids) = if existing_profile.is_some() {
+        (
+            "no_durable_change",
+            "task_produced_no_reusable_knowledge",
+            Vec::new(),
+        )
+    } else {
+        let created = tool_text(&call_tool(
+            data_dir,
+            "create_memory",
+            json!({
+                "scope_type": "project",
+                "scope_id": project_id.to_string(),
+                "memory_class": "canonical",
+                "temperature": "hot",
+                "kind": "summary",
+                "body": "This local repository is a fixture for the Cathulu MCP vertical-slice tests.",
+                "sources": [
+                    { "source_type": "project", "source_id": project_id.to_string() },
+                    { "source_type": "source_file", "source_id": "README.md" }
+                ],
+                "artifact_ids": [],
+                "importance": 0.9,
+                "confidence": 0.95,
+                "active": true,
+                "protected": false
+            }),
+        ));
+        let memory_id = created["id"].as_i64().expect("created profile ID");
+        tool_text(&call_tool(
+            data_dir,
+            "review_memory_candidate",
+            json!({ "memory_id": memory_id, "decision": "accepted" }),
+        ));
+        (
+            "knowledge_saved",
+            "project_profile_initialized",
+            vec![memory_id],
+        )
+    };
+    tool_text(&call_tool(
+        data_dir,
+        "record_project_memory_review",
+        json!({
+            "run_id": run_id,
+            "disposition": disposition,
+            "reason_code": reason_code,
+            "memory_ids": memory_ids
+        }),
+    ));
 }
 
 fn register_repo(data_dir: &Path, repo: &Path) -> i64 {

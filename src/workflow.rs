@@ -758,6 +758,36 @@ impl Store {
         let mut connection = self.connection()?;
         let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
         ensure_run_open(&transaction, run_id)?;
+        let memory_review_recorded: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM events
+                   WHERE aggregate_type = 'run' AND aggregate_id = ?1
+                     AND event_type = 'project_memory_reviewed'
+                 )",
+                params![run_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !memory_review_recorded {
+            return Err(format!(
+                "run {run_id} needs a project memory review before it can be finalized; call record_project_memory_review"
+            ));
+        }
+        let active_project_manager: Option<i64> = transaction
+            .query_row(
+                "SELECT manager_delegation_id FROM project_manager_assignments
+                 WHERE run_id = ?1 AND status = 'active' ORDER BY manager_delegation_id LIMIT 1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some(manager_id) = active_project_manager {
+            return Err(format!(
+                "run {run_id} cannot be finalized while Project Manager assignment {manager_id} is active; wait for its report and Main review"
+            ));
+        }
         let workflow_version_id: Option<i64> = transaction
             .query_row(
                 "SELECT workflow_version_id FROM runs WHERE id = ?1",

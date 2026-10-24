@@ -1,8 +1,10 @@
+pub mod app_server;
 pub mod codex_config;
 pub mod codex_config_files;
 pub mod context_extraction;
 pub mod dashboard;
 pub mod delegation;
+pub mod dispatcher;
 mod events;
 pub mod gardener;
 pub mod graphify;
@@ -16,6 +18,7 @@ mod provider_credentials;
 pub mod roles;
 mod sqlite;
 pub mod telemetry;
+pub mod terminal;
 pub mod workflow;
 pub mod worktree;
 
@@ -70,6 +73,7 @@ pub struct ReconciliationReport {
 #[derive(Clone, Debug)]
 pub struct Store {
     database_path: PathBuf,
+    read_only: bool,
 }
 
 pub fn default_data_dir() -> Result<PathBuf, String> {
@@ -90,8 +94,26 @@ impl Store {
             .map_err(|error| format!("cannot create Cathulu data directory: {error}"))?;
         let store = Self {
             database_path: data_dir.join("cathulu.sqlite3"),
+            read_only: false,
         };
         store.initialize()?;
+        Ok(store)
+    }
+
+    /// Open an existing store for observation without migrations or writes.
+    pub fn open_existing_read_only(data_dir: impl AsRef<Path>) -> Result<Self, String> {
+        let database_path = data_dir.as_ref().join("cathulu.sqlite3");
+        if !database_path.is_file() {
+            return Err(format!(
+                "Cathulu store does not exist at {}",
+                database_path.display()
+            ));
+        }
+        let store = Self {
+            database_path,
+            read_only: true,
+        };
+        store.connection()?;
         Ok(store)
     }
 
@@ -510,7 +532,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 12 {
+        if version > 18 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -626,11 +648,63 @@ impl Store {
             }
             connection.execute("COMMIT")?;
         }
+        if version < 13 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_13) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 14 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_14) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 15 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_15) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 16 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_16) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 17 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_17) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 18 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_18) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
         Ok(())
     }
 
     pub(crate) fn connection(&self) -> Result<sqlite::Connection, String> {
-        sqlite::Connection::open(&self.database_path)
+        if self.read_only {
+            sqlite::Connection::open_read_only(&self.database_path)
+        } else {
+            sqlite::Connection::open(&self.database_path)
+        }
     }
 }
 
