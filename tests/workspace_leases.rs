@@ -2,7 +2,7 @@ use cathulu_core::agent_provider::{
     fixtures::ScriptedProvider, AgentProvider, CredentialSource, PermissionManifest, ProviderId,
     WorkspaceAccess,
 };
-use cathulu_core::worktree::WorkspaceLeaseStatus;
+use cathulu_core::worktree::{WorkspaceAttemptResolution, WorkspaceLeaseStatus};
 use cathulu_core::Store;
 use rusqlite::{params, Connection};
 use std::fs;
@@ -505,6 +505,45 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         )
         .unwrap_err()
         .contains("attempt remains uncertain"));
+    let recovery_cases = fixture
+        .store
+        .list_workspace_recovery_cases(10)
+        .expect("list quarantined lease and unresolved attempt");
+    assert_eq!(recovery_cases.len(), 1);
+    assert_eq!(recovery_cases[0].lease.id, lease.id);
+    assert_eq!(
+        recovery_cases[0].open_attempts[0].attempt_key,
+        attempt_key.as_str()
+    );
+    let recovery_json = serde_json::to_string(&recovery_cases[0]).unwrap();
+    assert!(!recovery_json.contains(path_arg(&fixture.worker_one)));
+    let resolution = WorkspaceAttemptResolution {
+        attempt_key: attempt_key.to_string(),
+        terminal_state: "completed".into(),
+        reason: "provider turn was confirmed complete and its result reviewed".into(),
+    };
+    assert!(fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 3,
+            "provider confirmed stopped; result reviewed",
+            false,
+        )
+        .unwrap_err()
+        .contains("confirmed stopped"));
+    assert!(fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            &[],
+            future + 3,
+            "provider confirmed stopped; result reviewed",
+            true,
+        )
+        .unwrap_err()
+        .contains("every and only unresolved attempt"));
     assert!(fixture
         .store
         .claim_delegation_workspace(
@@ -517,24 +556,43 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         )
         .is_err());
 
-    Connection::open(fixture.store.database_path())
-        .unwrap()
-        .execute(
-            "UPDATE provider_attempts SET status = 'completed', updated_at = ?1
-             WHERE attempt_key = ?2",
-            params![future + 4, attempt_key.as_str()],
-        )
-        .expect("fixture represents an externally reconciled terminal attempt");
     let resolved = fixture
         .store
-        .resolve_workspace_lease(
+        .reconcile_workspace_lease_with_attempts(
             lease.id,
-            "worker-session-one",
+            std::slice::from_ref(&resolution),
             future + 5,
-            "provider result reconciled as completed",
+            "provider confirmed stopped; result reviewed",
+            true,
         )
-        .expect("explicit terminal reconciliation releases the lock");
+        .expect("explicit operator reconciliation releases the lock");
     assert_eq!(resolved.status, WorkspaceLeaseStatus::Released);
+    assert!(
+        fixture.worker_one.exists(),
+        "reconciliation preserves the worktree"
+    );
+    let repeated = fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 6,
+            "provider confirmed stopped; result reviewed",
+            true,
+        )
+        .expect("repeating the exact resolution returns the existing result");
+    assert_eq!(repeated, resolved);
+    assert!(fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 6,
+            "different resolution",
+            true,
+        )
+        .unwrap_err()
+        .contains("different resolution"));
     fixture
         .store
         .record_provider_session(&codex_session, &binding_key, "active", None, None)
@@ -584,6 +642,30 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
     assert_eq!(attempt_provider, "claude");
     assert_eq!(attempt_session, "initial-claude-session");
     assert_eq!(attempt_status, "completed");
+    let audit_json: String = connection
+        .query_row(
+            "SELECT details_json FROM workspace_lease_events
+             WHERE lease_id = ?1 AND event_type = 'reconciled'",
+            params![lease.id],
+            |row| row.get(0),
+        )
+        .expect("append the operator's reconciliation evidence");
+    let audit: serde_json::Value = serde_json::from_str(&audit_json).unwrap();
+    assert_eq!(audit["providerStoppedConfirmed"], true);
+    assert_eq!(audit["attempts"][0]["terminalState"], "completed");
+    assert_eq!(
+        audit["attempts"][0]["reason"],
+        "provider turn was confirmed complete and its result reviewed"
+    );
+    let reconciliation_event_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM workspace_lease_events
+             WHERE lease_id = ?1 AND event_type = 'reconciled'",
+            params![lease.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reconciliation_event_count, 1);
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use crate::agent_provider::{
-    validate_provider_credential_source, CredentialSource, PermissionManifest,
+    validate_provider_credential_source, AttemptKey, CredentialSource, PermissionManifest,
     ProviderCapabilities, WorkspaceAccess,
 };
 use crate::{events::append_event, hash::content_hash, Store};
@@ -70,6 +70,32 @@ pub struct WorkspaceLeaseRecord {
     pub lease_expires_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRecoveryAttempt {
+    pub attempt_key: String,
+    pub provider_id: String,
+    pub status: String,
+    pub turn_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRecoveryCase {
+    pub lease: WorkspaceLeaseRecord,
+    pub open_attempts: Vec<WorkspaceRecoveryAttempt>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceAttemptResolution {
+    pub attempt_key: String,
+    pub terminal_state: String,
+    pub reason: String,
 }
 
 /// Runtime-only result. It carries the canonical path only after revalidating the lease and Git
@@ -932,6 +958,355 @@ impl Store {
         Ok(record)
     }
 
+    /// List quarantined leases and their unresolved provider attempts for local operator review.
+    /// Public records contain path hashes only; canonical paths and prompt text are not returned.
+    pub fn list_workspace_recovery_cases(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceRecoveryCase>, String> {
+        if !(1..=100).contains(&limit) {
+            return Err("workspace recovery list limit must be between 1 and 100".into());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(sqlite_error)?;
+        let leases = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT id, project_id, delegation_id, role_kind, access, owner_id,
+                            workspace_path_hash, common_dir_hash, base_commit, status,
+                            lease_expires_at, created_at, updated_at
+                     FROM workspace_leases WHERE status = 'needs_reconcile'
+                     ORDER BY updated_at, id LIMIT ?1",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map(params![limit as i64], workspace_lease_from_row)
+                .map_err(sqlite_error)?;
+            let records = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sqlite_error)?;
+            records
+        };
+        let mut cases = Vec::with_capacity(leases.len());
+        for lease in leases {
+            let open_attempts = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT attempt_key, provider_id, status, turn_id, created_at, updated_at
+                         FROM provider_attempts
+                         WHERE workspace_lease_id = ?1
+                           AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                         ORDER BY created_at, attempt_key",
+                    )
+                    .map_err(sqlite_error)?;
+                let rows = statement
+                    .query_map(params![lease.id], |row| {
+                        Ok(WorkspaceRecoveryAttempt {
+                            attempt_key: row.get(0)?,
+                            provider_id: row.get(1)?,
+                            status: row.get(2)?,
+                            turn_id: row.get(3)?,
+                            created_at: row.get(4)?,
+                            updated_at: row.get(5)?,
+                        })
+                    })
+                    .map_err(sqlite_error)?;
+                let records = rows
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sqlite_error)?;
+                records
+            };
+            cases.push(WorkspaceRecoveryCase {
+                lease,
+                open_attempts,
+            });
+        }
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(cases)
+    }
+
+    /// Resolve one quarantined lease after an operator verifies provider termination and records
+    /// a terminal disposition for every unresolved attempt. Attempt and lease audit entries are
+    /// committed atomically; this never changes or cleans the filesystem.
+    pub fn reconcile_workspace_lease_with_attempts(
+        &self,
+        lease_id: i64,
+        attempt_resolutions: &[WorkspaceAttemptResolution],
+        now: i64,
+        resolution: &str,
+        provider_stopped_confirmed: bool,
+    ) -> Result<WorkspaceLeaseRecord, String> {
+        if lease_id <= 0 || now < 0 {
+            return Err("workspace lease identity or reconciliation time is invalid".into());
+        }
+        validate_lease_reason(resolution)?;
+        if !provider_stopped_confirmed {
+            return Err(
+                "provider execution must be confirmed stopped before reconciliation".into(),
+            );
+        }
+        if attempt_resolutions.len() > 32 {
+            return Err("workspace reconciliation is limited to 32 attempts".into());
+        }
+
+        let mut requested = std::collections::BTreeMap::new();
+        for item in attempt_resolutions {
+            AttemptKey::new(item.attempt_key.clone())?;
+            validate_lease_reason(&item.reason)?;
+            if !matches!(
+                item.terminal_state.as_str(),
+                "completed" | "failed" | "blocked"
+            ) {
+                return Err("attempt reconciliation requires a terminal state".into());
+            }
+            if requested.insert(item.attempt_key.as_str(), item).is_some() {
+                return Err("attempt reconciliation contains a duplicate attempt key".into());
+            }
+        }
+
+        let (lease, workspace_path, project_path) = self.workspace_lease_context(lease_id)?;
+        if lease.status == WorkspaceLeaseStatus::Released {
+            let connection = self.connection()?;
+            let details = connection
+                .raw()
+                .query_row(
+                    "SELECT details_json FROM workspace_lease_events
+                     WHERE lease_id = ?1 AND event_type = 'reconciled'
+                     ORDER BY id DESC LIMIT 1",
+                    params![lease_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            let Some(details) = details else {
+                return Err("workspace lease was released without this reconciliation".into());
+            };
+            let details: Value = serde_json::from_str(&details).map_err(|error| {
+                format!("invalid stored workspace reconciliation event: {error}")
+            })?;
+            let stored_attempts = details
+                .get("attempts")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "stored workspace reconciliation has no attempt list".to_string())?;
+            let matches = details.get("resolution").and_then(Value::as_str) == Some(resolution)
+                && details
+                    .get("providerStoppedConfirmed")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && details
+                    .get("workspaceIdentityRevalidated")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && stored_attempts.len() == attempt_resolutions.len()
+                && attempt_resolutions.iter().all(|item| {
+                    stored_attempts.iter().any(|stored| {
+                        stored.get("attemptKey").and_then(Value::as_str)
+                            == Some(item.attempt_key.as_str())
+                            && stored.get("terminalState").and_then(Value::as_str)
+                                == Some(item.terminal_state.as_str())
+                            && stored.get("reason").and_then(Value::as_str)
+                                == Some(item.reason.as_str())
+                    })
+                });
+            if !matches {
+                return Err(
+                    "workspace lease was already reconciled with a different resolution".into(),
+                );
+            }
+            for item in attempt_resolutions {
+                let status = connection
+                    .raw()
+                    .query_row(
+                        "SELECT status FROM provider_attempts
+                         WHERE attempt_key = ?1 AND workspace_lease_id = ?2",
+                        params![item.attempt_key, lease_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(sqlite_error)?;
+                if status.as_deref() != Some(item.terminal_state.as_str()) {
+                    return Err(
+                        "reconciled provider attempt no longer matches its audit event".into(),
+                    );
+                }
+            }
+            return Ok(lease);
+        }
+        if lease.status != WorkspaceLeaseStatus::NeedsReconcile {
+            return Err("workspace lease is not awaiting reconciliation".into());
+        }
+        let verified = verify_project_workspace(
+            &project_path,
+            Path::new(&workspace_path),
+            lease.access,
+            false,
+        )?;
+        if verified.workspace_path_hash != lease.workspace_path_hash
+            || verified.common_dir_hash != lease.common_dir_hash
+        {
+            return Err("workspace identity changed; the quarantined lease remains locked".into());
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT owner_id, status, updated_at FROM workspace_leases WHERE id = ?1",
+                params![lease_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| format!("workspace lease {lease_id} was not found"))?;
+        if current.1 != "needs_reconcile" {
+            return Err("workspace lease changed before reconciliation".into());
+        }
+        if now < current.2 {
+            return Err("reconciliation time predates the workspace lease update".into());
+        }
+
+        let open_attempts = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT attempt_key, status, updated_at FROM provider_attempts
+                     WHERE workspace_lease_id = ?1
+                       AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                     ORDER BY attempt_key",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map(params![lease_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(sqlite_error)?;
+            let records = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sqlite_error)?;
+            records
+        };
+        let open_keys = open_attempts
+            .iter()
+            .map(|(key, _, _)| key.as_str())
+            .collect::<BTreeSet<_>>();
+        if open_keys != requested.keys().copied().collect::<BTreeSet<_>>() {
+            return Err(
+                "reconciliation must include every and only unresolved attempt for this lease"
+                    .into(),
+            );
+        }
+
+        let mut audit_attempts = Vec::with_capacity(open_attempts.len());
+        for (attempt_key, previous_state, previous_updated_at) in open_attempts {
+            let item = requested
+                .get(attempt_key.as_str())
+                .expect("attempt key set was validated above");
+            let transition_allowed = match previous_state.as_str() {
+                "created" => matches!(item.terminal_state.as_str(), "failed" | "blocked"),
+                "submitted" | "ack_unknown" | "running" | "needs_reconcile" => true,
+                _ => false,
+            };
+            if !transition_allowed {
+                return Err(format!(
+                    "attempt {attempt_key} cannot be reconciled from {previous_state} to {}",
+                    item.terminal_state
+                ));
+            }
+            if now < previous_updated_at {
+                return Err(format!(
+                    "reconciliation time predates attempt {attempt_key}'s last update"
+                ));
+            }
+            let updated = transaction
+                .execute(
+                    "UPDATE provider_attempts SET status = ?1, updated_at = ?2
+                     WHERE attempt_key = ?3 AND workspace_lease_id = ?4 AND status = ?5",
+                    params![
+                        item.terminal_state,
+                        now,
+                        attempt_key,
+                        lease_id,
+                        previous_state
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if updated != 1 {
+                return Err(format!(
+                    "provider attempt {attempt_key} changed during reconciliation"
+                ));
+            }
+            audit_attempts.push(json!({
+                "attemptKey": attempt_key,
+                "previousState": previous_state,
+                "terminalState": item.terminal_state,
+                "reason": item.reason,
+            }));
+        }
+
+        let remaining_attempts: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM provider_attempts
+                 WHERE workspace_lease_id = ?1
+                   AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')",
+                params![lease_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if remaining_attempts != 0 {
+            return Err("provider attempt remains uncertain; workspace stays locked".into());
+        }
+        let released = transaction
+            .execute(
+                "UPDATE workspace_leases SET status = 'released', updated_at = ?1
+                 WHERE id = ?2 AND owner_id = ?3 AND status = 'needs_reconcile'",
+                params![now, lease_id, current.0],
+            )
+            .map_err(sqlite_error)?;
+        if released != 1 {
+            return Err("workspace lease changed before it could be released".into());
+        }
+        revoke_capability_for_lease(&transaction, lease_id, now)?;
+        append_workspace_lease_event(
+            &transaction,
+            lease_id,
+            "reconciled",
+            &json!({
+                "resolution": resolution,
+                "providerStoppedConfirmed": true,
+                "workspaceIdentityRevalidated": true,
+                "attempts": audit_attempts,
+            }),
+            now,
+        )?;
+        let record = transaction
+            .query_row(
+                "SELECT id, project_id, delegation_id, role_kind, access, owner_id,
+                        workspace_path_hash, common_dir_hash, base_commit, status,
+                        lease_expires_at, created_at, updated_at
+                 FROM workspace_leases WHERE id = ?1",
+                params![lease_id],
+                workspace_lease_from_row,
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(record)
+    }
+
     fn mark_workspace_lease_needs_reconcile(
         &self,
         lease_id: i64,
@@ -1477,7 +1852,7 @@ fn git_error(output: &Output, args: &[&str]) -> String {
     }
 }
 
-fn unix_time() -> i64 {
+pub(crate) fn unix_time() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

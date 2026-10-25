@@ -11,6 +11,7 @@ use crate::optimization::{
 use crate::provider_adapters::{JevProvider, ScaleDownContextProvider};
 use crate::telemetry::CodexHookEvent;
 use crate::workflow::{EventRecord, TaskPlanInput};
+use crate::worktree::WorkspaceAttemptResolution;
 use crate::{default_data_dir, Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -368,6 +369,29 @@ struct ReconcileDelegationWorktreeArgs {
     delegation_id: i64,
     /// Absolute or relative path to an already-existing Git worktree belonging to the registered project.
     worktree_path: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListWorkspaceRecoveryCasesArgs {
+    /// Maximum quarantined leases to return (1–100; defaults to 50).
+    #[serde(default)]
+    limit: Option<usize>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceAttemptResolutionArgs {
+    attempt_key: String,
+    terminal_state: String,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReconcileWorkspaceLeaseArgs {
+    lease_id: i64,
+    attempt_resolutions: Vec<WorkspaceAttemptResolutionArgs>,
+    resolution: String,
+    /// Must be true only after confirming the provider execution has stopped.
+    provider_stopped_confirmed: bool,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1255,6 +1279,57 @@ impl CathuluServer {
         }
         self.store
             .reconcile_delegation_worktree(a.delegation_id, Path::new(&a.worktree_path))
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "List quarantined workspace leases and their unresolved provider attempts for local operator review. Returns path hashes, never canonical workspace paths or prompt text. This unscoped local MCP does not authenticate an Owner and must not be remotely exposed; scoped role agents cannot call this tool."
+    )]
+    fn list_workspace_recovery_cases(
+        &self,
+        Parameters(a): Parameters<ListWorkspaceRecoveryCasesArgs>,
+    ) -> CallToolResult {
+        if self.role_capability.is_some() {
+            return tool_error(
+                "workspace recovery is available only through the unscoped local MCP".into(),
+            );
+        }
+        self.store
+            .list_workspace_recovery_cases(a.limit.unwrap_or(50))
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Manually reconcile one quarantined workspace lease through the unscoped local MCP. Before calling, independently confirm the provider execution has stopped and review its result. Supply every unresolved attempt for the exact lease, a terminal state (completed, failed, or blocked) and a reason for each, plus an overall reason. Cathulu revalidates the linked-worktree identity and atomically records the attempt dispositions and lease resolution. It never deletes, moves, or cleans a worktree and never starts or retries a provider. This endpoint does not authenticate an Owner, must not be remotely exposed, and is denied to scoped role agents."
+    )]
+    fn reconcile_workspace_lease(
+        &self,
+        Parameters(a): Parameters<ReconcileWorkspaceLeaseArgs>,
+    ) -> CallToolResult {
+        if self.role_capability.is_some() {
+            return tool_error(
+                "workspace recovery is available only through the unscoped local MCP".into(),
+            );
+        }
+        let attempt_resolutions = a
+            .attempt_resolutions
+            .into_iter()
+            .map(|item| WorkspaceAttemptResolution {
+                attempt_key: item.attempt_key,
+                terminal_state: item.terminal_state,
+                reason: item.reason,
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .reconcile_workspace_lease_with_attempts(
+                a.lease_id,
+                &attempt_resolutions,
+                crate::worktree::unix_time(),
+                &a.resolution,
+                a.provider_stopped_confirmed,
+            )
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -2297,6 +2372,45 @@ mod schema_tests {
                 .get("properties")
                 .is_some_and(serde_json::Value::is_object));
         }
+    }
+
+    #[test]
+    fn workspace_recovery_tools_are_registered_with_explicit_operator_confirmation() {
+        let tools = CathuluServer::tool_router().list_all();
+        let list_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "list_workspace_recovery_cases")
+            .expect("quarantined lease inspection tool is registered");
+        let reconcile_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "reconcile_workspace_lease")
+            .expect("manual reconciliation tool is registered");
+        let schema = serde_json::to_value(&reconcile_tool.input_schema).unwrap();
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("reconciliation tool has an object input schema");
+        for field in [
+            "lease_id",
+            "attempt_resolutions",
+            "resolution",
+            "provider_stopped_confirmed",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "missing required field {field}"
+            );
+        }
+        assert!(list_tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("must not be remotely exposed"));
+        assert!(reconcile_tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("independently confirm the provider execution has stopped"));
     }
 
     #[test]

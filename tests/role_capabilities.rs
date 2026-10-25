@@ -488,6 +488,14 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
     assert!(store
         .authorize_role_tool_call(&worker_scope, "dispatch_prepared_delegations", &json!({}))
         .is_err());
+    assert!(store
+        .authorize_role_tool_call(&worker_scope, "list_workspace_recovery_cases", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
+    assert!(store
+        .authorize_role_tool_call(&worker_scope, "reconcile_workspace_lease", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
 
     store
         .revoke_role_thread_capability(&worker_binding)
@@ -621,6 +629,14 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
     assert!(store
         .authorize_role_tool_call(&scope, "dispatch_prepared_delegations", &json!({}))
         .is_err());
+    assert!(store
+        .authorize_role_tool_call(&scope, "list_workspace_recovery_cases", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
+    assert!(store
+        .authorize_role_tool_call(&scope, "reconcile_workspace_lease", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
 
     let role_responses = role_mcp_responses(
         &data_dir,
