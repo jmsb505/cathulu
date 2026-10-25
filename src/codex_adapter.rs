@@ -918,6 +918,73 @@ mod tests {
     }
 
     #[test]
+    fn new_turn_events_recover_after_a_prior_completion_is_lost() {
+        let (mut adapter, state) = fake_adapter();
+        let session = open_fake_session(&mut adapter);
+        state.lock().unwrap().start_turn_results.extend([
+            Ok(json!({ "turn": { "id": "turn-1" } })),
+            Ok(json!({ "turn": { "id": "turn-2" } })),
+        ]);
+
+        adapter
+            .submit_text(SubmitTurnRequest {
+                session: session.clone(),
+                attempt_key: AttemptKey::new("attempt-1").unwrap(),
+                text: "first turn".into(),
+            })
+            .unwrap();
+        // The first completion is intentionally lost, leaving its ID in active_turns.
+        adapter
+            .submit_text(SubmitTurnRequest {
+                session,
+                attempt_key: AttemptKey::new("attempt-2").unwrap(),
+                text: "second turn".into(),
+            })
+            .unwrap();
+
+        {
+            let mut state = state.lock().unwrap();
+            state
+                .next_events
+                .push_back(Ok(Some(AppServerMessage::Notification {
+                    method: "turn/started".into(),
+                    params: json!({
+                        "threadId": "thread-1",
+                        "turn": { "id": "turn-2" }
+                    }),
+                })));
+            state
+                .next_events
+                .push_back(Ok(Some(AppServerMessage::Notification {
+                    method: "turn/completed".into(),
+                    params: json!({
+                        "threadId": "thread-1",
+                        "turn": { "id": "turn-2", "status": "completed" }
+                    }),
+                })));
+        }
+
+        let started = adapter
+            .next_provider_event(Duration::ZERO)
+            .unwrap()
+            .expect("the new turn start must remain visible");
+        assert!(matches!(
+            started.event,
+            ProviderEventKind::TurnStarted { turn }
+                if turn.turn_id.as_str() == "turn-2"
+        ));
+        let completed = adapter
+            .next_provider_event(Duration::ZERO)
+            .unwrap()
+            .expect("the new turn completion must remain visible");
+        assert!(matches!(
+            completed.event,
+            ProviderEventKind::TurnCompleted { turn, .. }
+                if turn.turn_id.as_str() == "turn-2"
+        ));
+    }
+
+    #[test]
     fn turn_events_have_session_scoped_stable_event_ids() {
         let active_turns = HashMap::new();
         let message = json!({
