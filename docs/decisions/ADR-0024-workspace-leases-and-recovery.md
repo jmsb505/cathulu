@@ -28,4 +28,4 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 
 ## Evidence
 
-The CX-05 handoff records the v22 migration, scoped tests, full offline suite result and open runtime limitations. No provider was invoked, no live store was migrated, and no dispatcher process was started or reloaded.
+The [CX-05 handoff](../parallel/codex/CX-05-m52.md) records the v22 migration, scoped tests, full offline suite result and open runtime limitations. No provider was invoked, no live store was migrated, and no dispatcher process was started or reloaded.

@@ -1,6 +1,6 @@
 # PLAN-020 — Mixed-provider personal project OS
 
-Status: M47 is delivered. M48 and its repair `d7dff34` have Claude accept review and 104 core tests. M49 `0e6718a` has Claude accept review and 107 core tests. M51a's actual common contract is committed at `09f192b` and accepted by Claude. CX-04 added a tested, non-activating provider-session/Codex adapter foundation; M51b remains open because live dispatcher protocol/event integration is not complete. M50/M52-M55 remain open. Local source/test evidence does not establish runtime or remote integration.
+Status: M47 is delivered. M48 and its repair `d7dff34` have Claude accept review and 104 core tests. M49 `0e6718a` has Claude accept review and 107 core tests. M51a's actual common contract is committed at `09f192b` and accepted by Claude. CX-04 added a tested, non-activating provider-session/Codex adapter foundation; M51b remains open because live dispatcher protocol/event integration is not complete. CX-05 adds a tested, non-activating M52 workspace/lease, credential-source and recovery foundation on schema v22; M52 remains open until dispatch enforces these gates, semantic-overlap admission and the original live/recovery evidence pass. M50 and M53-M55 remain open. Local source/test evidence does not establish runtime or remote integration.
 Created: 2026-10-25
 Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)
@@ -253,6 +253,14 @@ M47: remove only this turn's added sections/new documents using its patch, prese
 - Claude and Graphify were not found on inspected PATH; no local graph is available. Context7 provider lookups returned monthly-quota errors; official documentation was used.
 - Claude `--bare` is unsuitable as an assumed subscription-preserving isolation shortcut. Actual supported controls remain a dependent feasibility gate.
 - No app tests/build/reload/provider invocation/dispatch/data migration or external write is claimed by M47. Git integration remains pending.
+
+## M52 implementation progress (2026-10-25)
+
+CX-05 establishes a non-activating schema v22 foundation: exclusive leased workspaces, append-only lease events, capability/attempt lease binding, explicit credential-source allow-lists, and one active provider session per logical role across providers. Writers must claim a clean linked worktree in the registered repository's Git common directory; Project Manager/coordinator access is read-only. Because no semantic-overlap admission model exists yet, writer leases are conservatively serialized per project. A v21 database with concurrent active provider sessions for one role preserves both history rows but marks the ambiguous sessions `unknown` until a later explicit provider session is recorded.
+
+Lease expiry or release with an unresolved attempt quarantines the workspace, marks the attempt `needs_reconcile`, revokes its capability and retains the role/path lock. No automatic retry, filesystem cleanup, provider start or live-store migration is performed. Session replacement across providers is refused while any attempt for that logical role remains unresolved.
+
+This is not M52 completion: the existing dispatcher does not acquire or enforce the new leases before process startup, semantic overlap is not evaluated at task admission, and M42/M44 live evidence was not inspected or changed by this packet. See [ADR-0024](../decisions/ADR-0024-workspace-leases-and-recovery.md) and the CX-05 handoff for exact implementation and test evidence.
 
 ## Completion evidence
 
