@@ -2403,7 +2403,7 @@ fn valid_task_transition(from: &str, to: &str) -> bool {
         )
 }
 
-fn task_blocking_reasons(
+pub(crate) fn task_blocking_reasons(
     connection: &rusqlite::Connection,
     task_id: i64,
     include_task_status: bool,

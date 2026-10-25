@@ -1,6 +1,6 @@
 # PLAN-020 — Mixed-provider personal project OS
 
-Status: M47 assessment and documentation are delivered. M48 is implemented and validated locally on PLAN-021's shared branch; stable Claude semantic re-review and branch integration remain pending. M49-M55 remain planned. The [M48 evidence record](../readiness/m48-task-portfolio-2026-10-25.md) distinguishes local test evidence from integration/runtime acceptance.
+Status: M47 is delivered. M48 is committed at `5fc5459`, with its completion-gate repair at `d7dff34` (104 core tests and Claude accept re-review). M49 is implemented and locally validated (107 core tests); stable Claude review remains pending. See [M49 evidence](../readiness/m49-checkpoint-resume-2026-10-25.md). M50-M55 remain planned. Local source/test evidence does not establish runtime or remote integration.
 Created: 2026-10-25
 Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)
@@ -103,17 +103,17 @@ Goal: prove the first complete provider-free pivot workflow.
 
 Subtasks:
 
-- [ ] Add immutable project checkpoint revisions with source state/observation versions, artifact/evidence references and latest-project lookup.
-- [ ] Implement bounded `resume_project` projection joining current tasks, blockers, objective/milestone, recent accepted decisions and verification/repository freshness.
-- [ ] Support missing/stale checkpoint and unavailable repository without guessed facts; make Git refresh explicit.
-- [ ] Add milestone state only as needed by checkpoints; reuse objectives as goals.
-- [ ] Exercise create/update/checkpoint/restart/resume with providers absent.
+- [x] Add immutable project checkpoint revisions with source state/observation versions, artifact/evidence references and latest-project lookup.
+- [x] Implement bounded `resume_project` projection joining current tasks, blockers, objectives, recent accepted decisions and verification/repository freshness.
+- [x] Support missing/stale checkpoint and unavailable repository without guessed facts; make Git refresh explicit.
+- [x] Reuse objectives as goals; no separate milestone entity is required by this checkpoint slice.
+- [x] Exercise create/update/checkpoint/restart/resume with providers absent.
 
 Affected areas: workflow/checkpoint module, migrations, Store/MCP queries, artifacts/events and existing tests. Dependencies: M48.
 
 Acceptance: after restart the Owner can retrieve what remains, what blocks it and the next eligible action; current tasks override stale checkpoint summaries and deltas are visible; provider calls remain zero; returned evidence and freshness are traceable; historical checkpoint revisions are immutable.
 
-Validation: public end-to-end MCP sequence, schema upgrade/restart, checkpoint immutability, bounded result size, state changes after checkpoint, missing repo/checkpoint, new mandatory check failure, cross-project resource denial and deterministic no-provider checks. Run relevant and full core suites/formatting. Do not require a natural-language chat UI to prove the domain operation.
+Validation: three focused M49 tests and the full core suite (107 tests) cover public MCP create/update/checkpoint/restart/resume, populated v19 upgrade, immutable revisions, bounded results/omitted counts, task changes after checkpoint, missing repo/checkpoint, changed mandatory checks and non-passing QA. Public scoped PM cross-project denial and Main reads pass. Formatting passes. See [M49 evidence](../readiness/m49-checkpoint-resume-2026-10-25.md) for exact commands, the repaired fixture ordering issue and remaining runtime limits.
 
 Documentation: accepted checkpoint/resume contract, actual test evidence and first-slice status. Skills: milestone-delivery, ponytail-balanced. Git checkpoint: validated M49 capability patch under applicable authorization; no release-readiness claim.
 

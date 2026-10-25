@@ -108,8 +108,12 @@ fn activate_assignment(store: &Store, delegation_id: i64, project_id: i64, recei
         .expect("record complete memory activation");
 }
 
-fn role_mcp_responses(data_dir: &PathBuf, capability: &str) -> Vec<Value> {
-    let requests = [
+fn role_mcp_responses(
+    data_dir: &PathBuf,
+    capability: &str,
+    extra_requests: &[Value],
+) -> Vec<Value> {
+    let mut requests = vec![
         json!({
             "jsonrpc":"2.0", "id":1, "method":"initialize",
             "params":{
@@ -124,6 +128,7 @@ fn role_mcp_responses(data_dir: &PathBuf, capability: &str) -> Vec<Value> {
             "params":{"name":"review_role_work_plan", "arguments":{}}
         }),
     ];
+    requests.extend_from_slice(extra_requests);
     let mut command = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"));
     command
         .env("CATHULU_DATA_DIR", data_dir)
@@ -259,7 +264,28 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .authorize_role_tool_call(&manager_scope, "review_role_work_plan", &json!({}))
         .is_err());
     assert!(!role_allowed_tools("sub_overseer").contains(&"review_role_work_plan"));
-    let role_responses = role_mcp_responses(&data_dir, &manager_capability.token);
+    let role_responses = role_mcp_responses(
+        &data_dir,
+        &manager_capability.token,
+        &[
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/resume")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{}/resume", project_id + 1)}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 6, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/checkpoints/latest")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{}/checkpoints/latest", project_id + 1)}
+            }),
+        ],
+    );
     let listed_tools = role_responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(2)))
@@ -278,6 +304,22 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .find(|message| message.get("id") == Some(&json!(3)))
         .expect("restricted tool response");
     assert!(denied_call.get("error").is_some());
+    for id in [4, 6] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .pointer("/result/contents/0/text")
+            .is_some());
+    }
+    for id in [5, 7] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .get("error")
+            .is_some());
+    }
 
     let manager_plan = json!({
         "schema_version": 1,
@@ -487,7 +529,24 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
         .authorize_role_tool_call(&scope, "dispatch_prepared_delegations", &json!({}))
         .is_err());
 
-    let role_responses = role_mcp_responses(&data_dir, &capability.token);
+    let role_responses = role_mcp_responses(
+        &data_dir,
+        &capability.token,
+        &[
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                "params": {"uri": "cathulu://portfolio/tasks"}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/planning")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 6, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/resume")}
+            }),
+        ],
+    );
     let listed_tools = role_responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(2)))
@@ -504,6 +563,14 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
     assert!(!listed_tools
         .iter()
         .any(|tool| tool["name"] == "prepare_delegation"));
+    for id in [4, 5, 6] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .pointer("/result/contents/0/text")
+            .is_some());
+    }
     store
         .revoke_role_thread_capability("main-overseer")
         .expect("revoke global Main capability");

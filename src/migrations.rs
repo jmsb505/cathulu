@@ -1446,3 +1446,85 @@ FROM tasks WHERE status = 'blocked';
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (19, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_20: &str = r#"
+CREATE TABLE project_checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  summary_text TEXT NOT NULL CHECK(length(trim(summary_text)) BETWEEN 1 AND 2000),
+  summary_source TEXT NOT NULL CHECK(summary_source = 'unscoped_local_client'),
+  source_event_id INTEGER NOT NULL CHECK(source_event_id >= 0),
+  project_revision INTEGER NOT NULL CHECK(project_revision > 0),
+  repository_head TEXT,
+  repository_dirty INTEGER NOT NULL CHECK(repository_dirty IN (0, 1)),
+  repository_observed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE(project_id, revision)
+);
+CREATE INDEX project_checkpoints_latest_idx
+  ON project_checkpoints(project_id, revision DESC);
+CREATE TRIGGER project_checkpoints_no_update BEFORE UPDATE ON project_checkpoints
+BEGIN SELECT RAISE(ABORT, 'project checkpoints are immutable'); END;
+CREATE TRIGGER project_checkpoints_no_delete BEFORE DELETE ON project_checkpoints
+BEGIN SELECT RAISE(ABORT, 'project checkpoints are immutable'); END;
+
+CREATE TABLE project_checkpoint_tasks (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  task_id INTEGER NOT NULL,
+  objective_id INTEGER NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  status TEXT NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY(checkpoint_id, task_id)
+);
+CREATE TRIGGER project_checkpoint_tasks_no_update BEFORE UPDATE ON project_checkpoint_tasks
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are immutable'); END;
+CREATE TRIGGER project_checkpoint_tasks_no_delete BEFORE DELETE ON project_checkpoint_tasks
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are immutable'); END;
+
+CREATE TABLE project_checkpoint_objectives (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  objective_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  PRIMARY KEY(checkpoint_id, objective_id)
+);
+CREATE TRIGGER project_checkpoint_objectives_no_update BEFORE UPDATE ON project_checkpoint_objectives
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are immutable'); END;
+CREATE TRIGGER project_checkpoint_objectives_no_delete BEFORE DELETE ON project_checkpoint_objectives
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are immutable'); END;
+
+CREATE TABLE project_checkpoint_artifacts (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  artifact_id INTEGER NOT NULL REFERENCES evidence_artifacts(id) ON DELETE RESTRICT,
+  uri TEXT NOT NULL,
+  content_hash TEXT,
+  PRIMARY KEY(checkpoint_id, artifact_id)
+);
+CREATE TRIGGER project_checkpoint_artifacts_no_update BEFORE UPDATE ON project_checkpoint_artifacts
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are immutable'); END;
+CREATE TRIGGER project_checkpoint_artifacts_no_delete BEFORE DELETE ON project_checkpoint_artifacts
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are immutable'); END;
+
+CREATE TABLE project_checkpoint_seals (
+  checkpoint_id INTEGER PRIMARY KEY REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER project_checkpoint_seals_no_update BEFORE UPDATE ON project_checkpoint_seals
+BEGIN SELECT RAISE(ABORT, 'checkpoint seals are immutable'); END;
+CREATE TRIGGER project_checkpoint_seals_no_delete BEFORE DELETE ON project_checkpoint_seals
+BEGIN SELECT RAISE(ABORT, 'checkpoint seals are immutable'); END;
+CREATE TRIGGER project_checkpoint_tasks_sealed BEFORE INSERT ON project_checkpoint_tasks
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are sealed'); END;
+CREATE TRIGGER project_checkpoint_objectives_sealed BEFORE INSERT ON project_checkpoint_objectives
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are sealed'); END;
+CREATE TRIGGER project_checkpoint_artifacts_sealed BEFORE INSERT ON project_checkpoint_artifacts
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are sealed'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (20, CAST(strftime('%s','now') AS INTEGER));
+"#;

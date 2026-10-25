@@ -139,7 +139,26 @@ fn rollback_schema_twelve(database: &rusqlite::Connection) {
     // partially downgraded fixture for an already current database.
     database
         .execute_batch(
-            "DROP TRIGGER IF EXISTS task_dependency_scope_insert;
+            "DROP TRIGGER IF EXISTS project_checkpoint_artifacts_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_seals_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_seals_no_delete;
+             DROP TABLE IF EXISTS project_checkpoint_seals;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoints_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoints_no_delete;
+             DROP TABLE IF EXISTS project_checkpoint_artifacts;
+             DROP TABLE IF EXISTS project_checkpoint_objectives;
+             DROP TABLE IF EXISTS project_checkpoint_tasks;
+             DROP TABLE IF EXISTS project_checkpoints;
+             DELETE FROM schema_migrations WHERE version = 20;
+             DROP TRIGGER IF EXISTS task_dependency_scope_insert;
              DROP TRIGGER IF EXISTS task_dependency_acyclic_insert;
              DROP TRIGGER IF EXISTS task_parent_scope_insert;
              DROP TRIGGER IF EXISTS task_parent_scope_update;
@@ -3312,7 +3331,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -3416,7 +3435,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
     let assignment_status: String = database
         .query_row(
             "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
@@ -3566,7 +3585,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

@@ -1,6 +1,6 @@
 # F1 proposal: administrative completion gate (M48)
 
-Status: validated by Claude in a scratch copy of `5fc5459`. Ready for Codex to apply when it has usage. Nothing has been applied to the repository. Codex owns `src/workflow.rs` and `tests/tasks_m48.rs`.
+Status: **applied.** Codex committed the F1 repair at `d7dff34`, which matches this patch. The patch applies to its base `5fc5459` only. Do not re-apply it to HEAD. Claude re-reviewed `d7dff34` (see [CC-01-review-CX-01-final.md](../CC-01-review-CX-01-final.md) §0).
 
 Patch: [F1-admin-completion-gate.patch](F1-admin-completion-gate.patch)
 

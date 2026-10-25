@@ -183,7 +183,7 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
             row.get(0)
         })
         .expect("read upgraded migration version");
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
 }
 
 #[test]

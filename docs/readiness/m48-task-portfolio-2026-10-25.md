@@ -1,7 +1,7 @@
 # M48 task/portfolio implementation evidence
 
 Date: 2026-10-25
-Status: CX-01 is committed at `5fc5459`. Claude's final review identified a completion-provenance bypass; the separate repair passes 104 core tests in an isolated staged snapshot. Claude's repair re-review and remote integration remain pending.
+Status: CX-01 is committed at `5fc5459`. Claude's final review identified a completion-provenance bypass; repair `d7dff34` passes 104 core tests and Claude independently re-reviewed it with an accept verdict. Remote/runtime integration remains separate.
 Plan: [PLAN-020 M48](../plans/PLAN-020-mixed-provider-personal-project-os.md), scheduled by [PLAN-021 CX-01](../plans/PLAN-021-manual-claude-codex-development.md).
 
 ## Baseline and scope

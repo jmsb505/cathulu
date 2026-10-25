@@ -1,7 +1,31 @@
 # CC-01 final semantic review of CX-01 (M48)
 
 Agent: Claude Code lane (PLAN-021 CC-01, read-only review). Subject: Codex commit `5fc5459` (`feat(workflow): add deterministic task portfolio planning`) and its handoff `docs/parallel/codex/CX-01-m48.md`.
-Verdict: **conditional.** The fix for F1 is now a validated patch ([proposal](proposals/README.md)). Codex applies it, adds F2–F3 coverage (included in the patch), and corrects the F4 wording. The verdict becomes "accept" after Codex's commit is re-reviewed. Owner decisions and defaults are recorded on [BOARD.md](../BOARD.md). This lane has not edited production code or `tests/tasks_m48.rs`; those are Codex-owned.
+Verdict: **accept (Claude review), 2026-10-25.** Codex committed the F1 repair at `d7dff34` (`fix(workflow): preserve run QA in administrative completion`). It matches the validated proposal, the three conditions in §7 are met, and the committed snapshot passes the full core suite. Owner checkpoint acceptance of M48 is still the Owner's step. Owner decisions and defaults are recorded on [BOARD.md](../BOARD.md). This lane has not edited production code or `tests/tasks_m48.rs`; those are Codex-owned.
+
+## 0. Re-review of the F1 repair commit `d7dff34` (2026-10-25)
+
+- **Code identity.** `src/workflow.rs` and `tests/tasks_m48.rs` in `d7dff34` are byte-identical to Codex's candidate `target/manual-dev/codex/f1-candidate-1329ee37a3774ea0a5f690d434152039`. The `workflow.rs` hunks versus `5fc5459` are the gate call on the administrative path and the helper. The test diff removes no lines.
+- **Independent test run.** `git archive d7dff34` into `target/manual-dev/claude/committed-d7dff34`, separate target directory, `--locked --offline`:
+  - `tasks_m48` 15, `delegation_lifecycle` 14, `mcp_vertical_slice` 17: all pass.
+  - Full core suite: 29 + 8 + 14 + 17 + 4 + 5 + 6 + 2 + 4 + 15 = **104 passed, 0 failed**. This matches Codex's report. Log: `target/manual-dev/claude/d7dff34-full.log`.
+- **Gate logic.** Runs only on the administrative path (`complete_task` when `completion_kind == "administrative"`). The revision check runs before it, so stale-revision errors keep priority. The refusal happens before any write, and the event-count assertion pins that no event is written. The verified path (`accept_task_run`) does not reach it, so T3 passes.
+- **Docs.** The readiness record now states the refusal and the F4 wording. `docs/agent-operating-contract.md` gains a paragraph that matches the decisions.
+- **Conditions in §7.** (1) F1 applied and committed: met. (2) F2 and F3 tests: met (`f1_failed_child_…`, `f1_legacy_cancelled_child_…`). (3) F4 wording: met.
+
+### Consequences the Owner should see (not defects)
+
+- A task with any linked `blocked`, `failed`, `inconclusive` or `cancelled` run cannot be completed administratively. Its completion routes are: a new run that reaches `verified_success`, then `accept_task_run`; or a reasoned cancellation (D-3). An ordinary todo whose run failed has to be cancelled rather than marked done. This is the intended D-1 behaviour, but it is a usability cost. Say if you want a reasoned override later.
+- A repository that was not Codex-owned got touched by the commit: `d7dff34` also committed the shared board, my review file and the proposal (`docs/parallel/claude/proposals/`). Their content is identical to my working copies, and I have not changed them since. The CX-01 handoff had said Claude-lane files were not staged, so this is worth knowing for the checkpoint. The committed patch now matches HEAD's fix, so it no longer applies to HEAD and is historical.
+
+### Open items after the repair (not blocking M48 acceptance)
+
+- **F5:** scoped Main resource access has not been exercised end to end. Add before relying on Main's portfolio reads.
+- **F6:** `list_tasks` has no total or cursor. CX-02 must address this before M49 acceptance (CX-02 work is in progress).
+- **F7:** project-priority-first ordering. Owner to confirm it is intended.
+- **F8:** the unscoped local MCP does not authenticate the caller. Acceptable as local-only.
+- **F9:** cancelling from `blocked` leaves manual blockers open.
+- **S1 and S5:** same-status transition test; abandoned running-run operator path. Tests to add when convenient.
 
 ## 1. Scope and evidence
 

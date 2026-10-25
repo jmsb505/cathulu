@@ -1,15 +1,15 @@
 # PLAN-021 — Manual Claude Code / Codex development in one directory
 
-Status: Active manual execution plan. CX-00 preflight passed on 2026-10-25 and CX-01/M48 implementation plus local validation is complete on the shared branch; Claude's stable semantic re-review is the next handoff. CX-02/M49 has not started.
+Status: Active manual execution plan. CX-00 preflight passed on 2026-10-25. CX-01/M48 is committed at `5fc5459`, with repair `d7dff34` independently accepted by Claude. CX-02/M49 is locally validated with 107 passing core tests; its stable semantic review is next. CX-03/M51a is the next implementation packet.
 Created / updated: 2026-10-25
 Historical source inspection: `main` at `d2422fbd061aec9dadf876951d0f3e77bb4b6d47` after PR #33. Writing this plan then left canonical-document edits and new planning files uncommitted; that tree is not a launch baseline.
-Launch prerequisite: satisfied before CX-01 writes. CX-00 records branch `codex/manual-dual-m48`, committed HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`, tracked planning files, and an empty `git status --porcelain=v1 --untracked-files=all`. That committed HEAD, not the historical hash above, is the launch baseline. The Owner must establish a clean Git view before either session begins any later packet.
+Launch prerequisite: satisfied before CX-01 writes. CX-00 records branch `codex/manual-dual-m48`, committed HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`, tracked planning files, and an empty `git status --porcelain=v1 --untracked-files=all`. That committed HEAD, not the historical hash above, is the launch baseline. Later packets inspect status/diff and preserve disjoint work; waves 0-3 do not repeat a clean-tree launch gate before independent implementation or read-only review.
 Capability plan: [PLAN-020](PLAN-020-mixed-provider-personal-project-os.md)
 Workflow decision: [ADR-0023](../decisions/ADR-0023-manual-shared-directory-development.md)
 
 ## Objective and scope
 
-Give Claude Code and Codex useful, separate assignments for the Cathulu pivot while both work in **`C:\Users\sjuan\Desktop\cathulu`**, on the same checkout and branch. The Owner starts each session, transfers results, controls integration pauses and decides when to move to the next packet. There is no automatic dispatch, cross-session messaging, task monitor or worker fleet in this development workflow.
+Give Claude Code and Codex useful, separate assignments for the Cathulu pivot while both work in **`C:\Users\sjuan\Desktop\cathulu`**, on the same checkout and branch. The Owner starts each session and controls integration pauses and reserved decisions. Both lanes publish routine handoffs and readiness on [the shared board](../parallel/BOARD.md), inspect each other's completed evidence and continue within this accepted plan. The Owner authorized bounded monitoring on 2026-10-25. This adds no automated dispatch, cross-session messages or worker fleet.
 
 PLAN-020 remains authoritative for M48-M55 capability requirements and acceptance. This plan owns assignment, file ownership, preparation overlap and manual handoffs. It adds no competing todo/schema/runtime authority. Product provider adapters/routing remain in the pivot roadmap; the Owner's request to avoid automation concerns coordination of these development sessions.
 

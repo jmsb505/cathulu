@@ -9,9 +9,10 @@ The Owner adopted the mixed-provider personal project OS direction on 2026-10-25
 | Purpose, actors, scope, invariants, MVP, and success criteria | [Project definition](project-definition.md) | NORMATIVE |
 | System boundaries, drivers, managed memory lifecycle, local data/security, and skill/tool profile | [Architecture](architecture.md) | WORKING for implementation details; NORMATIVE for stated product boundaries |
 | Pivot current-state assessment, target contracts, migration risks and current development profile | [Migration assessment](pivot-migration.md) | WORKING design; source observations scoped to the inspected dirty tree |
-| Pivot implementation sequence and acceptance evidence | [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md) | M48 locally implemented and validated; Claude review and integration pending; M49-M55 planned |
+| Pivot implementation sequence and acceptance evidence | [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md) | M48 committed with a separately tested review repair; M49 locally implemented; M50-M55 planned |
 | M48 task/portfolio implementation evidence | [M48 evidence](readiness/m48-task-portfolio-2026-10-25.md) | Local schema, workflow, MCP and regression evidence; no runtime/release claim |
-| Manual Claude Code / Codex assignments in the same directory | [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), [ADR-0023](decisions/ADR-0023-manual-shared-directory-development.md) | CX-00 baseline recorded; CX-01 implemented/validated on the shared branch; stable Claude review and commit pending |
+| M49 immutable checkpoint/resume contract and evidence | [M49 evidence](readiness/m49-checkpoint-resume-2026-10-25.md) | Provider-free restart/resume, freshness, scope and bounded-output evidence |
+| Manual Claude Code / Codex assignments in the same directory | [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), [ADR-0023](decisions/ADR-0023-manual-shared-directory-development.md), [shared board](parallel/BOARD.md) | CX-01 at `5fc5459`, repair at `d7dff34`; CX-02 progressing while Claude reviews stable commits |
 | Pending-work synchronization and integration validation | [2026-10-25 repository integration](readiness/repository-integration-2026-10-25.md) | Regression/build evidence and PR delivery record; live gates remain separate |
 | Phase order and deferred capabilities | [Roadmap](roadmap.md) | NORMATIVE |
 | Durable decisions and supersession | [Decision records](decisions/) | NORMATIVE when ACCEPTED |

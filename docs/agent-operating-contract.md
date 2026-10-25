@@ -29,6 +29,14 @@ Administrative completion is refused when a linked run is blocked, failed, incon
 
 These task write tools are excluded from all Main/PM/Worker role-capability allowlists and are denied by the role authorization boundary. Main can read the global portfolio and project task views; a Project Manager can read its assigned project's planning/task resources; Workers do not receive portfolio or task planning reads. This preserves the current role scope. The existing unscoped MCP trust boundary does not authenticate an Owner or identify the calling Codex chat, and M48 adds no new Owner credential or identity mechanism. No coding provider is needed for task planning, filtering, or status reads.
 
+### Project checkpoint and resume (M49)
+
+`create_project_checkpoint` captures one immutable project revision using the expected global source-event high-water mark returned by `resume_project`. It snapshots task revisions/statuses, current objective state, project planning revision and the last stored Git observation. Up to 16 evidence artifacts may be referenced, each linked to a run in the same project. The summary is bounded client-written historical text labelled `unscoped_local_client`; it is not inferred execution evidence.
+
+`resume_project` and `cathulu://projects/{id}/resume` read current canonical state in one SQLite snapshot. Task state overrides historical summary text. The packet includes remaining/eligible/blocked work, reasons, task deltas, current objectives and decisions, checkpoint age, historical run QA and stored repository freshness. Lists contain at most ten items with exact omitted counts; text excerpts and a 32,000-byte JSON ceiling bound the response. Full source rows remain available by their IDs. The latest-run QA count includes every non-passing mandatory check; declared-check changes compare that run's workflow version with the latest version, and do not assert that current source passed QA.
+
+Resume never refreshes Git. Repository availability is a filesystem observation; HEAD/dirty state is explicitly as of the stored reconciliation timestamp. `same` compares stored HEAD with checkpoint HEAD and does not establish that the current working tree is unchanged. Missing checkpoints, missing repositories and absent QA remain explicit. Main can read project resume/latest-checkpoint resources; a PM can read only its own project's resources; Workers are denied. Scoped agents receive no checkpoint mutation tool. See the [M49 evidence record](readiness/m49-checkpoint-resume-2026-10-25.md).
+
 ## Agent responsibilities
 
 ### Main Overseer — coordinator only

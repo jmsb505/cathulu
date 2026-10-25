@@ -17,13 +17,15 @@ KNOWN from source: SQLite and FTS5 already exist; logical identity already survi
 
 The pivot does not establish that Claude is better at design or that Codex is better at implementation. It establishes a configurable initial preference to test through accepted work. [ADR-0021](decisions/ADR-0021-continuous-supervised-development.md) continues to permit bounded supervised use before comparative benefit is proven.
 
-## Current implementation checkpoint — M48 (2026-10-25)
+## Current implementation checkpoint — M48/M49 (2026-10-25)
 
 Schema v19 implements M48 by extending `projects` and `tasks`; it does not introduce a competing todo table. Projects now carry `active | paused | completed | archived`, priority and revision. Tasks carry parent, priority, due date, effort minutes, next action, revision, completion provenance and cancellation reason/time. `task_dependencies` enforces same-project, acyclic prerequisite edges; `task_blockers` preserves structured manual reasons and resolutions. Existing project/task IDs and objective ownership remain intact. Legacy completed, cancelled and blocked states are explicitly marked unknown where the prior source did not record provenance.
 
 The Store/MCP contract exposes revisioned planning/status/edge/blocker commands, separate reasoned cancel/reopen commands, administrative and verified-run completion, a bounded `list_tasks` query, and portfolio/project planning/task resources. Eligibility requires a queued task, active project/objective, no open manual blocker, all prerequisites completed and no terminal parent. Results sort by project priority descending, task priority descending, known/earlier due date, downstream unblock count descending and stable task ID. Priority `0` is the neutral default; unknown due dates and effort stay null. Task dates are calendar days (`YYYY-MM-DD`), with no inferred timezone or overdue flag.
 
 Task writes are not available through scoped Main/PM/Worker capabilities. Main reads the global portfolio and project task resources; a PM reads its assigned project's planning/tasks; Workers receive no task portfolio reads. The existing unscoped local MCP remains a local trust surface and still does not authenticate the Owner or calling chat. Deterministic M48 behavior does not start a coding provider. See [PLAN-020 M48](plans/PLAN-020-mixed-provider-personal-project-os.md) and the [M48 evidence record](readiness/m48-task-portfolio-2026-10-25.md). These are local source/test results; they do not establish merge, release, MCP reload, live-store migration, or runtime acceptance.
+
+Schema v20 adds M49's immutable checkpoint revisions and snapshots of task revisions/statuses, objectives and same-project run artifacts. `resume_project` joins current canonical state with the latest historical checkpoint, reports task deltas and exact omitted counts, and keeps its JSON below 32,000 bytes. Repository HEAD/dirty state remains the last explicit reconciliation observation; a resume read performs no Git or provider call. Missing checkpoint/repository/verification stays explicit. Existing objectives supply goal state, so no separate milestone table was needed. See the [M49 contract and evidence](readiness/m49-checkpoint-resume-2026-10-25.md).
 
 ## 2. Current-state architecture
 
@@ -307,7 +309,7 @@ For Rust implementation run `cargo fmt --all -- --check` and `cargo test -p cath
 
 ## 28. First vertical slice
 
-M48 now lets the Owner manage registered-project tasks with explicit priority/dependency/blocker state and query eligibility without a coding provider. M49 remains responsible for immutable checkpoints and restart/resume packets containing purpose, current objective, completed/recent work, remaining tasks, blockers, QA freshness and next action, with IDs and evidence. No UI redesign is required. Reuse [workflow](../src/workflow.rs), [Store](../src/lib.rs), [MCP](../src/mcp.rs) and [events](../src/events.rs).
+M48/M49 now let the Owner manage registered-project work, create an immutable checkpoint, restart and retrieve current objectives, remaining/eligible/blocked tasks, changes, decisions, historical QA and stored repository freshness without a coding provider. IDs, revisions, event references and timestamps distinguish current state from historical summary text. No UI redesign is required. The implementation reuses [workflow](../src/workflow.rs), [Store](../src/lib.rs), [MCP](../src/mcp.rs), [events](../src/events.rs) and the focused [checkpoint module](../src/checkpoints.rs).
 
 Acceptance example: task B depends on unfinished task A; B is excluded from the unblocked list with a reason. Completing A through the appropriate administrative or verified-execution path exposes B. After restart the resume packet agrees with current tasks and distinguishes an older checkpoint from new changes. Removing provider executables must not affect this flow. Later non-code projects and natural-language interpretation are independent additions.
 
@@ -342,7 +344,7 @@ No Owner question blocks the planning assessment or the existing-project provide
 
 ## 31. Recommended immediate next coding task
 
-M48 implementation is complete on the local shared branch and its deterministic acceptance suite passes; stable Claude semantic re-review and Git integration are the remaining CX-01 handoff. Follow with M49's checkpoint/resume proof before generalizing providers. See [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md), [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), and the [M48 evidence record](readiness/m48-task-portfolio-2026-10-25.md).
+M48 is committed with a separately validated completion-provenance repair; M49 supplies the local checkpoint/resume proof. Claude reviews stable commits through the shared board while Codex continues the defined packets. Next is CX-03/M51a's minimal provider/artifact seam, after M49's normal checkpoint. See [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md), [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), and the [M49 evidence record](readiness/m49-checkpoint-resume-2026-10-25.md).
 
 ### Development Skills & Tooling Profile
 

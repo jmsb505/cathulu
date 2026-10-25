@@ -182,6 +182,23 @@ fn default_task_query_limit() -> usize {
     100
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CreateProjectCheckpointArgs {
+    project_id: i64,
+    expected_source_event_id: i64,
+    summary_text: String,
+    #[serde(default)]
+    artifact_ids: Vec<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ResumeProjectArgs {
+    project_id: i64,
+    #[serde(default = "default_resume_limit")]
+    limit: usize,
+}
+fn default_resume_limit() -> usize {
+    10
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecordDecisionArgs {
     project_id: i64,
     #[serde(default)]
@@ -801,6 +818,45 @@ impl CathuluServer {
     fn list_tasks(&self, Parameters(a): Parameters<TaskQueryArgs>) -> CallToolResult {
         self.store
             .list_tasks(a.project_id, a.eligible_only, a.limit)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Create an immutable project checkpoint from the current task/objective state. Supply the source event revision from resume_project; artifact IDs must refer to runs in this project."
+    )]
+    fn create_project_checkpoint(
+        &self,
+        Parameters(a): Parameters<CreateProjectCheckpointArgs>,
+    ) -> CallToolResult {
+        self.store
+            .create_project_checkpoint(
+                a.project_id,
+                a.expected_source_event_id,
+                &a.summary_text,
+                &a.artifact_ids,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Read a bounded, source-backed project resume packet without refreshing Git or invoking a provider."
+    )]
+    fn resume_project(&self, Parameters(a): Parameters<ResumeProjectArgs>) -> CallToolResult {
+        self.store
+            .resume_project(a.project_id, a.limit)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Read the latest immutable checkpoint revision for one project.")]
+    fn latest_project_checkpoint(
+        &self,
+        Parameters(a): Parameters<ReconcileProjectArgs>,
+    ) -> CallToolResult {
+        self.store
+            .latest_project_checkpoint(a.project_id)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -1672,6 +1728,12 @@ impl ServerHandler for CathuluServer {
             ResourceTemplate::new("cathulu://projects/{id}/tasks", "Cathulu project tasks")
                 .with_description("The first 100 tasks for one project with eligibility and blocker reasons.")
                 .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/checkpoints/latest", "Cathulu latest project checkpoint")
+                .with_description("The latest immutable checkpoint revision for one project, or null when none exists.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/resume", "Cathulu project resume")
+                .with_description("A bounded, source-backed current-state packet with checkpoint deltas and stored repository freshness.")
+                .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://portfolio/tasks", "Cathulu task portfolio")
                 .with_description("The first 100 tasks across projects with eligibility and blocker reasons.")
                 .with_mime_type("application/json"),
@@ -1732,6 +1794,8 @@ impl ServerHandler for CathuluServer {
                         "cathulu://projects/{id}"
                             | "cathulu://projects/{id}/planning"
                             | "cathulu://projects/{id}/tasks"
+                            | "cathulu://projects/{id}/checkpoints/latest"
+                            | "cathulu://projects/{id}/resume"
                             | "cathulu://portfolio/tasks"
                             | "cathulu://delegations/{id}"
                             | "cathulu://work-plans/{id}"
@@ -1745,6 +1809,8 @@ impl ServerHandler for CathuluServer {
                         "cathulu://projects/{id}"
                             | "cathulu://projects/{id}/planning"
                             | "cathulu://projects/{id}/tasks"
+                            | "cathulu://projects/{id}/checkpoints/latest"
+                            | "cathulu://projects/{id}/resume"
                             | "cathulu://delegations/{id}"
                     )
                 }
@@ -2007,6 +2073,32 @@ impl ServerHandler for CathuluServer {
         } else if let Some(project_id) = request
             .uri
             .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/checkpoints/latest"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .latest_project_checkpoint(project_id)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/resume"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .resume_project(project_id, 10)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
             .and_then(|path| path.strip_suffix("/graphify-snapshot"))
         {
             let project_id = parse_resource_id(project_id, &request.uri)?;
@@ -2099,7 +2191,10 @@ fn role_can_read_task_resource(role_kind: &str, project_id: Option<i64>, uri: &s
         .and_then(|path| path.split_once('/'))
         .is_some_and(|(resource_project_id, resource)| {
             resource_project_id.parse::<i64>().ok() == project_id
-                && matches!(resource, "planning" | "tasks")
+                && matches!(
+                    resource,
+                    "planning" | "tasks" | "checkpoints/latest" | "resume"
+                )
         })
 }
 
