@@ -654,6 +654,10 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
                 "jsonrpc": "2.0", "id": 6, "method": "resources/read",
                 "params": {"uri": format!("cathulu://projects/{project_id}/resume")}
             }),
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": {"name": "list_workspace_recovery_cases", "arguments": {"limit": 10}}
+            }),
         ],
     );
     let listed_tools = role_responses
@@ -680,6 +684,14 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
             .pointer("/result/contents/0/text")
             .is_some());
     }
+    let recovery_tool_denial = role_responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(7)))
+        .expect("Main recovery-tool call response");
+    assert!(recovery_tool_denial.get("error").is_some());
+    assert!(recovery_tool_denial["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("cannot call")));
     store
         .revoke_role_thread_capability("main-overseer")
         .expect("revoke global Main capability");

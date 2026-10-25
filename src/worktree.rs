@@ -1138,17 +1138,6 @@ impl Store {
         if lease.status != WorkspaceLeaseStatus::NeedsReconcile {
             return Err("workspace lease is not awaiting reconciliation".into());
         }
-        let verified = verify_project_workspace(
-            &project_path,
-            Path::new(&workspace_path),
-            lease.access,
-            false,
-        )?;
-        if verified.workspace_path_hash != lease.workspace_path_hash
-            || verified.common_dir_hash != lease.common_dir_hash
-        {
-            return Err("workspace identity changed; the quarantined lease remains locked".into());
-        }
 
         let mut connection = self.connection()?;
         let transaction = connection
@@ -1175,6 +1164,20 @@ impl Store {
         }
         if now < current.2 {
             return Err("reconciliation time predates the workspace lease update".into());
+        }
+        // Revalidate the worktree while holding the same immediate transaction used to resolve
+        // attempts and release the lease. This keeps concurrent lease changes from invalidating
+        // the audit claim that identity was checked as part of this reconciliation.
+        let verified = verify_project_workspace(
+            &project_path,
+            Path::new(&workspace_path),
+            lease.access,
+            false,
+        )?;
+        if verified.workspace_path_hash != lease.workspace_path_hash
+            || verified.common_dir_hash != lease.common_dir_hash
+        {
+            return Err("workspace identity changed; the quarantined lease remains locked".into());
         }
 
         let open_attempts = {

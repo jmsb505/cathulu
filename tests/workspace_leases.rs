@@ -556,12 +556,140 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         )
         .is_err());
 
-    let resolved = fixture
+    // A changed stored identity must prevent reconciliation without releasing the quarantined
+    // lease or changing its unresolved attempt.
+    let connection = Connection::open(fixture.store.database_path()).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER workspace_leases_identity_immutable;")
+        .expect("allow controlled identity corruption in the scratch fixture");
+    connection
+        .execute(
+            "UPDATE workspace_leases SET workspace_path_hash = ?1 WHERE id = ?2",
+            params!["c".repeat(64), lease.id],
+        )
+        .expect("change only the scratch lease identity hash");
+    assert!(fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 3,
+            "provider confirmed stopped; result reviewed",
+            true,
+        )
+        .unwrap_err()
+        .contains("workspace identity changed"));
+    connection
+        .execute(
+            "UPDATE workspace_leases SET workspace_path_hash = ?1 WHERE id = ?2",
+            params![lease.workspace_path_hash, lease.id],
+        )
+        .expect("restore the scratch lease identity hash");
+    let (lease_status, attempt_status): (String, String) = connection
+        .query_row(
+            "SELECT lease.status, attempt.status
+             FROM workspace_leases lease JOIN provider_attempts attempt
+               ON attempt.workspace_lease_id = lease.id
+             WHERE lease.id = ?1",
+            params![lease.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read recovery state after identity refusal");
+    assert_eq!(lease_status, "needs_reconcile");
+    assert_eq!(attempt_status, "needs_reconcile");
+
+    // A created attempt cannot be reconciled as completed; use a direct scratch mutation to
+    // exercise this otherwise transient transition at the recovery boundary. The fixture drops
+    // and immediately restores only the state-transition trigger to model that persisted state.
+    connection
+        .execute_batch("DROP TRIGGER provider_attempts_state_guard;")
+        .expect("temporarily allow the invalid scratch state");
+    connection
+        .execute(
+            "UPDATE provider_attempts SET status = 'created', updated_at = ?1
+             WHERE attempt_key = ?2",
+            params![future + 4, attempt_key.as_str()],
+        )
+        .expect("prepare the invalid transition in the scratch fixture");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER provider_attempts_state_guard BEFORE UPDATE OF status ON provider_attempts
+             WHEN NEW.status IS NOT OLD.status AND NOT (
+               (OLD.status = 'created' AND NEW.status IN ('submitted','ack_unknown','running','completed','failed','blocked','needs_reconcile'))
+               OR (OLD.status = 'submitted' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+               OR (OLD.status = 'ack_unknown' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+               OR (OLD.status = 'running' AND NEW.status IN ('completed','failed','blocked','needs_reconcile'))
+               OR (OLD.status = 'needs_reconcile' AND NEW.status IN ('completed','failed','blocked'))
+             )
+             BEGIN SELECT RAISE(ABORT, 'invalid provider attempt state transition'); END;",
+        )
+        .expect("restore the provider-attempt state-transition trigger");
+    assert!(fixture
         .store
         .reconcile_workspace_lease_with_attempts(
             lease.id,
             std::slice::from_ref(&resolution),
             future + 5,
+            "provider confirmed stopped; result reviewed",
+            true,
+        )
+        .unwrap_err()
+        .contains("cannot be reconciled from created to completed"));
+    connection
+        .execute(
+            "UPDATE provider_attempts SET status = 'needs_reconcile', updated_at = ?1
+             WHERE attempt_key = ?2",
+            params![future + 5, attempt_key.as_str()],
+        )
+        .expect("restore the quarantined attempt state");
+
+    // Inject a failure during the attempt update and verify the transaction leaves both the
+    // attempt and lease quarantined. The trigger exists only in this disposable test database.
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_attempt_reconciliation BEFORE UPDATE OF status
+             ON provider_attempts WHEN NEW.attempt_key = 'lease-attempt-one'
+               AND NEW.status = 'completed'
+             BEGIN SELECT RAISE(ABORT, 'injected attempt update failure'); END;",
+        )
+        .expect("install a failure trigger in the scratch fixture");
+    assert!(fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 6,
+            "provider confirmed stopped; result reviewed",
+            true,
+        )
+        .unwrap_err()
+        .contains("injected attempt update failure"));
+    let (lease_status, attempt_status, reconciled_events): (String, String, i64) = connection
+        .query_row(
+            "SELECT lease.status, attempt.status,
+                    (SELECT COUNT(*) FROM workspace_lease_events event
+                     WHERE event.lease_id = lease.id AND event.event_type = 'reconciled')
+             FROM workspace_leases lease JOIN provider_attempts attempt
+               ON attempt.workspace_lease_id = lease.id
+             WHERE lease.id = ?1",
+            params![lease.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read state after injected rollback");
+    assert_eq!(lease_status, "needs_reconcile");
+    assert_eq!(attempt_status, "needs_reconcile");
+    assert_eq!(reconciled_events, 0);
+    connection
+        .execute_batch("DROP TRIGGER fail_attempt_reconciliation;")
+        .expect("remove scratch failure trigger");
+    drop(connection);
+
+    let resolved = fixture
+        .store
+        .reconcile_workspace_lease_with_attempts(
+            lease.id,
+            std::slice::from_ref(&resolution),
+            future + 7,
             "provider confirmed stopped; result reviewed",
             true,
         )
@@ -576,7 +704,7 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         .reconcile_workspace_lease_with_attempts(
             lease.id,
             std::slice::from_ref(&resolution),
-            future + 6,
+            future + 8,
             "provider confirmed stopped; result reviewed",
             true,
         )
@@ -587,7 +715,7 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         .reconcile_workspace_lease_with_attempts(
             lease.id,
             std::slice::from_ref(&resolution),
-            future + 6,
+            future + 8,
             "different resolution",
             true,
         )
