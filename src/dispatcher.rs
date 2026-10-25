@@ -2412,6 +2412,35 @@ struct ActiveTurn {
     turn_id: Option<String>,
 }
 
+struct CapabilityRevocationGuard<'a> {
+    store: &'a Store,
+    binding_key: &'a str,
+    revoke_on_drop: bool,
+}
+
+impl<'a> CapabilityRevocationGuard<'a> {
+    fn new(store: &'a Store, binding_key: &'a str) -> Self {
+        Self {
+            store,
+            binding_key,
+            revoke_on_drop: true,
+        }
+    }
+
+    fn preserve_for_turn_submission(mut self) {
+        // start_turn errors are ambiguous: the provider may already have accepted the turn.
+        self.revoke_on_drop = false;
+    }
+}
+
+impl Drop for CapabilityRevocationGuard<'_> {
+    fn drop(&mut self) {
+        if self.revoke_on_drop {
+            let _ = self.store.revoke_role_thread_capability(self.binding_key);
+        }
+    }
+}
+
 fn dispatcher_loop(
     store: Store,
     admission_policy: RoleDispatchAdmissionPolicy,
@@ -2619,6 +2648,7 @@ fn dispatch_one(
             lease_id,
         )
         .map_err(|message| (item.id, "blocked", message))?;
+    let capability_guard = CapabilityRevocationGuard::new(store, &binding_key);
     let admission = match store.validate_role_provider_start(
         &capability.token,
         lease_id,
@@ -2627,10 +2657,7 @@ fn dispatch_one(
         unix_time(),
     ) {
         Ok(admission) => admission,
-        Err(message) => {
-            let _ = store.revoke_role_thread_capability(&binding_key);
-            return Err((item.id, "blocked", message));
-        }
+        Err(message) => return Err((item.id, "blocked", message)),
     };
     if app_server.is_none() {
         *app_server = Some(
@@ -2657,13 +2684,10 @@ fn dispatch_one(
             server
                 .set_admission(admission)
                 .map_err(|message| (item.id, "blocked", message))?;
-            match server.resume_thread(&thread_id, config) {
-                Ok(()) => thread_id,
-                Err(message) => {
-                    let _ = store.revoke_role_thread_capability(&binding_key);
-                    return Err((item.id, "needs_reconcile", message));
-                }
-            }
+            server
+                .resume_thread(&thread_id, config)
+                .map_err(|message| (item.id, "needs_reconcile", message))?;
+            thread_id
         }
         None => {
             let admission = store
@@ -2682,19 +2706,15 @@ fn dispatch_one(
                 crate::agent_provider::WorkspaceAccess::WorkspaceWrite => "workspace-write",
                 crate::agent_provider::WorkspaceAccess::ReadOnly => "read-only",
             };
-            match server.start_thread(
-                &permissions.workspace_root,
-                item.requested_model.as_deref(),
-                "on-request",
-                sandbox,
-                config,
-            ) {
-                Ok(thread_id) => thread_id,
-                Err(message) => {
-                    let _ = store.revoke_role_thread_capability(&binding_key);
-                    return Err((item.id, "failed", message));
-                }
-            }
+            server
+                .start_thread(
+                    &permissions.workspace_root,
+                    item.requested_model.as_deref(),
+                    "on-request",
+                    sandbox,
+                    config,
+                )
+                .map_err(|message| (item.id, "failed", message))?
         }
     };
 
@@ -2713,7 +2733,6 @@ fn dispatch_one(
                     None,
                 );
             }
-            let _ = store.revoke_role_thread_capability(&binding_key);
             (item.id, "blocked", message)
         })?;
 
@@ -2743,12 +2762,6 @@ fn dispatch_one(
             "dispatcher lease was lost before turn start".to_string(),
         ));
     }
-    store
-        .mark_delegation_dispatched(item.delegation_id)
-        .map_err(|message| (item.id, "blocked", message))?;
-    store
-        .set_role_dispatch_status(item.id, "turn_starting", None)
-        .map_err(|message| (item.id, "needs_reconcile", message))?;
     let prompt = role_turn_prompt(&item);
     let admission = store
         .validate_role_provider_start(
@@ -2762,6 +2775,13 @@ fn dispatch_one(
     server
         .set_admission(admission)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
+    store
+        .set_role_dispatch_status(item.id, "turn_starting", None)
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
+    store
+        .mark_delegation_dispatched(item.delegation_id)
+        .map_err(|message| (item.id, "blocked", message))?;
+    capability_guard.preserve_for_turn_submission();
     let acknowledgement = server
         .start_turn(&thread_id, &prompt)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
@@ -2925,6 +2945,7 @@ fn dispatch_role_inbox_message(
             lease_id,
         )
         .map_err(|error| (message.id, "blocked", error))?;
+    let capability_guard = CapabilityRevocationGuard::new(store, &message.target_binding_key);
     let admission = match store.validate_role_provider_start(
         &capability.token,
         lease_id,
@@ -2933,10 +2954,7 @@ fn dispatch_role_inbox_message(
         unix_time(),
     ) {
         Ok(admission) => admission,
-        Err(error) => {
-            let _ = store.revoke_role_thread_capability(&message.target_binding_key);
-            return Err((message.id, "blocked", error));
-        }
+        Err(error) => return Err((message.id, "blocked", error)),
     };
     if app_server.is_none() {
         *app_server = Some(
@@ -2960,14 +2978,12 @@ fn dispatch_role_inbox_message(
     server
         .set_admission(admission)
         .map_err(|error| (message.id, "blocked", error))?;
-    if let Err(error) = server.resume_thread(&binding.thread_id, config) {
-        let _ = store.revoke_role_thread_capability(&message.target_binding_key);
-        return Err((message.id, "needs_reconcile", error));
-    }
+    server
+        .resume_thread(&binding.thread_id, config)
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
     if let Err(error) =
         server.require_cathulu_tools(&binding.thread_id, required_tools_for_role("sub_overseer"))
     {
-        let _ = store.revoke_role_thread_capability(&message.target_binding_key);
         return Err((message.id, "blocked", error));
     }
     let prompt = role_event_prompt(&message);
@@ -2983,6 +2999,7 @@ fn dispatch_role_inbox_message(
     server
         .set_admission(admission)
         .map_err(|error| (message.id, "needs_reconcile", error))?;
+    capability_guard.preserve_for_turn_submission();
     let acknowledgement = server
         .start_turn(&binding.thread_id, &prompt)
         .map_err(|error| (message.id, "needs_reconcile", error))?;
@@ -3613,6 +3630,50 @@ mod dispatcher_admission_tests {
     }
 
     #[test]
+    fn capability_guard_revokes_before_submission_and_preserves_after_submission() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+
+        drop(CapabilityRevocationGuard::new(
+            &fixture.store,
+            &fixture.binding_key,
+        ));
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability.token)
+            .is_err());
+
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("reissue fixture capability");
+        CapabilityRevocationGuard::new(&fixture.store, &fixture.binding_key)
+            .preserve_for_turn_submission();
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability.token)
+            .is_ok());
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
     fn both_dispatch_routes_block_missing_lease_and_unbound_capability_before_spawn() {
         let mut fixture = fixture();
         fixture.bind_thread();
@@ -3698,7 +3759,7 @@ mod dispatcher_admission_tests {
             ),
         ] {
             let mut fixture = fixture();
-            fixture.add_active_lease();
+            let lease_id = fixture.add_active_lease();
             fixture.bind_thread();
             fixture.issue_capability(true);
             let caps = capabilities(credential_source);
@@ -3715,6 +3776,14 @@ mod dispatcher_admission_tests {
                 fixture.work_item(),
             );
             assert_refused_without_spawn(result, &app_server, "blocked", expected_reason);
+            assert_eq!(
+                fixture
+                    .store
+                    .active_role_thread_capability_workspace_lease_id(&fixture.binding_key)
+                    .expect("read post-refusal capability"),
+                Some(lease_id),
+                "preflight refusal occurs before capability rotation"
+            );
 
             let result = dispatch_role_inbox_message(
                 &fixture.store,
@@ -3725,6 +3794,14 @@ mod dispatcher_admission_tests {
                 fixture.inbox_message(&fixture.binding_key),
             );
             assert_refused_without_spawn(result, &app_server, "blocked", expected_reason);
+            assert_eq!(
+                fixture
+                    .store
+                    .active_role_thread_capability_workspace_lease_id(&fixture.binding_key)
+                    .expect("read post-refusal capability"),
+                Some(lease_id),
+                "preflight refusal occurs before capability rotation"
+            );
             let _ = std::fs::remove_dir_all(fixture.data_dir);
         }
     }
