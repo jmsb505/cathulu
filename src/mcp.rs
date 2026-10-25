@@ -8,7 +8,7 @@ use crate::optimization::{
 };
 use crate::provider_adapters::{JevProvider, ScaleDownContextProvider};
 use crate::telemetry::CodexHookEvent;
-use crate::workflow::EventRecord;
+use crate::workflow::{EventRecord, TaskPlanInput};
 use crate::{default_data_dir, Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -90,6 +90,96 @@ struct CreateTaskArgs {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    parent_task_id: Option<i64>,
+    #[serde(default)]
+    priority: i64,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    effort_minutes: Option<i64>,
+    #[serde(default)]
+    next_action: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct UpdateProjectPlanningArgs {
+    project_id: i64,
+    expected_revision: i64,
+    status: String,
+    priority: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct UpdateTaskPlanArgs {
+    task_id: i64,
+    expected_revision: i64,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    parent_task_id: Option<i64>,
+    priority: i64,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    effort_minutes: Option<i64>,
+    #[serde(default)]
+    next_action: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskStatusRevisionArgs {
+    task_id: i64,
+    expected_revision: i64,
+    status: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskRevisionReasonArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskDependencyArgs {
+    task_id: i64,
+    prerequisite_task_id: i64,
+    expected_revision: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AddTaskBlockerArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason_code: String,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ResolveTaskBlockerArgs {
+    blocker_id: i64,
+    expected_task_revision: i64,
+    resolution: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CompleteTaskArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AcceptTaskRunArgs {
+    task_id: i64,
+    run_id: i64,
+    expected_revision: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskQueryArgs {
+    #[serde(default)]
+    project_id: Option<i64>,
+    #[serde(default)]
+    eligible_only: bool,
+    #[serde(default = "default_task_query_limit")]
+    limit: usize,
+}
+
+fn default_task_query_limit() -> usize {
+    100
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecordDecisionArgs {
@@ -548,7 +638,9 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
-    #[tool(description = "Change an objective status to active, blocked, completed, or cancelled.")]
+    #[tool(
+        description = "Change an objective status to active, blocked, completed, cancelled, or archived."
+    )]
     fn set_objective_status(&self, Parameters(a): Parameters<SetStatusArgs>) -> CallToolResult {
         self.store
             .set_objective_status(a.id, &a.status)
@@ -556,20 +648,159 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
+    #[tool(
+        description = "Set a project's planning status and priority using its expected revision."
+    )]
+    fn update_project_planning(
+        &self,
+        Parameters(a): Parameters<UpdateProjectPlanningArgs>,
+    ) -> CallToolResult {
+        self.store
+            .update_project_planning(a.project_id, a.expected_revision, &a.status, a.priority)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
     #[tool(description = "Create a task inside an objective.")]
     fn create_task(&self, Parameters(a): Parameters<CreateTaskArgs>) -> CallToolResult {
         self.store
-            .create_task(a.objective_id, &a.title, &a.description)
+            .create_task_with_plan(
+                a.objective_id,
+                &TaskPlanInput {
+                    title: a.title,
+                    description: a.description,
+                    parent_task_id: a.parent_task_id,
+                    priority: a.priority,
+                    due_date: a.due_date,
+                    effort_minutes: a.effort_minutes,
+                    next_action: a.next_action,
+                },
+            )
             .map(success)
             .unwrap_or_else(tool_error)
     }
 
     #[tool(
-        description = "Change a task status to pending, active, blocked, completed, or cancelled."
+        description = "Change a task to queued, active, or failed with an expected revision. Use cancel_task for a reasoned cancellation, structured blockers for blocked, and completion commands for completed."
     )]
-    fn set_task_status(&self, Parameters(a): Parameters<SetStatusArgs>) -> CallToolResult {
+    fn set_task_status(&self, Parameters(a): Parameters<TaskStatusRevisionArgs>) -> CallToolResult {
         self.store
-            .set_task_status(a.id, &a.status)
+            .transition_task_status(a.task_id, a.expected_revision, &a.status)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Cancel a task with an explicit reason and expected revision; parents require every child completed or explicitly waived."
+    )]
+    fn cancel_task(&self, Parameters(a): Parameters<TaskRevisionReasonArgs>) -> CallToolResult {
+        self.store
+            .cancel_task(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Reopen a failed or cancelled task with an audit reason and expected revision."
+    )]
+    fn reopen_task(&self, Parameters(a): Parameters<TaskRevisionReasonArgs>) -> CallToolResult {
+        self.store
+            .reopen_task(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Replace a task's planning fields with an optimistic revision check.")]
+    fn update_task_plan(&self, Parameters(a): Parameters<UpdateTaskPlanArgs>) -> CallToolResult {
+        self.store
+            .update_task_plan(
+                a.task_id,
+                a.expected_revision,
+                &TaskPlanInput {
+                    title: a.title,
+                    description: a.description,
+                    parent_task_id: a.parent_task_id,
+                    priority: a.priority,
+                    due_date: a.due_date,
+                    effort_minutes: a.effort_minutes,
+                    next_action: a.next_action,
+                },
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Add a same-project prerequisite edge. Cycles and stale task revisions are rejected."
+    )]
+    fn add_task_dependency(&self, Parameters(a): Parameters<TaskDependencyArgs>) -> CallToolResult {
+        self.store
+            .add_task_dependency(a.task_id, a.prerequisite_task_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Remove a same-project prerequisite edge with a task revision check.")]
+    fn remove_task_dependency(
+        &self,
+        Parameters(a): Parameters<TaskDependencyArgs>,
+    ) -> CallToolResult {
+        self.store
+            .remove_task_dependency(a.task_id, a.prerequisite_task_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Record a structured open blocker and move the task into blocked status.")]
+    fn add_task_blocker(&self, Parameters(a): Parameters<AddTaskBlockerArgs>) -> CallToolResult {
+        self.store
+            .add_task_blocker(a.task_id, a.expected_revision, &a.reason_code, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Resolve one blocker with an audit reason; the task returns to queued after its final manual blocker is resolved."
+    )]
+    fn resolve_task_blocker(
+        &self,
+        Parameters(a): Parameters<ResolveTaskBlockerArgs>,
+    ) -> CallToolResult {
+        self.store
+            .resolve_task_blocker(a.blocker_id, a.expected_task_revision, &a.resolution)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Complete an ordinary task administratively with a reason, only when dependency, blocker, run, and child constraints pass."
+    )]
+    fn complete_task_administratively(
+        &self,
+        Parameters(a): Parameters<CompleteTaskArgs>,
+    ) -> CallToolResult {
+        self.store
+            .complete_task_administratively(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Accept a linked run as task completion only after finish_run recorded verified_success and task constraints still pass."
+    )]
+    fn accept_task_run(&self, Parameters(a): Parameters<AcceptTaskRunArgs>) -> CallToolResult {
+        self.store
+            .accept_task_run(a.task_id, a.run_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "List bounded project tasks with deterministic eligibility reasons and stable priority/due-date ordering. Unknown effort and due dates remain null."
+    )]
+    fn list_tasks(&self, Parameters(a): Parameters<TaskQueryArgs>) -> CallToolResult {
+        self.store
+            .list_tasks(a.project_id, a.eligible_only, a.limit)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -1392,6 +1623,9 @@ impl ServerHandler for CathuluServer {
             Resource::new("cathulu://projects", "Cathulu projects")
                 .with_description("Registered repositories and their latest Git snapshots.")
                 .with_mime_type("application/json"),
+            Resource::new("cathulu://portfolio/tasks", "Cathulu task portfolio")
+                .with_description("The first 100 current tasks with deterministic eligibility and blocker reasons.")
+                .with_mime_type("application/json"),
             Resource::new("cathulu://roles", "Cathulu logical agent roles")
                 .with_description(
                     "Persistent Main Overseer and per-project Project Manager identities, memory scopes, and versioned tool profiles. Task assignments and Codex chats are separate.",
@@ -1407,9 +1641,14 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
         ];
         if self.role_capability.is_some() {
-            result
-                .resources
-                .retain(|resource| resource.uri == "cathulu://projects");
+            result.resources.retain(|resource| {
+                resource.uri == "cathulu://projects"
+                    || (self
+                        .role_capability
+                        .as_ref()
+                        .is_some_and(|capability| capability.role_kind == "main_overseer")
+                        && resource.uri == "cathulu://portfolio/tasks")
+            });
         }
         Ok(result)
     }
@@ -1426,6 +1665,15 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://projects/{id}", "Cathulu project")
                 .with_description("One registered repository and its latest Git snapshot.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/planning", "Cathulu project planning")
+                .with_description("One project's planning status, priority, and optimistic revision.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/tasks", "Cathulu project tasks")
+                .with_description("The first 100 tasks for one project with eligibility and blocker reasons.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://portfolio/tasks", "Cathulu task portfolio")
+                .with_description("The first 100 tasks across projects with eligibility and blocker reasons.")
                 .with_mime_type("application/json"),
             ResourceTemplate::new(
                 "cathulu://projects/{id}/graphify-snapshot",
@@ -1482,6 +1730,9 @@ impl ServerHandler for CathuluServer {
                     matches!(
                         template.uri_template.as_str(),
                         "cathulu://projects/{id}"
+                            | "cathulu://projects/{id}/planning"
+                            | "cathulu://projects/{id}/tasks"
+                            | "cathulu://portfolio/tasks"
                             | "cathulu://delegations/{id}"
                             | "cathulu://work-plans/{id}"
                             | "cathulu://owner-approvals/{id}"
@@ -1491,7 +1742,10 @@ impl ServerHandler for CathuluServer {
                 } else {
                     matches!(
                         template.uri_template.as_str(),
-                        "cathulu://projects/{id}" | "cathulu://delegations/{id}"
+                        "cathulu://projects/{id}"
+                            | "cathulu://projects/{id}/planning"
+                            | "cathulu://projects/{id}/tasks"
+                            | "cathulu://delegations/{id}"
                     )
                 }
             });
@@ -1512,13 +1766,20 @@ impl ServerHandler for CathuluServer {
                         | "cathulu://roles"
                         | "cathulu://dashboard"
                         | "cathulu://dispatches"
-                ) || request.uri.starts_with("cathulu://projects/")
+                ) || request.uri == "cathulu://portfolio/tasks"
+                    || request.uri.starts_with("cathulu://projects/")
                     || request.uri.starts_with("cathulu://delegations/")
                     || request.uri.starts_with("cathulu://work-plans/")
                     || request.uri.starts_with("cathulu://owner-approvals/")
                     || request.uri.starts_with("cathulu://runs/")
                     || request.uri.starts_with("cathulu://events/run/")
             } else if request.uri == "cathulu://projects" {
+                true
+            } else if role_can_read_task_resource(
+                &capability.role_kind,
+                capability.project_id,
+                &request.uri,
+            ) {
                 true
             } else if let Some(project_id) = request.uri.strip_prefix("cathulu://projects/") {
                 project_id.parse::<i64>().ok() == capability.project_id
@@ -1546,6 +1807,14 @@ impl ServerHandler for CathuluServer {
                 }
             }
             serde_json::to_string(&projects).map_err(internal_error)?
+        } else if request.uri == "cathulu://portfolio/tasks" {
+            serde_json::to_string(
+                &self
+                    .store
+                    .list_tasks(None, false, 100)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
         } else if request.uri == "cathulu://roles" {
             serde_json::to_string(&self.store.logical_agent_roles().map_err(internal_error)?)
                 .map_err(internal_error)?
@@ -1708,6 +1977,36 @@ impl ServerHandler for CathuluServer {
         } else if let Some(project_id) = request
             .uri
             .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/planning"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            let project = self
+                .store
+                .get_project_planning(project_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "project_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&project).map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/tasks"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .list_tasks(Some(project_id), false, 100)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
             .and_then(|path| path.strip_suffix("/graphify-snapshot"))
         {
             let project_id = parse_resource_id(project_id, &request.uri)?;
@@ -1792,6 +2091,18 @@ pub async fn run_stdio() -> Result<(), String> {
     Ok(())
 }
 
+fn role_can_read_task_resource(role_kind: &str, project_id: Option<i64>, uri: &str) -> bool {
+    if role_kind != "sub_overseer" {
+        return false;
+    }
+    uri.strip_prefix("cathulu://projects/")
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|(resource_project_id, resource)| {
+            resource_project_id.parse::<i64>().ok() == project_id
+                && matches!(resource, "planning" | "tasks")
+        })
+}
+
 fn parse_resource_id(id: &str, uri: &str) -> Result<i64, McpError> {
     id.parse::<i64>().map_err(|_| {
         McpError::resource_not_found(
@@ -1818,7 +2129,7 @@ fn internal_error(error: impl std::fmt::Display) -> McpError {
 
 #[cfg(test)]
 mod schema_tests {
-    use super::CathuluServer;
+    use super::{role_can_read_task_resource, CathuluServer};
 
     #[test]
     fn structured_json_tool_inputs_have_explicit_object_schemas() {
@@ -1843,5 +2154,34 @@ mod schema_tests {
                 .get("properties")
                 .is_some_and(serde_json::Value::is_object));
         }
+    }
+
+    #[test]
+    fn task_resources_are_visible_only_to_main_or_the_matching_project_manager() {
+        assert!(role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/tasks"
+        ));
+        assert!(role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/planning"
+        ));
+        assert!(!role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/8/tasks"
+        ));
+        assert!(!role_can_read_task_resource(
+            "worker",
+            Some(7),
+            "cathulu://projects/7/tasks"
+        ));
+        assert!(!role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/tasks/other"
+        ));
     }
 }

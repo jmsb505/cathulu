@@ -532,7 +532,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 18 {
+        if version > 19 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -691,6 +691,14 @@ impl Store {
         if version < 18 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_18) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 19 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_19) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }

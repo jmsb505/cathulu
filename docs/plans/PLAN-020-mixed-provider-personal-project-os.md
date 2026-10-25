@@ -1,6 +1,6 @@
 # PLAN-020 — Mixed-provider personal project OS
 
-Status: M47 assessment and documentation validated locally; Git delivery is tracked in the [2026-10-25 integration record](../readiness/repository-integration-2026-10-25.md). M48-M55 are planned, not implemented. The Owner authorized synchronization of pending repository pushes and merges on 2026-10-25.
+Status: M47 assessment and documentation are delivered. M48 is implemented and validated locally on PLAN-021's shared branch; stable Claude semantic re-review and branch integration remain pending. M49-M55 remain planned. The [M48 evidence record](../readiness/m48-task-portfolio-2026-10-25.md) distinguishes local test evidence from integration/runtime acceptance.
 Created: 2026-10-25
 Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)
@@ -14,7 +14,7 @@ Pivot the existing Cathulu authority into a useful local personal project manage
 
 ## Motivation, current and desired state
 
-The Owner requested the mixed-provider pivot using the supplied plan. The current working tree has a mature Rust/SQLite/MCP substrate, Codex app-server dispatch, structured plans/reports, source-backed memory and a paused desktop track. Tasks have only basic fields and objective ownership; project registration requires Git; provider sessions and dispatch are Codex-specific. The desired state and inspected files are in assessment sections 1-7. This is an incremental migration, with provider-free usefulness first.
+The Owner requested the mixed-provider pivot using the supplied plan. The M47 assessment began with a mature Rust/SQLite/MCP substrate, Codex app-server dispatch, structured plans/reports, source-backed memory and a paused desktop track. M48 now extends the existing task records for deterministic project planning while project registration and execution remain repository/Codex-bound. Provider-free usefulness remains the first migration step; M49-M55 are still future work.
 
 ## Scope and exclusions
 
@@ -78,12 +78,12 @@ Goal: list and manage actionable project work with no coding provider.
 
 Subtasks:
 
-- [ ] Recheck dirty diffs, schema number, existing task callers and capability filters; capture targeted baseline.
-- [ ] Add explicit project status/priority and task parent, priority, due date, effort, next action, completion/revision metadata; retain existing IDs/status strings/objective ownership.
-- [ ] Add validated prerequisite edges and structured blocker reason/resolution; reject cycles and cross-project links without declared scope.
-- [ ] Add bounded portfolio/task queries with deterministic eligibility, blocked reasons and stable sorting; distinguish unknown effort/due dates.
-- [ ] Expose semantic Store/MCP commands and resources with scoped authorization; no generic SQL/CRUD endpoint.
-- [ ] Guard administrative completion separately from execution-linked acceptance and parent/dependency constraints.
+- [x] Recheck dirty diffs, schema number, existing task callers and capability filters; capture targeted baseline.
+- [x] Add explicit project status/priority and task parent, priority, due date, effort, next action, completion/revision metadata; retain existing IDs/status strings/objective ownership.
+- [x] Add validated prerequisite edges and structured blocker reason/resolution; reject cycles and cross-project links without declared scope.
+- [x] Add bounded portfolio/task queries with deterministic eligibility, blocked reasons and stable sorting; distinguish unknown effort/due dates.
+- [x] Expose semantic Store/MCP commands and resources with scoped authorization; no generic SQL/CRUD endpoint.
+- [x] Guard administrative completion separately from execution-linked acceptance and parent/dependency constraints.
 
 Affected areas: `src/workflow.rs`, `src/migrations.rs`, `src/lib.rs`, `src/mcp.rs`, relevant dispatcher capability checks, existing Rust/MCP tests; optional focused new portfolio module if separation warrants it.
 
@@ -91,11 +91,11 @@ Dependencies: M47 scoped gate PASS; preservation/conflict review. No provider ac
 
 Acceptance: B blocked by A is excluded with a reason; explicit priority changes are audited; only completed prerequisites unblock by default; unauthorized cross-project edits/cycles/stale revisions are rejected atomically; existing run QA cannot be bypassed; providers absent or disabled do not alter query results or cause provider processes.
 
-Validation: populated v18 and earlier upgrade fixtures, restart persistence, deterministic-clock/order cases, dependency cycles, wrong-project IDs, concurrent/stale edits, administrative-vs-run completion and no-provider process/call assertions at the public MCP seam. Run Rust formatting, targeted tests and full `cargo test -p cathulu-core` after changes; baseline failures remain explicit.
+Validation: `cargo fmt --all -- --check`; targeted `tasks_m48` tests (6 passed); full `cargo test -p cathulu-core --locked --offline` (95 passed, 0 failed); populated v18 and v1 upgrade fixtures, restart persistence, deterministic ordering, dependency cycles, wrong-project IDs, stale revisions, administrative-vs-run completion, and a public MCP flow with dispatch disabled and provider credentials absent. Full evidence and limitations are in the [M48 evidence record](../readiness/m48-task-portfolio-2026-10-25.md).
 
 Documentation: update current model/command contracts, migration evidence, operating capability rules and this plan. Skills: milestone-delivery, ponytail-balanced; Context7 if dependency-specific APIs change; use existing integration test conventions.
 
-Expected Git checkpoint: `codex/pivot-m48-task-state` when Git actions are authorized; otherwise a validated local patch with integration pending. No blanket staging of the dirty worktree.
+Expected Git checkpoint: keep the Owner-selected shared branch `codex/manual-dual-m48`; commit only complete reviewed Codex paths and leave Claude's files untouched. Do not claim remote integration, release, reload, or live-store migration from the local checks.
 
 ### M49 — Immutable checkpoints and deterministic project resume
 

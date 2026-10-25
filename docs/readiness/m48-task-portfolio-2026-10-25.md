@@ -1,0 +1,67 @@
+# M48 task/portfolio implementation evidence
+
+Date: 2026-10-25
+Status: source and deterministic tests pass locally on `codex/manual-dual-m48`; stable Claude semantic re-review and branch integration remain pending.
+Plan: [PLAN-020 M48](../plans/PLAN-020-mixed-provider-personal-project-os.md), scheduled by [PLAN-021 CX-01](../plans/PLAN-021-manual-claude-codex-development.md).
+
+## Baseline and scope
+
+CX-00 recorded the committed launch baseline before implementation:
+
+- Branch: `codex/manual-dual-m48`
+- HEAD: `72815dc21e3a12bd55539b68191054e3ac0b48fa`
+- All required planning/evidence files tracked; Git status including untracked files was clean.
+- The historical `d2422fb` source inspection was not used as a reset or launch baseline.
+
+M48 extends the existing project and task entities. No M49-M55 implementation, frontend work, provider activation, live project assignment, credential change, process reload, or live-store migration was performed.
+
+## Implemented contract
+
+- Schema v19 adds project status/priority/revision and task parent, priority, calendar due date, effort, next action, revision, completion provenance and cancellation reason/time. Existing IDs, objective ownership and status strings remain.
+- Same-project prerequisite edges and parent links reject cross-project references and cycles. Manual blockers retain typed reasons and resolutions; dependency and project/objective blockers remain derived query reasons.
+- Eligibility requires a queued task, active project/objective, no open manual blocker, completed prerequisites, and no terminal parent. Failed/cancelled prerequisites remain blocked until an audited edge edit or reasoned reopen.
+- Ordering is project priority descending, task priority descending, known/earlier due date, downstream unblocking count descending, then task ID ascending. Priority defaults to neutral `0`; unknown due date/effort remain null. Dates are `YYYY-MM-DD` calendar days with no inferred timezone or overdue flag.
+- MCP exposes revisioned planning/status/edge/blocker operations, reasoned cancellation/reopen, separate administrative and verified-run completion, and bounded `list_tasks`. Results are capped at 100 with no cursor/total count in M48.
+- Main can read the global portfolio and project planning/tasks. A PM can read its project's planning/tasks; Workers receive no task planning resources. Task write tools are unavailable to all scoped Main/PM/Worker capabilities. The existing unscoped local MCP remains the implicit local Owner surface and does not authenticate an Owner or calling chat.
+- Administrative completion needs a reason and no active run/delegation/PM assignment, blocker, unfinished prerequisite or open child. A reasoned cancellation is explicit child-waiver evidence; migrated `legacy_unknown` cancellation is not. Verified-run completion requires `finish_run` to record `verified_success` and remains behind existing QA, memory-review and parent-review checks. A prior finalized `blocked` run no longer prevents a later verified run from completing the task.
+
+## Changed paths
+
+- `src/lib.rs`
+- `src/migrations.rs`
+- `src/workflow.rs`
+- `src/mcp.rs`
+- `tests/tasks_m48.rs`
+- `tests/delegation_lifecycle.rs` (legacy downgrade fixture now removes M19 additions before replaying older migrations)
+- `tests/mcp_vertical_slice.rs` (expects schema v19)
+- `docs/architecture.md`
+- `docs/agent-operating-contract.md`
+- `docs/pivot-migration.md`
+- `docs/README.md`
+- `docs/plans/PLAN-020-mixed-provider-personal-project-os.md`
+- `docs/plans/PLAN-021-manual-claude-codex-development.md`
+- `docs/readiness/m48-task-portfolio-2026-10-25.md`
+- `docs/parallel/codex/CX-00-preflight.md`
+- `docs/parallel/codex/CX-01-m48.md`
+
+Claude-owned files under `docs/parallel/claude/` were read for review context and preserved; none are part of the Codex change set.
+
+## Validation evidence
+
+Build output and test databases were kept under `target/manual-dev/codex/`.
+
+- `cargo fmt --all -- --check` — pass.
+- `cargo test -p cathulu-core --test tasks_m48 --locked --offline --quiet` — 6 passed, 0 failed.
+- `cargo test -p cathulu-core --locked --offline --quiet` — 95 passed, 0 failed.
+- Migration fixtures cover a populated v18 database and a v1 database upgraded through v19. Existing v5/v10/v11 downgrade fixtures were repaired to remove v19 additions before simulating older schemas; those migration tests pass.
+- The public MCP fixture creates tasks, adds a prerequisite, reads the eligible list and project resource, rejects a stale revision, and verifies restart persistence. Product dispatch is disabled; the configured provider env file is absent and both provider keys are removed.
+- No-provider assertions show deterministic M48 paths do not need to spawn provider processes or call provider APIs.
+- Full test suite includes the current role-capability tests; a focused MCP unit test checks matching-PM resource access and rejects Worker and cross-project PM access. Scoped Main resource access has not been separately exercised end to end.
+
+The first full-suite attempt found older migration tests leaving schema-v19 columns while deleting their migration markers. The test downgrade fixture was updated and both the migration-specific suite and full package suite were rerun successfully.
+
+## Remaining review and limits
+
+Claude's CC-01 provisional read caught the finalized-blocked-run completion issue and raised parent-waiver/reopen semantics. The blocked-run defect is fixed; parent cancellation now records an explicit reason; failed/cancelled tasks can be reopened with an audit reason. The migration sentinel `legacy_unknown` is rejected as a new cancellation reason. The stable post-fix diff still needs Claude's semantic re-review before M48 is called fully reviewed under PLAN-021. The Owner can relay this handoff manually; no cross-session message or freeze was sent.
+
+These results establish local source/test behavior only. They do not establish merge/push, release, an active MCP reload, live database migration, M42/M44 acceptance, live provider behavior, or measured benefit. The next packet is the stable CC-01 review of CX-01; CX-02/M49 follows after the Owner accepts the M48 checkpoint.

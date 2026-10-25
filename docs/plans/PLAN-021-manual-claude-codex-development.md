@@ -1,9 +1,9 @@
 # PLAN-021 — Manual Claude Code / Codex development in one directory
 
-Status: Revised manual execution schedule incorporating the Owner's six-point review. Launch requires the committed clean-checkpoint check below. No development agents started; no milestone implementation performed by this plan.
+Status: Active manual execution plan. CX-00 preflight passed on 2026-10-25 and CX-01/M48 implementation plus local validation is complete on the shared branch; Claude's stable semantic re-review is the next handoff. CX-02/M49 has not started.
 Created / updated: 2026-10-25
 Historical source inspection: `main` at `d2422fbd061aec9dadf876951d0f3e77bb4b6d47` after PR #33. Writing this plan then left canonical-document edits and new planning files uncommitted; that tree is not a launch baseline.
-Launch prerequisite: commit and integrate this revised plan, ADR-0023, both starter prompts and the affected canonical docs first. Both sessions record the same observed clean HEAD on the agreed branch; `git status --porcelain --untracked-files=all` must be empty before either starts writing. The resulting committed HEAD, rather than the historical hash above, is the launch baseline.
+Launch prerequisite: satisfied before CX-01 writes. CX-00 records branch `codex/manual-dual-m48`, committed HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`, tracked planning files, and an empty `git status --porcelain=v1 --untracked-files=all`. That committed HEAD, not the historical hash above, is the launch baseline. The Owner must establish a clean Git view before either session begins any later packet.
 Capability plan: [PLAN-020](PLAN-020-mixed-provider-personal-project-os.md)
 Workflow decision: [ADR-0023](../decisions/ADR-0023-manual-shared-directory-development.md)
 
@@ -125,7 +125,7 @@ These are readiness waves, not calendar promises. An agent finishes the current 
 
 | Wave | Claude Code lane | Codex lane | Checkpoint / overlap limit |
 | --- | --- | --- | --- |
-| 0 — committed launch and preflight | CC-01: M48/M49 acceptance/experience review | CX-00: confirm shared-workspace ownership and baseline; check existing M42/M44 evidence needs | Commit the pending planning docs first; verify clean status and record the same launch HEAD. No fabricated live task. |
+| 0 — committed launch and preflight | CC-01: M48/M49 acceptance/experience review | CX-00: confirm shared-workspace ownership and baseline; check existing M42/M44 evidence needs | Completed at `72815dc21e3a12bd55539b68191054e3ac0b48fa`; required planning files were tracked and status clean. No fabricated live task. |
 | 1 — useful tasks | CC-02: M50 domain/privacy contract | CX-01: implement M48 using the already defined PLAN-020 baseline | Claude's advisory improvements do not silently change in-flight acceptance. |
 | 2 — resume | CC-03: provider/artifact/session/security contract | CX-02: implement M49 | Implement, then review/validate M48 and M49 normally; no two-agent write freeze. Provider-free value does not wait for Claude installation. |
 | 3 — common seam | Finalize/review CC-03; prepare safe Claude fixtures and policy scenarios without runtime integration | CX-03: implement M51a, the minimal exported common contract and fixture seam | **F1:** review/commit the actual shared types, payload examples and supported operations before adapter code assumes them; this is an interface agreement, not a write-pause ceremony. |

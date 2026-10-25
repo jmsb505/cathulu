@@ -1280,3 +1280,169 @@ BEGIN SELECT RAISE(ABORT, 'Owner decision relays are retained for audit'); END;
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (18, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_19: &str = r#"
+ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
+  CHECK(status IN ('active', 'paused', 'completed', 'archived'));
+ALTER TABLE projects ADD COLUMN priority INTEGER NOT NULL DEFAULT 0
+  CHECK(priority BETWEEN -100 AND 100);
+ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 1
+  CHECK(revision > 0);
+
+ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER REFERENCES tasks(id) ON DELETE RESTRICT;
+ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0
+  CHECK(priority BETWEEN -100 AND 100);
+ALTER TABLE tasks ADD COLUMN due_date TEXT;
+ALTER TABLE tasks ADD COLUMN effort_minutes INTEGER CHECK(effort_minutes IS NULL OR effort_minutes >= 0);
+ALTER TABLE tasks ADD COLUMN next_action TEXT;
+ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1
+  CHECK(revision > 0);
+ALTER TABLE tasks ADD COLUMN completed_at INTEGER;
+ALTER TABLE tasks ADD COLUMN completion_kind TEXT
+  CHECK(completion_kind IS NULL OR completion_kind IN ('administrative', 'verified_run', 'legacy_unknown'));
+ALTER TABLE tasks ADD COLUMN completion_run_id INTEGER REFERENCES runs(id) ON DELETE RESTRICT;
+ALTER TABLE tasks ADD COLUMN cancelled_at INTEGER;
+ALTER TABLE tasks ADD COLUMN cancellation_reason TEXT
+  CHECK(cancellation_reason IS NULL OR length(trim(cancellation_reason)) BETWEEN 1 AND 1000);
+
+-- Old direct status writes did not preserve the source of completion/blocking.
+-- Carry that uncertainty forward explicitly instead of inventing provenance.
+UPDATE tasks
+SET completion_kind = 'legacy_unknown', completed_at = updated_at
+WHERE status = 'completed';
+UPDATE tasks
+SET cancellation_reason = 'legacy_unknown', cancelled_at = updated_at
+WHERE status = 'cancelled';
+
+CREATE TABLE task_dependencies (
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  prerequisite_task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(task_id, prerequisite_task_id),
+  CHECK(task_id <> prerequisite_task_id)
+);
+CREATE INDEX task_dependencies_prerequisite_idx
+  ON task_dependencies(prerequisite_task_id, task_id);
+
+CREATE TRIGGER task_dependency_scope_insert BEFORE INSERT ON task_dependencies
+WHEN NOT EXISTS (
+  SELECT 1 FROM tasks dependent
+  JOIN objectives dependent_objective ON dependent_objective.id = dependent.objective_id
+  JOIN tasks prerequisite ON prerequisite.id = NEW.prerequisite_task_id
+  JOIN objectives prerequisite_objective ON prerequisite_objective.id = prerequisite.objective_id
+  WHERE dependent.id = NEW.task_id
+    AND dependent_objective.project_id = prerequisite_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'task prerequisites must belong to the same project'); END;
+
+CREATE TRIGGER task_dependency_acyclic_insert BEFORE INSERT ON task_dependencies
+WHEN EXISTS (
+  WITH RECURSIVE prerequisites(task_id) AS (
+    SELECT NEW.prerequisite_task_id
+    UNION
+    SELECT dependency.prerequisite_task_id
+    FROM task_dependencies dependency
+    JOIN prerequisites chain ON dependency.task_id = chain.task_id
+  )
+  SELECT 1 FROM prerequisites WHERE task_id = NEW.task_id
+)
+BEGIN SELECT RAISE(ABORT, 'task prerequisite cycle is not allowed'); END;
+
+CREATE TRIGGER task_parent_scope_insert BEFORE INSERT ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM tasks parent
+  JOIN objectives parent_objective ON parent_objective.id = parent.objective_id
+  JOIN objectives child_objective ON child_objective.id = NEW.objective_id
+  WHERE parent.id = NEW.parent_task_id
+    AND parent_objective.project_id = child_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'parent task must belong to the same project'); END;
+
+CREATE TRIGGER task_parent_scope_update BEFORE UPDATE OF parent_task_id, objective_id ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM tasks parent
+  JOIN objectives parent_objective ON parent_objective.id = parent.objective_id
+  JOIN objectives child_objective ON child_objective.id = NEW.objective_id
+  WHERE parent.id = NEW.parent_task_id
+    AND parent_objective.project_id = child_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'parent task must belong to the same project'); END;
+
+CREATE TRIGGER task_parent_acyclic_insert BEFORE INSERT ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND EXISTS (
+  WITH RECURSIVE parents(task_id) AS (
+    SELECT NEW.parent_task_id
+    UNION
+    SELECT task.parent_task_id FROM tasks task
+    JOIN parents chain ON task.id = chain.task_id
+    WHERE task.parent_task_id IS NOT NULL
+  )
+  SELECT 1 FROM parents WHERE task_id = NEW.id
+)
+BEGIN SELECT RAISE(ABORT, 'task parent cycle is not allowed'); END;
+
+CREATE TRIGGER task_parent_acyclic_update BEFORE UPDATE OF parent_task_id ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND EXISTS (
+  WITH RECURSIVE parents(task_id) AS (
+    SELECT NEW.parent_task_id
+    UNION
+    SELECT task.parent_task_id FROM tasks task
+    JOIN parents chain ON task.id = chain.task_id
+    WHERE task.parent_task_id IS NOT NULL
+  )
+  SELECT 1 FROM parents WHERE task_id = NEW.id
+)
+BEGIN SELECT RAISE(ABORT, 'task parent cycle is not allowed'); END;
+
+CREATE TABLE task_blockers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+  reason_code TEXT NOT NULL CHECK(reason_code IN ('waiting', 'decision', 'external', 'resource', 'other', 'legacy_unknown')),
+  reason TEXT NOT NULL CHECK(length(trim(reason)) BETWEEN 1 AND 1000),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+  resolution TEXT,
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  CHECK((status = 'open' AND resolution IS NULL AND resolved_at IS NULL)
+     OR (status = 'resolved' AND resolution IS NOT NULL AND resolved_at IS NOT NULL))
+);
+CREATE INDEX task_blockers_open_idx ON task_blockers(task_id, created_at, id) WHERE status = 'open';
+CREATE TRIGGER task_blocker_no_delete BEFORE DELETE ON task_blockers
+BEGIN SELECT RAISE(ABORT, 'task blockers are retained for audit'); END;
+
+CREATE TRIGGER task_completion_metadata_insert BEFORE INSERT ON tasks
+WHEN NEW.status = 'completed' AND (
+  NEW.completion_kind IS NULL OR NEW.completed_at IS NULL
+  OR (NEW.completion_kind = 'verified_run' AND NEW.completion_run_id IS NULL)
+)
+BEGIN SELECT RAISE(ABORT, 'completed tasks require explicit completion provenance'); END;
+CREATE TRIGGER task_completion_metadata_update BEFORE UPDATE OF status, completion_kind, completed_at, completion_run_id ON tasks
+WHEN NEW.status = 'completed' AND (
+  NEW.completion_kind IS NULL OR NEW.completed_at IS NULL
+  OR (NEW.completion_kind = 'verified_run' AND NEW.completion_run_id IS NULL)
+)
+BEGIN SELECT RAISE(ABORT, 'completed tasks require explicit completion provenance'); END;
+CREATE TRIGGER task_completion_run_scope_update BEFORE UPDATE OF status, completion_kind, completion_run_id ON tasks
+WHEN NEW.status = 'completed' AND NEW.completion_kind = 'verified_run' AND NOT EXISTS (
+  SELECT 1 FROM runs run
+  JOIN objectives task_objective ON task_objective.id = (SELECT objective_id FROM tasks WHERE id = NEW.id)
+  WHERE run.id = NEW.completion_run_id AND run.task_id = NEW.id
+    AND run.project_id = task_objective.project_id AND run.status = 'verified_success'
+)
+BEGIN SELECT RAISE(ABORT, 'verified task completion must reference its successful linked run'); END;
+
+CREATE TRIGGER task_cancellation_metadata_insert BEFORE INSERT ON tasks
+WHEN NEW.status = 'cancelled' AND (NEW.cancellation_reason IS NULL OR NEW.cancelled_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'cancelled tasks require an explicit reason and timestamp'); END;
+CREATE TRIGGER task_cancellation_metadata_update BEFORE UPDATE OF status, cancellation_reason, cancelled_at ON tasks
+WHEN NEW.status = 'cancelled' AND (NEW.cancellation_reason IS NULL OR NEW.cancelled_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'cancelled tasks require an explicit reason and timestamp'); END;
+
+INSERT INTO task_blockers(task_id, reason_code, reason, status, created_at)
+SELECT id, 'legacy_unknown', 'Legacy task was marked blocked before structured blocker reasons were available.',
+       'open', updated_at
+FROM tasks WHERE status = 'blocked';
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (19, CAST(strftime('%s','now') AS INTEGER));
+"#;

@@ -19,6 +19,14 @@ Within the approved outcome, reuse accepted plans and continue through validatio
 
 Core scoped memory, relevant fresh Graphify retrieval, role reviews, QA, and memory closeout are exercised as applicable and their gaps recorded. Calibration, comparative benefit claims, autonomous promotion, optional-provider consent/active-treatment approval, and production/data/access actions retain their explicit gates. Desktop UI work remains on hold and MCP startup remains headless.
 
+### Deterministic task planning (M48)
+
+Schema v19 adds project status/priority/revision and task parent, priority, calendar due date, effort, next action, revision, completion provenance, and reasoned cancellation metadata to the existing entities. Unknown effort and due dates remain null; priority defaults to neutral `0`. Prerequisites and parent links must stay in the same registered project and acyclic. Only completed prerequisites unblock a task. Manual blockers are append-only structured records; dependency and project/objective blocking are derived query reasons.
+
+The unscoped local MCP exposes the Owner planning surface: `update_project_planning`, `create_task`, `update_task_plan`, `set_task_status`, `cancel_task`, `reopen_task`, `add_task_dependency`, `remove_task_dependency`, `add_task_blocker`, `resolve_task_blocker`, `complete_task_administratively`, `accept_task_run`, and `list_tasks`. `cathulu://portfolio/tasks`, `cathulu://projects/{id}/planning`, and `cathulu://projects/{id}/tasks` are read resources. Task status changes and graph edits use expected revisions. The older Rust Store call `set_task_status(id, status)` remains source-compatible without an expected revision; the public MCP setter requires one. Cancellation and reopen require a reason; a reasoned cancellation explicitly waives a child, while migrated `legacy_unknown` cancellation does not. `legacy_unknown` is reserved and cannot be used as a new cancellation reason. Completed tasks are immutable. Administrative completion requires a reason and open-work guards; execution completion requires a linked finished `verified_success` run, which retains the normal QA, memory-review, and parent-review gates from `finish_run`.
+
+These task write tools are excluded from all Main/PM/Worker role-capability allowlists and are denied by the role authorization boundary. Main can read the global portfolio and project task views; a Project Manager can read its assigned project's planning/task resources; Workers do not receive portfolio or task planning reads. This preserves the current role scope. The existing unscoped MCP trust boundary does not authenticate an Owner or identify the calling Codex chat, and M48 adds no new Owner credential or identity mechanism. No coding provider is needed for task planning, filtering, or status reads.
+
 ## Agent responsibilities
 
 ### Main Overseer — coordinator only

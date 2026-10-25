@@ -1,11 +1,11 @@
 # Cathulu mixed-provider personal project OS migration
 
-Status: WORKING migration design; product direction accepted through [ADR-0022](decisions/ADR-0022-mixed-provider-personal-project-os.md). Detailed contracts are proposals until their milestone validates them.
+Status: WORKING migration design; product direction accepted through [ADR-0022](decisions/ADR-0022-mixed-provider-personal-project-os.md). M48 task/portfolio code and deterministic acceptance are validated locally on the PLAN-021 shared branch; Claude review, commit/integration and live-runtime acceptance remain pending. Future milestone contracts are proposals until validated.
 Created / reviewed: 2026-10-25 (Europe/Rome)
 Delivery sequence: [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md)
 Definition readiness: [Definition gate](readiness/definition-gate.md)
 
-This assessment uses the actual working tree at HEAD `757fd3d5c0325095e40b07963602eb6feccd5624`, including existing uncommitted source and documentation. HEAD alone does not reproduce that source. Before editing, 118 tracked or nonignored untracked files were hashed for preservation review. Existing build, loaded process, account entitlement, live dispatch, and measured benefit were not revalidated here.
+The source inventory below is the historical M47 assessment snapshot at HEAD `757fd3d5c0325095e40b07963602eb6feccd5624`, including the uncommitted edits observed then. It is not the PLAN-021 launch baseline; CX-00 records the later committed launch HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`. The M47 file inventory remains useful design context, not a current source claim. Existing build, loaded process, account entitlement, live dispatch, and measured benefit were not revalidated by that assessment.
 
 The Owner requested using `C:\Users\sjuan\Downloads\Cathulu_Pivot_Mixed_Provider_Personal_Project_OS.md` to pivot Cathulu. The attachment supplies design requirements and a planning-first sequence; it is not independent permission to install software, change credentials, dispatch other projects, send data, publish, or alter Git history. Its provider-strength claims are routing priors, not measured findings.
 
@@ -17,14 +17,22 @@ KNOWN from source: SQLite and FTS5 already exist; logical identity already survi
 
 The pivot does not establish that Claude is better at design or that Codex is better at implementation. It establishes a configurable initial preference to test through accepted work. [ADR-0021](decisions/ADR-0021-continuous-supervised-development.md) continues to permit bounded supervised use before comparative benefit is proven.
 
+## Current implementation checkpoint — M48 (2026-10-25)
+
+Schema v19 implements M48 by extending `projects` and `tasks`; it does not introduce a competing todo table. Projects now carry `active | paused | completed | archived`, priority and revision. Tasks carry parent, priority, due date, effort minutes, next action, revision, completion provenance and cancellation reason/time. `task_dependencies` enforces same-project, acyclic prerequisite edges; `task_blockers` preserves structured manual reasons and resolutions. Existing project/task IDs and objective ownership remain intact. Legacy completed, cancelled and blocked states are explicitly marked unknown where the prior source did not record provenance.
+
+The Store/MCP contract exposes revisioned planning/status/edge/blocker commands, separate reasoned cancel/reopen commands, administrative and verified-run completion, a bounded `list_tasks` query, and portfolio/project planning/task resources. Eligibility requires a queued task, active project/objective, no open manual blocker, all prerequisites completed and no terminal parent. Results sort by project priority descending, task priority descending, known/earlier due date, downstream unblock count descending and stable task ID. Priority `0` is the neutral default; unknown due dates and effort stay null. Task dates are calendar days (`YYYY-MM-DD`), with no inferred timezone or overdue flag.
+
+Task writes are not available through scoped Main/PM/Worker capabilities. Main reads the global portfolio and project task resources; a PM reads its assigned project's planning/tasks; Workers receive no task portfolio reads. The existing unscoped local MCP remains a local trust surface and still does not authenticate the Owner or calling chat. Deterministic M48 behavior does not start a coding provider. See [PLAN-020 M48](plans/PLAN-020-mixed-provider-personal-project-os.md) and the [M48 evidence record](readiness/m48-task-portfolio-2026-10-25.md). These are local source/test results; they do not establish merge, release, MCP reload, live-store migration, or runtime acceptance.
+
 ## 2. Current-state architecture
 
 | Concern | Observed working-tree implementation | Migration implication |
 | --- | --- | --- |
-| Runtime | Rust library, headless RMCP stdio entry point, background dispatch service; separate terminal and Tauri processes. [Manifest](../Cargo.toml), [entry point](../src/bin/cathulu-mcp.rs), [MCP](../src/mcp.rs) | Keep one local authority; no new hosted control plane. |
-| Persistence | `Store::initialize` upgrades through schema 18; SQLite WAL, foreign keys, transactions, read-only observer connections. [Store](../src/lib.rs), [SQLite](../src/sqlite.rs), [migrations](../src/migrations.rs) | Extend versioned migrations; do not initialize a replacement database. |
+| Runtime | At M47 assessment: Rust library, headless RMCP stdio entry point, background dispatch service; separate terminal and Tauri processes. [Manifest](../Cargo.toml), [entry point](../src/bin/cathulu-mcp.rs), [MCP](../src/mcp.rs) | Keep one local authority; no new hosted control plane. |
+| Persistence | At M47 assessment: schema 18, SQLite WAL, foreign keys, transactions, read-only observer connections. The current local M48 branch adds schema 19. [Store](../src/lib.rs), [SQLite](../src/sqlite.rs), [migrations](../src/migrations.rs) | Extend versioned migrations; do not initialize a replacement database. |
 | Project model | `projects` requires a unique local Git path; registration reconciles branch, HEAD, dirty paths and creates a PM role. [Store](../src/lib.rs), schema v1/v12 in [migrations](../src/migrations.rs) | Personal/non-code projects need a deliberate path-independent identity extension. |
-| Tasks | `tasks` belongs to an objective, with title, description, status and timestamps. No dedicated priority, due date, effort, parent or dependency columns. [Task and methods](../src/workflow.rs), schema v2 in [migrations](../src/migrations.rs) | Extend the existing task entity; do not add a competing todos table. |
+| Tasks | At M47 assessment: `tasks` belonged to an objective with title, description, status and timestamps, without dedicated priority/date/effort/parent/dependency columns. M48 now extends the same entity. [Task and methods](../src/workflow.rs), [migrations](../src/migrations.rs) | Extend the existing task entity; do not add a competing todos table. |
 | Agents | Durable Main and per-project PM rows; PM assignment ownership; two Workers total per assignment; accepted plans and reviewed reports. [Roles](../src/roles.rs), [delegation](../src/delegation.rs), [contract](agent-operating-contract.md) | Keep identities, caps, parent reviews and role scopes while replacing transport. |
 | Execution | `AppServerProcess` speaks Codex RPC; dispatcher starts/resumes threads and submits turns. Current `dispatch_one` starts PM and Worker threads at the registered project path with `workspace-write`. [Client](../src/app_server.rs), [dispatcher](../src/dispatcher.rs) | Provider abstraction and writable workspace allocation are required before safe mixed-provider concurrency. |
 | Memory | Five classes independent of HOT/WARM/COLD; accepted/candidate state, provenance, freshness, supersession, budgets, FTS5, transfer/known-by ledgers and closeout receipts. [Memory](../src/memory.rs), [gardener](../src/gardener.rs), schema v2/v4 in [migrations](../src/migrations.rs) | Reuse lifecycle. Add disclosure and delivery semantics rather than another memory store. |
@@ -299,7 +307,7 @@ For Rust implementation run `cargo fmt --all -- --check` and `cargo test -p cath
 
 ## 28. First vertical slice
 
-M48-M49 should let the Owner register/select an existing project, create an objective and a few tasks with explicit priority/dependency/blocker state, save a compact checkpoint, restart, list eligible work and ask the domain service to resume the project. Return purpose, current objective, completed/recent work, remaining tasks, blockers, QA freshness and next action, with IDs and evidence. No coding provider or UI redesign is required. Reuse [workflow](../src/workflow.rs), [Store](../src/lib.rs), [MCP](../src/mcp.rs) and [events](../src/events.rs).
+M48 now lets the Owner manage registered-project tasks with explicit priority/dependency/blocker state and query eligibility without a coding provider. M49 remains responsible for immutable checkpoints and restart/resume packets containing purpose, current objective, completed/recent work, remaining tasks, blockers, QA freshness and next action, with IDs and evidence. No UI redesign is required. Reuse [workflow](../src/workflow.rs), [Store](../src/lib.rs), [MCP](../src/mcp.rs) and [events](../src/events.rs).
 
 Acceptance example: task B depends on unfinished task A; B is excluded from the unblocked list with a reason. Completing A through the appropriate administrative or verified-execution path exposes B. After restart the resume packet agrees with current tasks and distinguishes an older checkpoint from new changes. Removing provider executables must not affect this flow. Later non-code projects and natural-language interpretation are independent additions.
 
@@ -307,13 +315,13 @@ Acceptance example: task B depends on unfinished task A; B is excluded from the 
 
 | Risk / current evidence | Mitigation and gate |
 | --- | --- |
-| Extensive dirty worktree, including schema/dispatcher/UI changes | Hash and inspect before writing; preserve edits; integrate capabilities in reviewed milestone patches. HEAD alone is not the baseline. |
+| Shared directory and uncommitted changes from either manual session | Inspect `git status --short --untracked-files=all` and `git diff HEAD`; preserve owned files and integrate reviewed patches on the PLAN-021 branch. HEAD alone is not the baseline. |
 | Root workspace used by PM and Worker dispatch | Add exclusive writer leases and read-only coordinators before enabling mixed-provider work. [Dispatcher](../src/dispatcher.rs). |
 | Stable logical known-by suppresses context in a new provider session | Session-specific delivery receipts and rehydration tests. [Memory](../src/memory.rs). |
 | Codex-specific IDs, hooks, selector config and error shapes leak into policy | Adapter boundary, namespaced IDs and compatibility readers. [App-server](../src/app_server.rs), [telemetry](../src/telemetry.rs). |
 | Claude absent on PATH; subscription-safe ambient-config isolation unresolved | Preflight/feasibility gate before execution; no automatic install, API dependency or permission bypass. See section 8. |
 | Existing schema CHECKs restrict projects/roles/scopes | Add only necessary schema changes; exercise trigger/FK rebuild and rollback on copies. [Migrations](../src/migrations.rs). |
-| Task setter currently allows any supported status string without a transition matrix | Introduce command/revision/acceptance guards and audit old administrative semantics explicitly. [set_task_status](../src/workflow.rs). |
+| M47 task setter allowed direct status changes without revision or completion provenance | M48 adds revisioned MCP transitions, reasoned cancel/reopen, structured blocker handling and guarded administrative/verified-run completion. This is locally tested; current runtime integration remains separate. [set_task_status](../src/workflow.rs). |
 | Model-authored priority/decision or reported QA treated as truth | Owner commands and reviewed proposals use separate capability paths; execution acceptance requires evidence. [Workflow](../src/workflow.rs), [capabilities](../src/dispatcher.rs). |
 | Personal data leaks through global context or provider defaults | Dedicated personal disclosure rules, minimal context and explicit provider policy. [Memory](../src/memory.rs), [operating contract](agent-operating-contract.md). |
 | A test/build is mistaken for current runtime success or provider advantage | Separate source/build/loaded/live/benefit records; reuse open M42/M44 evidence gates. |
@@ -334,7 +342,7 @@ No Owner question blocks the planning assessment or the existing-project provide
 
 ## 31. Recommended immediate next coding task
 
-Implement **PLAN-020 M48: deterministic task and portfolio state** through existing Rust Store/MCP seams. Extend tasks with explicit planning metadata and validated prerequisite edges; return eligible tasks with blocking reasons and stable sorting. Use populated schema-upgrade fixtures, boundary tests, no-provider assertions and current capability checks. Preserve objective ownership, run/QA gates and existing events. Follow with M49's checkpoint/resume proof before generalizing providers. [Workflow](../src/workflow.rs), [migrations](../src/migrations.rs), [MCP](../src/mcp.rs), [tests](../tests/mcp_vertical_slice.rs).
+M48 implementation is complete on the local shared branch and its deterministic acceptance suite passes; stable Claude semantic re-review and Git integration are the remaining CX-01 handoff. Follow with M49's checkpoint/resume proof before generalizing providers. See [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md), [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), and the [M48 evidence record](readiness/m48-task-portfolio-2026-10-25.md).
 
 ### Development Skills & Tooling Profile
 
