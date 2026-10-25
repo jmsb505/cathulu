@@ -3,7 +3,7 @@
 Date: 2026-10-25
 Branch: `codex/manual-dual-m48`
 Baseline: CX-01 `5fc5459`, with the separately validated completion repair `d7dff34`.
-Status: committed at `0e6718a`; Claude independently accepted the stable commit and reran all 107 core tests. Remote/runtime integration remains separate. Review: [CC-01 M49](../parallel/claude/CC-01-review-CX-02-m49.md).
+Status: the Owner accepted checkpoint/resume at `0e6718a`; Claude independently accepted the stable commit and reran all 107 core tests. Remote/runtime integration remains separate. Review: [CC-01 M49](../parallel/claude/CC-01-review-CX-02-m49.md).
 
 ## Implemented contract
 

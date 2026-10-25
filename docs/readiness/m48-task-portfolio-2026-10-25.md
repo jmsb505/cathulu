@@ -1,7 +1,7 @@
 # M48 task/portfolio implementation evidence
 
 Date: 2026-10-25
-Status: CX-01 is committed at `5fc5459`. Claude's final review identified a completion-provenance bypass; repair `d7dff34` passes 104 core tests and Claude independently re-reviewed it with an accept verdict. Remote/runtime integration remains separate.
+Status: The Owner accepted the M48 task and portfolio checkpoint at `5fc5459` and repair `d7dff34`. Claude's final review identified a completion-provenance bypass; repair `d7dff34` passes 104 core tests and Claude independently re-reviewed it with an accept verdict. Remote/runtime integration remains separate.
 Plan: [PLAN-020 M48](../plans/PLAN-020-mixed-provider-personal-project-os.md), scheduled by [PLAN-021 CX-01](../plans/PLAN-021-manual-claude-codex-development.md).
 
 ## Baseline and scope
@@ -20,9 +20,9 @@ M48 extends the existing project and task entities. No M49-M55 implementation, f
 - Schema v19 adds project status/priority/revision and task parent, priority, calendar due date, effort, next action, revision, completion provenance and cancellation reason/time. Existing IDs, objective ownership and status strings remain.
 - Same-project prerequisite edges and parent links reject cross-project references and cycles. Manual blockers retain typed reasons and resolutions; dependency and project/objective blockers remain derived query reasons.
 - Eligibility requires a queued task, active project/objective, no open manual blocker, completed prerequisites, and no terminal parent. Failed or cancelled prerequisites keep dependent tasks blocked. Reopening a prerequisite returns it to queued; dependents stay blocked until it completes.
-- Ordering is project priority descending, task priority descending, known/earlier due date, downstream unblocking count descending, then task ID ascending. Priority defaults to neutral `0`; unknown due date/effort remain null. Dates are `YYYY-MM-DD` calendar days with no inferred timezone or overdue flag.
+- Ordering is project priority descending, task priority descending, known/earlier due date, downstream unblocking count descending, then task ID ascending. The Owner confirmed on 2026-10-25 that project priority outranks task priority across projects. Priority defaults to neutral `0`; unknown due date/effort remain null. Dates are `YYYY-MM-DD` calendar days with no inferred timezone or overdue flag.
 - MCP exposes revisioned planning/status/edge/blocker operations, reasoned cancellation/reopen, separate administrative and verified-run completion, and bounded `list_tasks`. Results are capped at 100 with no cursor/total count in M48.
-- Main can read the global portfolio and project planning/tasks. A PM can read its project's planning/tasks; Workers receive no task planning resources. Task write tools are unavailable to all scoped Main/PM/Worker capabilities. The existing unscoped local MCP remains the implicit local Owner surface and does not authenticate an Owner or calling chat.
+- Main can read the global portfolio and project planning/tasks. A PM can read its project's planning/tasks; Workers receive no task planning resources. Task write tools are unavailable to all scoped Main/PM/Worker capabilities. The existing unscoped local MCP remains the implicit local Owner surface and does not authenticate an Owner or calling chat. The Owner accepts this limitation for local-only use; revisit before any remote exposure.
 - Administrative completion needs a reason and no active run/delegation/PM assignment, blocker, unfinished prerequisite or open child. It is also refused while any linked run is blocked, failed, inconclusive or cancelled, or while a verified run is linked. Use `accept_task_run` for a verified run, or start a new run that reaches `verified_success`. A reasoned cancellation is explicit child-waiver evidence; migrated `legacy_unknown` cancellation is not. Verified-run completion retains existing QA, memory-review and parent-review checks and can accept a later verified run after an earlier non-verified run.
 
 ## Changed paths
