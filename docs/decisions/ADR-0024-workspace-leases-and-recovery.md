@@ -1,6 +1,6 @@
 # ADR-0024 — Product workspace leases and uncertain execution recovery
 
-- Status: Accepted M52 safety baseline; dispatcher admission implementation is pending independent review, and product dispatch remains held off by the Owner.
+- Status: Accepted M52 safety baseline; dispatcher admission is committed at `d85103592a2dd19fbda395d04706511bdf397e52` and pending independent review. Product dispatch remains held off by the Owner.
 - Scope: Durable workspace assignment, role/session/attempt binding, credential-source eligibility and recovery for Cathulu-managed product execution.
 - Depends on: [PLAN-020](../plans/PLAN-020-mixed-provider-personal-project-os.md) M52 and [PLAN-021](../plans/PLAN-021-manual-claude-codex-development.md) CX-05.
 
