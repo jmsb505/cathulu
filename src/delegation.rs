@@ -3240,7 +3240,7 @@ fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<Stri
     Ok((!head.is_empty()).then(|| head.to_string()))
 }
 
-fn normalize_and_validate_packet(
+pub(crate) fn normalize_and_validate_packet(
     packet: &DelegationTaskPacket,
 ) -> Result<DelegationTaskPacket, String> {
     let mut packet = packet.clone();
@@ -3303,7 +3303,7 @@ fn normalize_and_validate_packet(
     Ok(packet)
 }
 
-fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String> {
+pub(crate) fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String> {
     let mut report = report.clone();
     report.summary = report.summary.trim().to_string();
     report.outcome = report.outcome.trim().to_string();
@@ -3395,7 +3395,7 @@ fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String
     Ok(report)
 }
 
-fn validate_report_scope(
+pub(crate) fn validate_report_scope(
     report: &WorkerReport,
     packet: &DelegationTaskPacket,
 ) -> Result<(), String> {

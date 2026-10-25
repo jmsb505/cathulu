@@ -1,6 +1,6 @@
 # PLAN-021 — Manual Claude Code / Codex development in one directory
 
-Status: Active manual execution plan. CX-00 preflight passed on 2026-10-25. CX-01/M48 is committed at `5fc5459`, with repair `d7dff34` independently accepted by Claude. CX-02/M49 is locally validated with 107 passing core tests; its stable semantic review is next. CX-03/M51a is the next implementation packet.
+Status: Active manual execution plan. CX-01/M48 and repair `d7dff34`, and CX-02/M49 `0e6718a`, have Claude accept reviews and passing independent core suites. CX-03/M51a exports the actual common contract and deterministic fixtures; its [F1 candidate](../parallel/codex/CX-03-F1-contract.md) is being validated for stable interface review. M51b/runtime parity and M50/M52-M55 remain open.
 Created / updated: 2026-10-25
 Historical source inspection: `main` at `d2422fbd061aec9dadf876951d0f3e77bb4b6d47` after PR #33. Writing this plan then left canonical-document edits and new planning files uncommitted; that tree is not a launch baseline.
 Launch prerequisite: satisfied before CX-01 writes. CX-00 records branch `codex/manual-dual-m48`, committed HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`, tracked planning files, and an empty `git status --porcelain=v1 --untracked-files=all`. That committed HEAD, not the historical hash above, is the launch baseline. Later packets inspect status/diff and preserve disjoint work; waves 0-3 do not repeat a clean-tree launch gate before independent implementation or read-only review.

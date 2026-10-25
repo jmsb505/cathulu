@@ -1,6 +1,6 @@
 # PLAN-020 — Mixed-provider personal project OS
 
-Status: M47 is delivered. M48 is committed at `5fc5459`, with its completion-gate repair at `d7dff34` (104 core tests and Claude accept re-review). M49 is implemented and locally validated (107 core tests); stable Claude review remains pending. See [M49 evidence](../readiness/m49-checkpoint-resume-2026-10-25.md). M50-M55 remain planned. Local source/test evidence does not establish runtime or remote integration.
+Status: M47 is delivered. M48 and its repair `d7dff34` have Claude accept review and 104 core tests. M49 `0e6718a` has Claude accept review and 107 core tests. M51a's [actual common-contract candidate](../parallel/codex/CX-03-F1-contract.md) is locally implemented; M51b parity and M50/M52-M55 remain open. Local source/test evidence does not establish runtime or remote integration.
 Created: 2026-10-25
 Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)
@@ -139,6 +139,8 @@ Documentation: data/retention/disclosure contract, ADR for repository identity c
 ### M51 — Typed artifacts and Codex adapter parity
 
 Goal: place existing execution behind a provider-neutral boundary without losing current protections.
+
+M51a checkpoint: the [F1 candidate](../parallel/codex/CX-03-F1-contract.md) exports real provider/artifact/session/routing-input types and a deterministic standalone-consumable double. This does not check off M51's runtime/persistence/parity criteria below; those require M51b and its original acceptance.
 
 Subtasks:
 
