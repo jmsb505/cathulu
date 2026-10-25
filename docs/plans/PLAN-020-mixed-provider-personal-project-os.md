@@ -262,7 +262,7 @@ Lease expiry or release with an unresolved attempt quarantines the workspace, ma
 
 This is not M52 completion: the existing dispatcher does not acquire or enforce the new leases before process startup, semantic overlap is not evaluated at task admission, and M42/M44 live evidence was not inspected or changed by this packet. See [ADR-0024](../decisions/ADR-0024-workspace-leases-and-recovery.md) and the CX-05 handoff for exact implementation and test evidence.
 
-Claude's review of `a83ccf9` conditionally accepted the non-activating foundation and required an explicit distinct-session Claude-to-Codex replacement test. The CX-05 follow-up now verifies that an unresolved attempt blocks replacement, reconciliation permits it, the prior Claude session becomes inactive, and its completed attempt remains attached to that session. The focused workspace suite and full offline suite both pass (5 and 132 tests). Claude's audit of the lease APIs/recovery paths and M52 dispatcher admission remain open.
+Claude's review of `a83ccf9` conditionally accepted the non-activating foundation and required an explicit distinct-session Claude-to-Codex replacement test. Follow-up commit `ac3a3b2` verifies that an unresolved attempt blocks replacement, reconciliation permits it, the prior Claude session becomes inactive, and its completed attempt remains attached to that session. The focused workspace suite and full offline suite both pass (5 and 132 tests). Claude's audit of the lease APIs/recovery paths and M52 dispatcher admission remain open.
 
 ## Completion evidence
 
