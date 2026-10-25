@@ -193,34 +193,40 @@ fn r5_review_of_codex_work_goes_to_claude_and_never_to_the_author() {
 }
 
 #[test]
-fn r6_review_blocks_when_the_only_reviewer_is_down_and_is_never_waived() {
-    // D-4: a transport failure blocks and is reported upward rather than queueing. The author stays
-    // excluded, so the review is never routed back to Codex.
-    let review = request(TaskShape::Review {
-        author_provider: Some(ProviderId::codex()),
-    });
-    let decision = decide(
-        &review,
-        &[
-            codex(available(), true, true),
-            claude(unavailable(UnavailableReason::Transport, None), true),
-        ],
-        &policy(),
-    )
-    .unwrap();
-    assert_eq!(
-        decision.outcome,
-        RoutingOutcome::Block {
-            reason: RoutingReason::NoEligibleProvider {}
-        }
-    );
-    assert_eq!(
-        decision.rationale,
-        vec![
-            RoutingReason::RequiredReviewPending {},
-            RoutingReason::NoEligibleProvider {}
-        ]
-    );
+fn r6_review_blocks_when_the_only_reviewer_is_unavailable_and_is_never_waived() {
+    // D-4: transport, installation, and authentication failures block and are reported upward
+    // rather than queueing. The author stays excluded, so review is never routed back to Codex.
+    for reason in [
+        UnavailableReason::Transport,
+        UnavailableReason::NotInstalled,
+        UnavailableReason::NotAuthenticated,
+    ] {
+        let review = request(TaskShape::Review {
+            author_provider: Some(ProviderId::codex()),
+        });
+        let decision = decide(
+            &review,
+            &[
+                codex(available(), true, true),
+                claude(unavailable(reason, None), true),
+            ],
+            &policy(),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.outcome,
+            RoutingOutcome::Block {
+                reason: RoutingReason::NoEligibleProvider {}
+            }
+        );
+        assert_eq!(
+            decision.rationale,
+            vec![
+                RoutingReason::RequiredReviewPending {},
+                RoutingReason::NoEligibleProvider {}
+            ]
+        );
+    }
 }
 
 #[test]
@@ -297,6 +303,13 @@ fn r12_unknown_availability_is_routed_only_with_a_preflight() {
             preflight_required: true,
         }
     );
+    assert_eq!(
+        decision.rationale,
+        vec![
+            RoutingReason::PriorBounded {},
+            RoutingReason::PreflightRequired {},
+        ]
+    );
 }
 
 #[test]
@@ -345,24 +358,37 @@ fn r13_account_restriction_is_never_queued_and_reroutes_when_possible() {
 }
 
 #[test]
-fn r14_transport_failure_everywhere_blocks_with_a_reason_rather_than_queueing() {
+fn r14_transport_install_and_auth_failures_everywhere_block_instead_of_queueing() {
     // Owner decision D-4 (board, 2026-10-25): transport, install and authentication failures
     // block and escalate. They are not queued (CC-05 §2 and R14).
-    let decision = decide(
-        &request(TaskShape::Bounded {}),
-        &[
-            codex(unavailable(UnavailableReason::Transport, None), true, true),
-            claude(unavailable(UnavailableReason::Transport, None), true),
-        ],
-        &policy(),
-    )
-    .unwrap();
-    assert_eq!(
-        decision.outcome,
-        RoutingOutcome::Block {
-            reason: RoutingReason::NoEligibleProvider {}
+    let failure_reasons = [
+        UnavailableReason::Transport,
+        UnavailableReason::NotInstalled,
+        UnavailableReason::NotAuthenticated,
+    ];
+    for codex_reason in &failure_reasons {
+        for claude_reason in &failure_reasons {
+            let decision = decide(
+                &request(TaskShape::Bounded {}),
+                &[
+                    codex(unavailable(codex_reason.clone(), None), true, true),
+                    claude(unavailable(claude_reason.clone(), None), true),
+                ],
+                &policy(),
+            )
+            .unwrap();
+            assert_eq!(
+                decision.outcome,
+                RoutingOutcome::Block {
+                    reason: RoutingReason::NoEligibleProvider {}
+                }
+            );
+            assert_eq!(
+                decision.rationale,
+                vec![RoutingReason::NoEligibleProvider {}]
+            );
         }
-    );
+    }
 }
 
 #[test]
@@ -745,31 +771,40 @@ fn required_review_with_no_eligible_provider_waits_for_capacity_with_the_review_
 }
 
 #[test]
-fn required_review_with_no_eligible_provider_blocks_on_transport_with_the_review_reason() {
+fn required_review_with_no_eligible_provider_blocks_for_transport_install_and_auth_failure() {
     let mut required = request(TaskShape::Bounded {});
     required.required_review = true;
-    let decision = decide(
-        &required,
-        &[
-            codex(unavailable(UnavailableReason::Transport, None), true, true),
-            claude(unavailable(UnavailableReason::Transport, None), true),
-        ],
-        &policy(),
-    )
-    .unwrap();
-    assert_eq!(
-        decision.outcome,
-        RoutingOutcome::Block {
-            reason: RoutingReason::NoEligibleProvider {}
+    let failure_reasons = [
+        UnavailableReason::Transport,
+        UnavailableReason::NotInstalled,
+        UnavailableReason::NotAuthenticated,
+    ];
+    for codex_reason in &failure_reasons {
+        for claude_reason in &failure_reasons {
+            let decision = decide(
+                &required,
+                &[
+                    codex(unavailable(codex_reason.clone(), None), true, true),
+                    claude(unavailable(claude_reason.clone(), None), true),
+                ],
+                &policy(),
+            )
+            .unwrap();
+            assert_eq!(
+                decision.outcome,
+                RoutingOutcome::Block {
+                    reason: RoutingReason::NoEligibleProvider {}
+                }
+            );
+            assert_eq!(
+                decision.rationale,
+                vec![
+                    RoutingReason::RequiredReviewPending {},
+                    RoutingReason::NoEligibleProvider {}
+                ]
+            );
         }
-    );
-    assert_eq!(
-        decision.rationale,
-        vec![
-            RoutingReason::RequiredReviewPending {},
-            RoutingReason::NoEligibleProvider {}
-        ]
-    );
+    }
 
     // Without the flag the block carries no review reason.
     let plain = decide(

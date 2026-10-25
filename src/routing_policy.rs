@@ -123,6 +123,10 @@ pub fn decide(
                 }
             }
         }
+        // An unknown-availability route must record that a preflight is still required.
+        if winner.decision.preflight_required {
+            rationale.push(RoutingReason::PreflightRequired {});
+        }
         return Ok(RoutingDecision {
             outcome: RoutingOutcome::Route {
                 provider_id: winner.id.clone(),

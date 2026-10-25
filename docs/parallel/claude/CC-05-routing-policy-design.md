@@ -56,7 +56,7 @@ Unknown codes are a policy-version error, not a silent default.
 | R9 | Ambiguous task; Owner pin Codex; both Available | `Route(codex)`, `owner_pin` (overrides the prior) | M54 explicit Owner priority |
 | R10 | Bounded task; Owner exclude Codex | `Route(claude)` only if write-eligible; otherwise `Block{no_eligible_provider}` | M54 |
 | R11 | Administrative task (list, priority, resume) | `NoLlm`, `administrative_no_llm`; no provider appears in considered list | M54 "zero providers" |
-| R12 | Bounded task; Codex `Unknown` | `Route(codex)` with `preflight_required = true` | Unknown is not Available |
+| R12 | Bounded task; Codex `Unknown` | `Route(codex)` with `preflight_required = true`; rationale `prior:bounded_prefers_codex` and `preflight_required` | Unknown is not Available |
 | R13 | Bounded task; Codex `AccountRestricted` | not routed, not queued for time; `Route(claude)` only if write-eligible, otherwise `Block{account_restricted}` | CC-03 §3 amendment |
 | R14 | Any task; both `Unavailable`, transport, install or authentication causes | `Block{no_eligible_provider}`, reported upward; not queued (Owner D-4). Capacity causes queue with the earliest `retry_after`. | CC-03 §9.4, D-4 |
 | R15 | High-risk ambiguous task; Claude isolation `Unverified` | `Route(codex)` or `Queue`; never Claude for write or high-risk | CC-04 §3 |
@@ -96,9 +96,9 @@ These are not answerable from the repository. Each default above is what the pol
 
 ## 8. Implementation status (2026-10-25): pure policy, fixture-tested, registered (non-activating)
 
-Source: `src/routing_policy.rs` (Claude-owned; registered in `src/lib.rs` as a pure, non-activating module in Codex's uncommitted candidate, with its tests in `tests/routing_policy.rs`; Codex owns the CX-08 wiring). Entry point: `decide(request, candidates, policy) -> Result<RoutingDecision, String>`, using the accepted F1 types from `cathulu_core::provider_routing` (`09f192b`).
+Source: `src/routing_policy.rs` (Claude-owned; registered in `src/lib.rs` as a pure, non-activating module at `4d671b1`, with core tests in `tests/routing_policy.rs`; Codex owns the CX-08 wiring). Entry point: `decide(request, candidates, policy) -> Result<RoutingDecision, String>`, using the accepted F1 types from `cathulu_core::provider_routing` (`09f192b`).
 
-Decision order as implemented: administrative shape returns `NoLlm` first. Candidates are validated, sorted by provider ID, and checked for duplicates. An Owner pin must name a candidate. Each candidate is then evaluated for Owner exclusion and pin, author-as-reviewer, disclosure, isolation for write or high-risk work, and availability. Unknown availability is eligible only with `preflight_required`. Known zero quota and capacity exhaustion count as capacity, not unknown. Owner preferences rank first, then the task-shape prior, then the rest by ID. The first eligible candidate is routed, with a `Reroute` reason when the top-ranked provider is down for an availability reason. Known zero quota counts as a capacity cause, so it also records `Reroute{capacity}`.
+Decision order as implemented: administrative shape returns `NoLlm` first. Candidates are validated, sorted by provider ID, and checked for duplicates. An Owner pin must name a candidate. Each candidate is then evaluated for Owner exclusion and pin, author-as-reviewer, disclosure, isolation for write or high-risk work, and availability. Unknown availability is eligible only with `preflight_required`, and a route on that basis records the `PreflightRequired` reason in its rationale (R12). Known zero quota and capacity exhaustion count as capacity, not unknown. Owner preferences rank first, then the task-shape prior, then the rest by ID. The first eligible candidate is routed, with a `Reroute` reason when the top-ranked provider is down for an availability reason. Known zero quota counts as a capacity cause, so it also records `Reroute{capacity}`.
 
 Candidates that cannot be selected for this request (Owner-excluded or pinned away, disclosure-denied, the review author, or unverified isolation for write work) never contribute a capacity wait or a reroute reason.
 

@@ -635,6 +635,12 @@ fn map_notification(
                 return Ok(None);
             };
             let session = external_session(thread_id.to_string())?;
+            if active_turns
+                .get(&session)
+                .is_some_and(|active| active.turn_id.as_str() != turn_id)
+            {
+                return Ok(None);
+            }
             let turn = external_turn(&session, turn_id)?;
             ProviderEventKind::TurnStarted { turn }.with_event_id(stable_event_id(
                 "turn_started",
@@ -831,6 +837,84 @@ mod tests {
         )
         .unwrap();
         assert!(stale_turn.is_none());
+    }
+
+    #[test]
+    fn late_start_for_prior_turn_does_not_hide_current_turn_completion() {
+        let (mut adapter, state) = fake_adapter();
+        let session = open_fake_session(&mut adapter);
+        state.lock().unwrap().start_turn_results.extend([
+            Ok(json!({ "turn": { "id": "turn-1" } })),
+            Ok(json!({ "turn": { "id": "turn-2" } })),
+        ]);
+
+        let first = SubmitTurnRequest {
+            session: session.clone(),
+            attempt_key: AttemptKey::new("attempt-1").unwrap(),
+            text: "first turn".into(),
+        };
+        adapter.submit_text(first).unwrap();
+        state
+            .lock()
+            .unwrap()
+            .next_events
+            .push_back(Ok(Some(AppServerMessage::Notification {
+                method: "turn/completed".into(),
+                params: json!({
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-1", "status": "completed" }
+                }),
+            })));
+        assert!(matches!(
+            adapter
+                .next_provider_event(Duration::ZERO)
+                .unwrap()
+                .unwrap()
+                .event,
+            ProviderEventKind::TurnCompleted { .. }
+        ));
+
+        let second = SubmitTurnRequest {
+            session,
+            attempt_key: AttemptKey::new("attempt-2").unwrap(),
+            text: "second turn".into(),
+        };
+        adapter.submit_text(second).unwrap();
+        {
+            let mut state = state.lock().unwrap();
+            state
+                .next_events
+                .push_back(Ok(Some(AppServerMessage::Notification {
+                    method: "turn/started".into(),
+                    params: json!({
+                        "threadId": "thread-1",
+                        "turn": { "id": "turn-1" }
+                    }),
+                })));
+            state
+                .next_events
+                .push_back(Ok(Some(AppServerMessage::Notification {
+                    method: "turn/completed".into(),
+                    params: json!({
+                        "threadId": "thread-1",
+                        "turn": { "id": "turn-2", "status": "completed" }
+                    }),
+                })));
+        }
+
+        assert!(adapter
+            .next_provider_event(Duration::ZERO)
+            .unwrap()
+            .is_none());
+        let completion = adapter
+            .next_provider_event(Duration::ZERO)
+            .unwrap()
+            .expect("current turn completion must remain visible");
+        assert!(matches!(
+            completion.event,
+            ProviderEventKind::TurnCompleted { turn, .. }
+                if turn.turn_id.as_str() == "turn-2"
+        ));
     }
 
     #[test]
