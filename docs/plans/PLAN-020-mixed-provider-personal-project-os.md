@@ -166,7 +166,7 @@ Subtasks:
 
 - [x] Add Cathulu-owned workspace allocation/lease records; retain existing worktree verification helpers.
 - [x] Start writers only in their exact leased linked worktree; coordinators/reviewers are read-only; serialize semantic overlap at task admission using the conservative per-project single-writer lease. This denies all concurrent writers within a project, satisfying the current safety requirement without claiming disjoint task scopes are semantically conflicting; finer-grained writer concurrency remains optional and requires an Owner decision.
-- [ ] Bind capability, context, artifact and provider attempt to the lease; revoke access on completion/replacement.
+- [x] Bind dispatcher-created capabilities and provider attempts to the active lease; tie context receipts to the lease-bound attempt; require WorkResult lease identity to match its WorkOrder; revoke attempt access on terminal completion or replacement (`235c4b9`, accepted in Claude's CC-03 review).
 - [x] Add idempotent attempt/reconciliation transitions and interrupt/lease-loss handling without automatic duplicate execution.
 - [x] Persist each dispatcher provider attempt against its exact lease before `start_turn`, track turn outcomes and renew confirmed live-turn leases.
 - [ ] Reuse M42/M44 operational scenarios for bounded authorized Codex acceptance and document actual gaps.
