@@ -780,6 +780,221 @@ impl Store {
         Ok(ids.len())
     }
 
+    /// Quarantine every persisted provider action that was still in flight when the dispatcher
+    /// starts. The outbox/inbox state, attempt, capability and workspace lease move together so a
+    /// restart cannot expose a still-live writer lease or retry an ambiguous provider turn.
+    pub(crate) fn reconcile_interrupted_dispatch_work(&self, now: i64) -> Result<usize, String> {
+        if now < 0 {
+            return Err("dispatcher restart time cannot be negative".into());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+
+        let attempts = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT attempt_key, binding_key, workspace_lease_id
+                     FROM provider_attempts
+                     WHERE status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                     ORDER BY created_at, attempt_key",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })
+                .map_err(sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?;
+            rows
+        };
+        let dispatches = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT outbox.id,
+                            CASE WHEN delegation.role = 'sub_overseer'
+                              THEN 'project-manager:' || delegation.project_id
+                              ELSE 'worker:' || delegation.id END
+                     FROM role_dispatch_outbox outbox
+                     JOIN delegations delegation ON delegation.id = outbox.delegation_id
+                     WHERE outbox.status IN ('preflighting','thread_ready','turn_starting','dispatched','running')
+                     ORDER BY outbox.id",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?;
+            rows
+        };
+        let inboxes = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT id, target_binding_key FROM role_turn_inbox
+                     WHERE status IN ('starting','dispatched','running') ORDER BY id",
+                )
+                .map_err(sqlite_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sqlite_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?;
+            rows
+        };
+
+        let mut affected_bindings = BTreeSet::new();
+        let mut affected_leases = BTreeSet::new();
+        for (attempt_key, binding_key, lease_id) in &attempts {
+            affected_bindings.insert(binding_key.clone());
+            if let Some(lease_id) = lease_id {
+                affected_leases.insert(*lease_id);
+            }
+            transaction
+                .execute(
+                    "UPDATE provider_attempts SET status = 'needs_reconcile',
+                       updated_at = MAX(updated_at, ?1)
+                     WHERE attempt_key = ?2
+                       AND status IN ('created','submitted','ack_unknown','running')",
+                    params![now, attempt_key],
+                )
+                .map_err(sqlite_error)?;
+        }
+
+        let restart_error = "dispatcher restarted during provider work; reconcile before retry";
+        for (dispatch_id, binding_key) in &dispatches {
+            affected_bindings.insert(binding_key.clone());
+            let changed = transaction
+                .execute(
+                    "UPDATE role_dispatch_outbox SET status = 'needs_reconcile',
+                       updated_at = MAX(updated_at, ?1), last_error = COALESCE(last_error, ?2)
+                     WHERE id = ?3
+                       AND status IN ('preflighting','thread_ready','turn_starting','dispatched','running')",
+                    params![now, restart_error, dispatch_id],
+                )
+                .map_err(sqlite_error)?;
+            if changed > 0 {
+                transaction
+                    .execute(
+                        "INSERT INTO role_dispatch_events (outbox_id, event_type, details_json, created_at)
+                         VALUES (?1, 'needs_reconcile', '{\"reason\":\"dispatcher_restart\"}', ?2)",
+                        params![dispatch_id, now],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+        for (inbox_id, binding_key) in &inboxes {
+            affected_bindings.insert(binding_key.clone());
+            let changed = transaction
+                .execute(
+                    "UPDATE role_turn_inbox SET status = 'needs_reconcile',
+                       updated_at = MAX(updated_at, ?1), last_error = COALESCE(last_error, ?2)
+                     WHERE id = ?3 AND status IN ('starting','dispatched','running')",
+                    params![now, restart_error, inbox_id],
+                )
+                .map_err(sqlite_error)?;
+            if changed > 0 {
+                transaction
+                    .execute(
+                        "INSERT INTO role_turn_inbox_events (inbox_id, event_type, details_json, created_at)
+                         VALUES (?1, 'needs_reconcile', '{\"reason\":\"dispatcher_restart\"}', ?2)",
+                        params![inbox_id, now],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+
+        for binding_key in &affected_bindings {
+            let lease_ids = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT id FROM workspace_leases
+                         WHERE role_binding_key = ?1 AND status IN ('active','needs_reconcile')",
+                    )
+                    .map_err(sqlite_error)?;
+                let rows = statement
+                    .query_map(params![binding_key], |row| row.get::<_, i64>(0))
+                    .map_err(sqlite_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(sqlite_error)?;
+                rows
+            };
+            affected_leases.extend(lease_ids);
+            if binding_key == "main-overseer" {
+                transaction
+                    .execute(
+                        "UPDATE main_overseer_capability SET status = 'revoked', updated_at = MAX(updated_at, ?1)
+                         WHERE singleton = 1 AND status = 'active'",
+                        params![now],
+                    )
+                    .map_err(sqlite_error)?;
+            } else {
+                transaction
+                    .execute(
+                        "UPDATE role_thread_capabilities SET status = 'revoked', updated_at = MAX(updated_at, ?1)
+                         WHERE binding_key = ?2 AND status = 'active'",
+                        params![now, binding_key],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+
+        for lease_id in &affected_leases {
+            let status = transaction
+                .query_row(
+                    "SELECT status FROM workspace_leases WHERE id = ?1",
+                    params![lease_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            revoke_capability_for_lease(&transaction, *lease_id, now)?;
+            if status.as_deref() == Some("active") {
+                let unresolved_attempts: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM provider_attempts
+                         WHERE workspace_lease_id = ?1
+                           AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')",
+                        params![lease_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(sqlite_error)?;
+                transaction
+                    .execute(
+                        "UPDATE workspace_leases SET status = 'needs_reconcile',
+                           updated_at = MAX(updated_at, ?1)
+                         WHERE id = ?2 AND status = 'active'",
+                        params![now, lease_id],
+                    )
+                    .map_err(sqlite_error)?;
+                append_workspace_lease_event(
+                    &transaction,
+                    *lease_id,
+                    "needs_reconcile",
+                    &json!({
+                        "reason": "dispatcher_restart",
+                        "unresolvedAttemptCount": unresolved_attempts
+                    }),
+                    now,
+                )?;
+            }
+        }
+
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(attempts.len())
+    }
+
     /// End a lease without deleting, moving or cleaning its worktree. If the provider attempt is
     /// unresolved, preserve the exclusive lock and require an explicit reconciliation step.
     pub fn release_workspace_lease(

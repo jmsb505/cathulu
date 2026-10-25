@@ -2597,11 +2597,8 @@ fn dispatcher_loop(
                     lease_held = true;
                     next_heartbeat = Instant::now() + Duration::from_secs(10);
                     if store
-                        .mark_uncertain_role_dispatches_for_reconciliation()
+                        .reconcile_interrupted_dispatch_work(unix_time())
                         .is_err()
-                        || store
-                            .mark_uncertain_role_inbox_for_reconciliation()
-                            .is_err()
                     {
                         lease_held = false;
                         thread::sleep(Duration::from_millis(800));
@@ -4350,6 +4347,282 @@ mod dispatcher_admission_tests {
             )
             .expect("read closed provider attempt");
         assert_eq!(status, "blocked");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn dispatcher_restart_quarantines_live_dispatch_attempt_and_lease() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        let (active_turns, capability_token, attempt_key) = fixture.add_active_turn();
+        assert_eq!(active_turns.len(), 1);
+
+        let affected = fixture
+            .store
+            .reconcile_interrupted_dispatch_work(unix_time())
+            .expect("reconcile persisted work before dispatcher restart resumes");
+        assert_eq!(affected, 1);
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability_token)
+            .is_err());
+        assert!(fixture.store.claim_next_role_dispatch().unwrap().is_none());
+
+        let observer = Store::open_existing_read_only(&fixture.data_dir)
+            .expect("reopen fixture after simulated process restart");
+        let cases = observer
+            .list_workspace_recovery_cases(10)
+            .expect("find interrupted provider attempt after restart");
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].lease.id, lease_id);
+        assert_eq!(cases[0].open_attempts.len(), 1);
+        assert_eq!(cases[0].open_attempts[0].attempt_key, attempt_key.as_str());
+        let recovery_json = serde_json::to_string(&cases[0]).unwrap();
+        assert!(!recovery_json.contains("C:/fixture/dispatcher-admission-worktree"));
+
+        let connection = Connection::open(observer.database_path()).unwrap();
+        let lease_status: String = connection
+            .query_row(
+                "SELECT status FROM workspace_leases WHERE id = ?1",
+                rusqlite::params![lease_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dispatch_status: String = connection
+            .query_row(
+                "SELECT status FROM role_dispatch_outbox WHERE delegation_id = ?1",
+                rusqlite::params![fixture.delegation_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lease_status, "needs_reconcile");
+        assert_eq!(attempt_status, "needs_reconcile");
+        assert_eq!(dispatch_status, "needs_reconcile");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn dispatcher_restart_quarantines_created_attempt_before_submit() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+        let session = ExternalSession {
+            provider_id: ProviderId::codex(),
+            session_id: ExternalId::new("fixture-thread").unwrap(),
+        };
+        fixture
+            .store
+            .record_provider_session(&session, &fixture.binding_key, "active", None, None)
+            .unwrap();
+        let dispatch_id = fixture.add_dispatch_record();
+        for status in ["preflighting", "thread_ready", "turn_starting"] {
+            fixture
+                .store
+                .set_role_dispatch_status(dispatch_id, status, None)
+                .expect("advance fixture dispatch before provider submit");
+        }
+        let attempt_key = AttemptKey::new(format!(
+            "dispatcher-created-restart-{}",
+            Uuid::new_v4().simple()
+        ))
+        .unwrap();
+        fixture
+            .store
+            .begin_provider_attempt_under_workspace_lease(
+                &attempt_key,
+                &session,
+                Some(dispatch_id),
+                None,
+                fixture.delegation_id,
+                &content_hash("fixture pre-submit prompt"),
+                lease_id,
+            )
+            .expect("persist provider attempt before submit");
+        fixture
+            .store
+            .bind_capability_to_provider_attempt(&capability.token, &session, &attempt_key)
+            .unwrap();
+
+        let affected = fixture
+            .store
+            .reconcile_interrupted_dispatch_work(unix_time())
+            .expect("quarantine a created attempt after dispatcher restart");
+        assert_eq!(affected, 1);
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability.token)
+            .is_err());
+        assert!(fixture.store.claim_next_role_dispatch().unwrap().is_none());
+
+        let connection = Connection::open(fixture.store.database_path()).unwrap();
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let lease_status: String = connection
+            .query_row(
+                "SELECT status FROM workspace_leases WHERE id = ?1",
+                rusqlite::params![lease_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dispatch_status: String = connection
+            .query_row(
+                "SELECT status FROM role_dispatch_outbox WHERE id = ?1",
+                rusqlite::params![dispatch_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempt_status, "needs_reconcile");
+        assert_eq!(lease_status, "needs_reconcile");
+        assert_eq!(dispatch_status, "needs_reconcile");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn dispatcher_restart_quarantines_unacknowledged_inbox_attempt() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+        let session = ExternalSession {
+            provider_id: ProviderId::codex(),
+            session_id: ExternalId::new("fixture-thread").unwrap(),
+        };
+        fixture
+            .store
+            .record_provider_session(&session, &fixture.binding_key, "active", None, None)
+            .unwrap();
+
+        let mut connection = Connection::open(fixture.store.database_path()).unwrap();
+        let source_event_id: i64 = connection
+            .query_row("SELECT id FROM events ORDER BY id LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("fixture has a durable source event");
+        let now = unix_time();
+        let transaction = connection.transaction().unwrap();
+        assert!(insert_role_inbox_message(
+            &transaction,
+            source_event_id,
+            fixture.delegation_id,
+            &fixture.binding_key,
+            Some(fixture.delegation_id),
+            fixture.project_id,
+            "agent_action_required",
+            "{}",
+            "starting",
+            None,
+            now,
+        )
+        .unwrap());
+        transaction.commit().unwrap();
+        drop(connection);
+        let inbox_id: i64 = Connection::open(fixture.store.database_path())
+            .unwrap()
+            .query_row(
+                "SELECT id FROM role_turn_inbox WHERE source_event_id = ?1",
+                rusqlite::params![source_event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let attempt_key = AttemptKey::new(format!(
+            "dispatcher-inbox-restart-{}",
+            Uuid::new_v4().simple()
+        ))
+        .unwrap();
+        fixture
+            .store
+            .begin_provider_attempt_under_workspace_lease(
+                &attempt_key,
+                &session,
+                None,
+                Some(inbox_id),
+                fixture.delegation_id,
+                &content_hash("fixture inbox prompt"),
+                lease_id,
+            )
+            .expect("persist inbox attempt before provider submission");
+        fixture
+            .store
+            .bind_capability_to_provider_attempt(&capability.token, &session, &attempt_key)
+            .unwrap();
+        fixture
+            .store
+            .set_provider_attempt_state(&attempt_key, "ack_unknown", None)
+            .expect("record an ambiguous submit acknowledgement");
+
+        assert_eq!(
+            fixture
+                .store
+                .reconcile_interrupted_dispatch_work(unix_time())
+                .expect("quarantine ambiguous inbox work on restart"),
+            1
+        );
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability.token)
+            .is_err());
+        assert!(fixture
+            .store
+            .claim_next_role_inbox_message(&[])
+            .unwrap()
+            .is_none());
+
+        let connection = Connection::open(fixture.store.database_path()).unwrap();
+        let lease_status: String = connection
+            .query_row(
+                "SELECT status FROM workspace_leases WHERE id = ?1",
+                rusqlite::params![lease_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let inbox_status: String = connection
+            .query_row(
+                "SELECT status FROM role_turn_inbox WHERE id = ?1",
+                rusqlite::params![inbox_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lease_status, "needs_reconcile");
+        assert_eq!(attempt_status, "needs_reconcile");
+        assert_eq!(inbox_status, "needs_reconcile");
         let _ = std::fs::remove_dir_all(fixture.data_dir);
     }
 
