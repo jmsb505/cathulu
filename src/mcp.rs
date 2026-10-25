@@ -27,9 +27,10 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
-// The deterministic role scopes and event routes are validated. Live Codex provider/UI parity
-// remains a runtime check; dispatch is now available by default and can be explicitly disabled.
-const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = true;
+// Keep product dispatch off until it acquires an exact workspace lease and validates its
+// permission manifest and credential source before every provider session/turn. The current
+// dispatcher still starts AppServerProcess directly and cannot satisfy that admission contract.
+const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = false;
 
 const SERVER_NAME: &str = "cathulu";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1097,7 +1098,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Queue up to 32 prepared PM or Worker assignments for Cathulu's local asynchronous Codex dispatcher. Returns after durable queue acceptance; it never waits for a model turn. The local dispatcher starts with the normal MCP server by default; set CATHULU_ROLE_DISPATCHER_ENABLED=0 to disable it. Planning, memory, scope, and QA gates still apply. A queued item is not success; inspect cathulu://dashboard for queued, running, blocked, or reconciliation-required state."
+        description = "Queue up to 32 prepared PM or Worker assignments for Cathulu's local asynchronous Codex dispatcher. Returns after durable queue acceptance; it never waits for a model turn. Currently unavailable: M52 workspace-lease, exact-path, permission, and credential-source admission is not integrated, so environment flags cannot activate dispatch. Planning, memory, scope, and QA gates still apply. A queued item is not success; inspect cathulu://dashboard for queued, running, blocked, or reconciliation-required state."
     )]
     fn dispatch_prepared_delegations(
         &self,
@@ -1105,7 +1106,7 @@ impl CathuluServer {
     ) -> CallToolResult {
         if !self.dispatcher_enabled {
             return tool_error(
-                "local role dispatch is unavailable: its environment flag is not enabled or required role-identity/event-routing safeguards have not been validated; no delegation was queued or started"
+                "local role dispatch is unavailable: M52 workspace-lease, exact-path, permission, and credential-source admission is incomplete; no delegation was queued or started"
                     .to_string(),
             );
         }
@@ -2167,16 +2168,14 @@ pub async fn run_stdio() -> Result<(), String> {
         });
     let dispatcher_client_requested = std::env::var("CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED")
         .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
-    let dispatcher_enabled = (dispatcher_requested || dispatcher_client_requested)
-        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED;
-    let dispatcher = if dispatcher_requested
-        && role_capability.is_none()
-        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
-    {
-        Some(RoleDispatcherService::start(store.clone())?)
-    } else {
-        None
-    };
+    let dispatcher_enabled =
+        role_dispatcher_runtime_enabled(dispatcher_requested, dispatcher_client_requested);
+    let dispatcher =
+        if role_dispatcher_service_enabled(dispatcher_requested, role_capability.is_some()) {
+            Some(RoleDispatcherService::start(store.clone())?)
+        } else {
+            None
+        };
     let service = CathuluServer {
         store,
         dispatcher_enabled,
@@ -2191,6 +2190,14 @@ pub async fn run_stdio() -> Result<(), String> {
         .map_err(|error| format!("MCP stdio service stopped unexpectedly: {error}"))?;
     drop(dispatcher);
     Ok(())
+}
+
+fn role_dispatcher_runtime_enabled(dispatcher_requested: bool, client_requested: bool) -> bool {
+    (dispatcher_requested || client_requested) && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
+}
+
+fn role_dispatcher_service_enabled(dispatcher_requested: bool, has_role_capability: bool) -> bool {
+    dispatcher_requested && !has_role_capability && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
 }
 
 fn role_can_read_task_resource(role_kind: &str, project_id: Option<i64>, uri: &str) -> bool {
@@ -2234,7 +2241,21 @@ fn internal_error(error: impl std::fmt::Display) -> McpError {
 
 #[cfg(test)]
 mod schema_tests {
-    use super::{role_can_read_task_resource, CathuluServer};
+    use super::{
+        role_can_read_task_resource, role_dispatcher_runtime_enabled,
+        role_dispatcher_service_enabled, CathuluServer,
+    };
+
+    #[test]
+    fn m52_admission_gate_keeps_product_dispatch_off_even_when_requested() {
+        assert!(!role_dispatcher_runtime_enabled(true, false));
+        assert!(!role_dispatcher_runtime_enabled(false, true));
+        assert!(!role_dispatcher_runtime_enabled(true, true));
+        assert!(!role_dispatcher_runtime_enabled(false, false));
+        assert!(!role_dispatcher_service_enabled(true, false));
+        assert!(!role_dispatcher_service_enabled(true, true));
+        assert!(!role_dispatcher_service_enabled(false, false));
+    }
 
     #[test]
     fn structured_json_tool_inputs_have_explicit_object_schemas() {

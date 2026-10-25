@@ -1,6 +1,6 @@
 # ADR-0024 — Product workspace leases and uncertain execution recovery
 
-- Status: Accepted implementation baseline for CX-05/M52; runtime activation remains gated.
+- Status: Accepted implementation baseline for CX-05/M52; product dispatch is held off until runtime admission is enforced.
 - Scope: Durable workspace assignment, role/session/attempt binding, credential-source eligibility and recovery for Cathulu-managed product execution.
 - Depends on: [PLAN-020](../plans/PLAN-020-mixed-provider-personal-project-os.md) M52 and [PLAN-021](../plans/PLAN-021-manual-claude-codex-development.md) CX-05.
 
@@ -24,6 +24,7 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 - A dirty Owner worktree is never cleaned to satisfy a lease. A lost acknowledgement leaves the workspace unavailable until the attempt is reconciled.
 - A v21 role with sessions active at both providers becomes temporarily unavailable (`unknown`) until one provider session is explicitly recorded.
 - M52 is not complete until dispatch enforces leases, semantic overlap is handled at admission, and the remaining recovery plus authorized M42/M44 acceptance is recorded. Source and fixture evidence alone do not establish loaded or live behavior.
+- The current binary keeps product dispatch disabled even when its environment flags request it. This is a temporary fail-closed gate because the existing dispatcher does not yet acquire and validate a lease, permission manifest, and credential source before session and turn operations.
 - Schema v22 requires the repository's normal backup and compatible-binary recovery rules. Existing v18 binaries cannot open this database.
 
 ## Evidence
