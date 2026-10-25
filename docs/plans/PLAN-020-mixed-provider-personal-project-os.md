@@ -269,6 +269,8 @@ Claude's review of `a83ccf9` conditionally accepted the non-activating foundatio
 
 The current CX-05 follow-up keeps attempts `created` until `start_turn` succeeds, then advances the attempt and its selected context receipts together; terminal attempt transitions revoke only the capability attached to that exact attempt. `WorkResult` validation also requires its lease ID to match the parent `WorkOrder`. These are source/fixture guarantees; the broader provider artifact pipeline and live M42/M44 path remain incomplete, so the combined M52 subtask stays open.
 
+Recovery retains the accepted conservative transition rule: a `created` attempt has no durable acknowledgement or turn identity, so operator reconciliation cannot label it `completed`. After confirming that provider execution stopped, the operator records `failed` or `blocked` and explains any known outcome and uncertainty in the reason. This avoids fabricating a success state when the durable record cannot prove which turn ran.
+
 ## Completion evidence
 
 The evidence below records the initial documentation-only assessment. Subsequent repository synchronization, full regression/build checks and test-fixture repairs are recorded separately in the [integration record](../readiness/repository-integration-2026-10-25.md); they do not implement M48-M55 or establish live-provider readiness.

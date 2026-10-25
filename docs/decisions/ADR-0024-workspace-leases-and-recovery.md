@@ -25,6 +25,7 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 ## Consequences
 
 - A dirty Owner worktree is never cleaned to satisfy a lease. A lost acknowledgement leaves the workspace unavailable until the attempt is reconciled.
+- A `created` attempt that remains after an uncertain start has no durable acknowledgement or turn identity. Recovery therefore refuses `created -> completed`; the operator records `failed` or `blocked` with the known outcome and uncertainty in its reason, after confirming the provider stopped. This deliberately avoids claiming success from an unverified attempt.
 - A v21 role with sessions active at both providers becomes temporarily unavailable (`unknown`) until one provider session is explicitly recorded.
 - M52 is not complete until the admission, B1 and operator-recovery candidates are independently reviewed and authorized M42/M44 acceptance is recorded. The current project-wide writer lock satisfies semantic-overlap safety at admission, but source and fixture evidence alone do not establish loaded or live behavior.
 - The product dispatch gate remains false during review. This changes default behavior: an unset CATHULU_ROLE_DISPATCHER_ENABLED previously enabled dispatch, and now means off. CATHULU_ROLE_DISPATCHER_ALLOWED_CREDENTIAL_SOURCES and CATHULU_ROLE_DISPATCHER_NETWORK_ACCESS also default to deny. Current adapters report an unknown credential source, so real dispatch remains blocked before spawn.
