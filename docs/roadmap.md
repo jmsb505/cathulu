@@ -2,6 +2,8 @@
 
 ## Active pivot sequence (2026-10-25)
 
+Manual two-agent assignments are in [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md). Claude Code and Codex default to the existing directory with disjoint ownership and one shared Git/schema writer. Start from committed planning docs and a clean observed HEAD; use ordinary implement/review in waves 0-3 and brief integration pauses in waves 4-6, with Claude compiling its source in a standalone scratch crate. A single Claude worktree is an optional Owner-selected fallback. This is the Owner's chosen development workflow under [ADR-0023](decisions/ADR-0023-manual-shared-directory-development.md), not activation of automated product orchestration. PLAN-020 remains the capability/acceptance plan; desktop implementation stays paused.
+
 Current repository delivery and regression evidence are tracked in the [2026-10-25 integration record](readiness/repository-integration-2026-10-25.md). Preserve dated milestone observations below without treating their old uncommitted/reload state as current Git or runtime evidence.
 
 [ADR-0022](decisions/ADR-0022-mixed-provider-personal-project-os.md) adopts the local personal project OS direction. [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md) sequences provider-free task/portfolio state and checkpoint/resume first, then controlled personal/non-code state, typed artifacts and Codex adapter parity, exclusive writer workspaces, Claude feasibility, availability routing and reviewed cross-provider handoffs. The [assessment](pivot-migration.md) distinguishes existing capabilities from migration gaps. M47 is documentation only; executable pivot milestones remain pending.

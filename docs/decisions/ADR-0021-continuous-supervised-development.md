@@ -4,6 +4,7 @@
 - Scope: Cathulu development cadence, supervised core use, and responsibility for generating real usage evidence.
 - Supersedes: PLAN-003's requirement for the Owner to generate representative runs and evidence-before-implementation restrictions for supervised, reversible local core work. Existing empirical findings and capability-specific promotion gates remain valid.
 - Related: [PLAN-019](../plans/PLAN-019-continuous-supervised-development.md), [PLAN-003](../plans/PLAN-003-evidence-gated-scaling.md), [PLAN-015](../plans/PLAN-015-event-driven-role-orchestration.md), [PLAN-017](../plans/PLAN-017-terminal-observability.md), [ADR-0007](ADR-0007-optional-specialist-model-optimization.md).
+- Later amendment: [ADR-0023](ADR-0023-manual-shared-directory-development.md) records the Owner's manual same-directory Claude Code / Codex development choice. It supersedes only the Codex-only self-development wording for that workflow; the supervised-development, managed hierarchy, evidence and permission boundaries below remain in force.
 
 ## Context
 

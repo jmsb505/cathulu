@@ -3,7 +3,7 @@
   "phase": "CHECKPOINTED",
   "project_scope": "Mixed-provider personal project OS rebaseline; bounded provider-free task/checkpoint slice M48-M49",
   "last_updated": "2026-10-25",
-  "repository_revision": "757fd3d5c0325095e40b07963602eb6feccd5624",
+  "repository_revision": "d2422fbd061aec9dadf876951d0f3e77bb4b6d47",
   "inspected_sources": [
     {
       "type": "USER_DECISION",
@@ -452,6 +452,60 @@
       "blocking": false,
       "owner": "Cathulu development",
       "next_action": "Observe existing M42/M44 through authorized work before reporting current live capability."
+    },
+    {
+      "id": "C-017",
+      "dimension": "INTENT",
+      "scope": "manual Cathulu development",
+      "claim": "The Owner will manually operate Claude Code and Codex in the same Cathulu directory; use disjoint file ownership, one shared Codex/Owner Git/schema writer and acknowledged stable-tree checkpoints, with no automated coordination.",
+      "status": "KNOWN",
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "Owner request for manual parallel development plan and follow-up requirement: both agents work in the same local directory",
+          "date": "2026-10-25"
+        },
+        {
+          "type": "ADR",
+          "locator": "docs/decisions/ADR-0023-manual-shared-directory-development.md",
+          "date": "2026-10-25"
+        },
+        {
+          "type": "USER_DECISION",
+          "locator": "Owner six-point PLAN-021 review: commit docs before launch, no assumed session familiarity, compile Claude code in a scratch crate, ordinary early implement/review, Git diff instead of hash manifests, optional worktree fallback",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "ACCEPTED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Owner; development lanes within PLAN-021 scopes",
+      "next_action": "Commit/integrate all planning files and verify a clean launch HEAD before the Owner starts manual writing sessions; keep waves 0-3 simple and use short acknowledgements/Git status-diff for concurrent integration."
+    },
+    {
+      "id": "C-018",
+      "dimension": "INTENT",
+      "scope": "development task assignment",
+      "claim": "Prefer Claude for domain/security/experience design, Claude adapter and pure policy implementation; Codex owns the shared Rust/SQLite/runtime core and integration. These are provisional project/task preferences, not measured model-independent harness superiority.",
+      "status": "INFERRED",
+      "sources": [
+        {
+          "type": "USER_DECISION",
+          "locator": "Owner supplied assignment preferences and requested critical assessment",
+          "date": "2026-10-25"
+        },
+        {
+          "type": "INFERENCE",
+          "locator": "PLAN-021 task/verifier allocation and single shared-core integration ownership; both fresh sessions read committed source and PR #33 evidence",
+          "date": "2026-10-25"
+        }
+      ],
+      "decision_status": "PROPOSED",
+      "related_question": null,
+      "blocking": false,
+      "owner": "Owner; two manual development lanes",
+      "next_action": "Use packet results and defects to revise assignments; preserve PLAN-020 acceptance and dependent gates.",
+      "rejected_rationale": "Earlier PR #33 conversation familiarity does not transfer automatically to a fresh Codex session and is not an assignment justification."
     }
   ],
   "questions": [
@@ -586,6 +640,14 @@
     {
       "concern": "Accepted pivot direction and scoped supersession",
       "document": "docs/decisions/ADR-0022-mixed-provider-personal-project-os.md"
+    },
+    {
+      "concern": "Manual same-directory Claude Code / Codex assignments, ownership, waves and integration protocol",
+      "document": "docs/plans/PLAN-021-manual-claude-codex-development.md"
+    },
+    {
+      "concern": "Owner-selected manual shared-directory development policy amendment",
+      "document": "docs/decisions/ADR-0023-manual-shared-directory-development.md"
     }
   ],
   "profile_location": "docs/pivot-migration.md#development-skills--tooling-profile",
@@ -598,8 +660,8 @@
     ],
     "next_question": "No blocking Owner question for M48-M49. Resolve dependent provider/personal-data/UI questions before their affected activation."
   },
-  "next_action": "After PR #33 repository synchronization is verified, continue PLAN-020 M48 deterministic task/portfolio implementation after current diff/schema recheck. M48-M55 and dependent provider/personal/UI gates remain pending.",
-  "repository_revision_note": "Observed dirty working tree includes preexisting runtime/docs edits and untracked modules; HEAD alone is not the inspected implementation.",
+  "next_action": "After PR #34 is merged/integrated and Git status including untracked files is verified clean, both manual sessions record that same current launch HEAD. Start Claude CC-01 and Codex CX-00 then CX-01/M48. Waves 0-3 use normal implement/review; waves 4-6 use Claude scratch compilation and brief status/diff integration pauses. No agents were launched by planning.",
+  "repository_revision_note": "Historical source inspection was main at d2422fbd061aec9dadf876951d0f3e77bb4b6d47. The manual planning draft then left ten canonical documents and four new planning files uncommitted. Both development sessions must launch only after the revised planning checkpoint is committed/integrated and a clean current HEAD is observed; never assume the historical hash is that launch baseline.",
   "rebaseline": {
     "date": "2026-10-25",
     "prior_checkpoint_date": "2026-10-21",
@@ -621,6 +683,47 @@
       "planned_milestones": 9,
       "unchanged_outside_scope": 110,
       "git_integration": "https://github.com/jmsb505/cathulu/pull/33"
+    },
+    "manual_development": {
+      "plan": "PLAN-021",
+      "decision": "ADR-0023",
+      "directory": "C:\\Users\\sjuan\\Desktop\\cathulu",
+      "coordination": "Owner relays bounded packets manually",
+      "shared_branch": true,
+      "single_git_schema_writer": "Codex or Owner for production Git/schema; Claude owns only its standalone scratch manifest/lock",
+      "worktrees_created": false,
+      "agents_started": false,
+      "capability_acceptance": "PLAN-020 unchanged; preparation can overlap, activation gates retained",
+      "validation": {
+        "status": "PASS",
+        "scope": "revised documentation, static scheduling/ownership consistency and standalone scratch feasibility probe only",
+        "date": "2026-10-25",
+        "markdown_files": 58,
+        "local_links_and_anchors": 521,
+        "claude_packets": 7,
+        "codex_packets": 10,
+        "milestone_ownership_rows": 8,
+        "production_files_unchanged": true,
+        "scratch_probe": "PASS: actual src/terminal.rs included against real exported core types; one test passed; scratch-only lock seeded after offline yanked-version error",
+        "future_F1_and_Claude_adapter": "not implemented or validated by probe",
+        "live_manual_workflow": "not exercised"
+      },
+      "launch_prerequisite": "Revised planning docs committed/integrated; both sessions observe the same clean HEAD before writes; current historical d2422fb is not the asserted launch baseline",
+      "operating_modes": {
+        "waves_0_to_3": "ordinary implement then review; no per-packet freeze",
+        "waves_4_to_6": "concurrent coding with brief acknowledged integration pauses and Git status/diff including untracked files; no hash manifests"
+      },
+      "scratch_compile": {
+        "manifest": "target/manual-dev/claude/scratch/Cargo.toml",
+        "independent_workspace": true,
+        "real_core_path_dependency": true,
+        "seed_lock": "copy committed production lock into scratch before first offline resolution",
+        "separate_build_output": true,
+        "path_dependency_is_live_shared_source": true
+      },
+      "fallback": "Owner may choose one Claude worktree for waves 4-6 if coordination becomes costly; none created",
+      "review_revision": "2026-10-25 six-point Owner review incorporated; launch/delivery evidence tracked in PLAN-021 and its PR",
+      "planning_delivery": "Validated planning checkpoint 1af69c4efdd34df6f4c66dc158c0ae1f8ff58bd3 committed/pushed via https://github.com/jmsb505/cathulu/pull/34; GitHub owns final merge state. Launch must observe the integrated HEAD and clean status."
     }
   }
 }

@@ -10,6 +10,7 @@ The Owner adopted the mixed-provider personal project OS direction on 2026-10-25
 | System boundaries, drivers, managed memory lifecycle, local data/security, and skill/tool profile | [Architecture](architecture.md) | WORKING for implementation details; NORMATIVE for stated product boundaries |
 | Pivot current-state assessment, target contracts, migration risks and current development profile | [Migration assessment](pivot-migration.md) | WORKING design; source observations scoped to the inspected dirty tree |
 | Pivot implementation sequence and acceptance evidence | [PLAN-020](plans/PLAN-020-mixed-provider-personal-project-os.md) | M47 documentation validated; executable milestones pending; Git delivery tracked below |
+| Manual Claude Code / Codex assignments in the same directory | [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md), [ADR-0023](decisions/ADR-0023-manual-shared-directory-development.md) | Shared-directory workflow chosen by Owner; packet schedule proposed; no sessions launched |
 | Pending-work synchronization and integration validation | [2026-10-25 repository integration](readiness/repository-integration-2026-10-25.md) | Regression/build evidence and PR delivery record; live gates remain separate |
 | Phase order and deferred capabilities | [Roadmap](roadmap.md) | NORMATIVE |
 | Durable decisions and supersession | [Decision records](decisions/) | NORMATIVE when ACCEPTED |
