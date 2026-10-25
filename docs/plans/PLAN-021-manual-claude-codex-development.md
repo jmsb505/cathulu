@@ -294,7 +294,7 @@ Final product integration retains PLAN-020's two proofs: provider-free tasks/che
 - [x] Replaced per-file hash manifests with pause acknowledgements and Git status/diff, explicitly covering untracked files.
 - [x] Kept a single Claude worktree in waves 4-6 as an Owner-selected fallback; no worktree created.
 - [x] Validate the revised documentation and scratch-crate feasibility; record exact scope/results.
-- [ ] Commit/push/integrate the complete planning checkpoint before manual sessions launch.
+- [x] Complete planning checkpoint committed and pushed in [PR #34](https://github.com/jmsb505/cathulu/pull/34); its final merge outcome and the clean observed HEAD must be checked before manual sessions launch.
 - [ ] Owner launches sessions; all implementation and actual manual-collaboration outcomes remain unverified.
 
 The initial draft's 58-file / 521-link static check was evidence about that draft, not a clean committed launch state. Revised documentation, scratch-probe and delivery evidence is recorded here after the corresponding checks. No model/provider run, product code change or automatic dispatch belongs to this planning repair.
@@ -304,3 +304,5 @@ Revised validation (2026-10-25): 58 Markdown files and 521 local links/anchors p
 Scratch feasibility probe: a standalone crate under ignored `target/manual-dev/claude/plan-021-probe/` used an empty workspace, a real core path dependency and a wrapper including the actual `src/terminal.rs` with real exported Cathulu types. Its isolated offline `cargo test` compiled successfully and passed one existing module test. Initial fresh offline resolution rejected a cached yanked Tokio version; seeding only the scratch lock from the committed root lock resolved it. This validates the proposed wrapper/build route, not future F1 signatures, Claude adapter behavior or product integration. The production lock was not modified.
 
 Delivery prerequisite: the complete revised planning/canonical-document patch must be committed and integrated before manual launch; its PR records the final merge outcome. Observe the resulting HEAD and clean Git status at launch rather than embedding a self-referential commit ID in these files.
+
+The validated document checkpoint is `1af69c4efdd34df6f4c66dc158c0ae1f8ff58bd3` on `codex/manual-plan-review-fixes`, submitted as PR #34. This delivery note is a documentation-only follow-up in that PR. No early implementation or manual-agent launch is inferred from PR submission.

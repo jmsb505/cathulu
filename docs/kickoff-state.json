@@ -660,7 +660,7 @@
     ],
     "next_question": "No blocking Owner question for M48-M49. Resolve dependent provider/personal-data/UI questions before their affected activation."
   },
-  "next_action": "Commit/push/integrate the revised PLAN-021/ADR-0023/starter/canonical-document checkpoint first, then verify clean Git status including untracked files. Both manual sessions record that same committed launch HEAD before writing. Use normal implement/review in waves 0-3; Claude compiles/tests through its scratch crate during concurrent coding in waves 4-6, with brief status/diff integration pauses.",
+  "next_action": "After PR #34 is merged/integrated and Git status including untracked files is verified clean, both manual sessions record that same current launch HEAD. Start Claude CC-01 and Codex CX-00 then CX-01/M48. Waves 0-3 use normal implement/review; waves 4-6 use Claude scratch compilation and brief status/diff integration pauses. No agents were launched by planning.",
   "repository_revision_note": "Historical source inspection was main at d2422fbd061aec9dadf876951d0f3e77bb4b6d47. The manual planning draft then left ten canonical documents and four new planning files uncommitted. Both development sessions must launch only after the revised planning checkpoint is committed/integrated and a clean current HEAD is observed; never assume the historical hash is that launch baseline.",
   "rebaseline": {
     "date": "2026-10-25",
@@ -723,7 +723,7 @@
       },
       "fallback": "Owner may choose one Claude worktree for waves 4-6 if coordination becomes costly; none created",
       "review_revision": "2026-10-25 six-point Owner review incorporated; launch/delivery evidence tracked in PLAN-021 and its PR",
-      "planning_delivery": "Validated patch on codex/manual-plan-review-fixes; commit/integrate before launch. The PR will supply the final delivery state; observe clean HEAD at launch."
+      "planning_delivery": "Validated planning checkpoint 1af69c4efdd34df6f4c66dc158c0ae1f8ff58bd3 committed/pushed via https://github.com/jmsb505/cathulu/pull/34; GitHub owns final merge state. Launch must observe the integrated HEAD and clean status."
     }
   }
 }
