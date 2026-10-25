@@ -76,7 +76,7 @@ The wider Phase 1 foundation then adds objectives, tasks, immutable decisions an
 
 ## Domain terms and invariants
 
-- **Project:** a registered local repository plus its current deterministic Git snapshot and durable project-level state.
+- **Project:** a stable identity for durable project-level state and roles, with an optional zero-or-one local repository association. Repository projects have a canonical path and Git snapshot; provider-free non-code projects have no fake path and may be private. See [ADR-0025](decisions/ADR-0025-optional-project-repository.md). Personal-data categories and provider disclosure remain undecided under P-Q2.
 - **Scope:** a logical context and ownership boundary spanning one or more projects; it may initially key off stable global/project/objective/task identities without a separate scope registry. Persistent Sub-Overseer scopes remain optional until evidence justifies them.
 - **Run:** one recorded Overseer execution unit. A run may be an explicit Cathulu workflow execution tied to an immutable workflow version, or a sanitized observed Codex turn with no implied workflow, transcript, or success claim.
 - **Evidence:** a traceable artifact or deterministic check result supporting a finding or outcome.

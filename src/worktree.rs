@@ -130,7 +130,7 @@ impl Store {
                     params![delegation_id],
                     |row| {
                         Ok((
-                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(0)?,
                             row.get::<_, Option<String>>(1)?,
                             row.get::<_, Option<String>>(2)?,
                         ))
@@ -141,6 +141,7 @@ impl Store {
                 .ok_or_else(|| format!("delegation {delegation_id} was not found"))?
         };
 
+        let project_path = project_path.ok_or_else(|| "project_has_no_repository".to_string())?;
         let registered_path = PathBuf::from(project_path)
             .canonicalize()
             .map_err(|error| format!("registered project path is unavailable: {error}"))?;
@@ -401,8 +402,12 @@ impl Store {
         if scope.role_kind == "sub_overseer" && access != WorkspaceAccess::ReadOnly {
             return Err("Project Manager/coordinator workspace access must be read-only".into());
         }
+        let project_path = scope
+            .project_path
+            .as_deref()
+            .ok_or_else(|| "project_has_no_repository".to_string())?;
         let verified = verify_project_workspace(
-            &scope.project_path,
+            project_path,
             workspace_path,
             access,
             access == WorkspaceAccess::WorkspaceWrite,
@@ -701,13 +706,18 @@ impl Store {
                     Ok((
                         workspace_lease_from_row(row)?,
                         row.get::<_, String>(13)?,
-                        row.get::<_, String>(14)?,
+                        row.get::<_, Option<String>>(14)?,
                     ))
                 },
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("workspace lease {lease_id} was not found"))
+            .and_then(|(record, workspace_path, project_path)| {
+                project_path
+                    .map(|project_path| (record, workspace_path, project_path))
+                    .ok_or_else(|| "project_has_no_repository".to_string())
+            })
     }
 
     /// Expire idle leases and quarantine expired leases whose provider outcome is still unknown.
@@ -1374,7 +1384,7 @@ impl Store {
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                     ))
@@ -1393,8 +1403,12 @@ impl Store {
         // attempts and release the lease. This keeps concurrent lease changes from invalidating
         // the audit claim that identity was checked as part of this reconciliation. Paths and
         // stored identity hashes also come from this transaction's database snapshot.
+        let project_path = current
+            .4
+            .as_deref()
+            .ok_or_else(|| "project_has_no_repository".to_string())?;
         let verified =
-            verify_project_workspace(&current.4, Path::new(&current.3), lease.access, false)?;
+            verify_project_workspace(project_path, Path::new(&current.3), lease.access, false)?;
         if verified.workspace_path_hash != current.5 || verified.common_dir_hash != current.6 {
             return Err("workspace identity changed; the quarantined lease remains locked".into());
         }
@@ -1587,7 +1601,7 @@ struct DelegationWorkspaceScope {
     project_id: i64,
     role_kind: String,
     status: String,
-    project_path: String,
+    project_path: Option<String>,
 }
 
 struct VerifiedWorkspace {

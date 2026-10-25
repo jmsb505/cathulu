@@ -119,7 +119,8 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
              );
              CREATE TABLE logical_agent_roles (role_key TEXT PRIMARY KEY);
              CREATE TABLE delegations (
-               id INTEGER PRIMARY KEY, project_id INTEGER, role TEXT, parent_delegation_id INTEGER
+               id INTEGER PRIMARY KEY, project_id INTEGER, role TEXT, status TEXT NOT NULL DEFAULT 'prepared',
+               parent_delegation_id INTEGER
              );
              CREATE TABLE role_thread_bindings (
                binding_key TEXT PRIMARY KEY, role_key TEXT, delegation_id INTEGER, project_id INTEGER,
@@ -129,7 +130,11 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
              CREATE TABLE role_turn_inbox (
                id INTEGER PRIMARY KEY, target_binding_key TEXT, target_delegation_id INTEGER, project_id INTEGER
              );
-             CREATE TABLE role_thread_capabilities (binding_key TEXT PRIMARY KEY, delegation_id INTEGER);
+             CREATE TABLE role_thread_capabilities (
+               binding_key TEXT PRIMARY KEY, role_kind TEXT NOT NULL, project_id INTEGER NOT NULL,
+               delegation_id INTEGER NOT NULL, capability_hash TEXT NOT NULL, status TEXT NOT NULL,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+             );
              CREATE TABLE main_overseer_capability (singleton INTEGER PRIMARY KEY);
              CREATE TABLE memories (id INTEGER PRIMARY KEY);
              INSERT INTO projects(id, name, path, registered_at, reconciled_at)
@@ -198,7 +203,7 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
             row.get(0)
         })
         .expect("read upgraded migration version");
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
 }
 
 #[test]

@@ -1921,3 +1921,55 @@ BEGIN SELECT RAISE(ABORT, 'role capability and provider attempt must share a wor
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (22, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+// VERSION_23 is run with foreign-key enforcement temporarily disabled by Store::initialize
+// because projects is referenced by many retained tables. The migration creates a replacement
+// table, copies the stable project IDs and existing repository state, then swaps it into place.
+pub(crate) const VERSION_23: &str = r#"
+DROP TRIGGER IF EXISTS projects_create_logical_pm;
+
+CREATE TABLE projects_v23 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  path TEXT,
+  kind TEXT NOT NULL DEFAULT 'repository'
+    CHECK(kind IN ('repository', 'non_code')),
+  visibility TEXT NOT NULL DEFAULT 'shared'
+    CHECK(visibility IN ('private', 'shared')),
+  git_branch TEXT,
+  git_head TEXT,
+  git_dirty INTEGER NOT NULL DEFAULT 0,
+  changed_paths_json TEXT NOT NULL DEFAULT '[]',
+  registered_at INTEGER NOT NULL,
+  reconciled_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active', 'paused', 'completed', 'archived')),
+  priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN -100 AND 100),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+  CHECK((kind = 'repository' AND path IS NOT NULL)
+     OR (kind = 'non_code' AND path IS NULL))
+);
+
+INSERT INTO projects_v23
+  (id, name, path, kind, visibility, git_branch, git_head, git_dirty,
+   changed_paths_json, registered_at, reconciled_at, status, priority, revision)
+SELECT id, name, path, 'repository', 'shared', git_branch, git_head, git_dirty,
+       changed_paths_json, registered_at, reconciled_at, status, priority, revision
+FROM projects;
+
+DROP TABLE projects;
+ALTER TABLE projects_v23 RENAME TO projects;
+CREATE UNIQUE INDEX projects_repository_path_unique
+  ON projects(path) WHERE path IS NOT NULL;
+
+CREATE TRIGGER projects_create_logical_pm AFTER INSERT ON projects
+BEGIN
+  INSERT INTO logical_agent_roles
+    (role_key, role_kind, project_id, memory_scope_key, receiver_scope_key, tool_profile_key, created_at)
+  VALUES ('project-manager:' || NEW.id, 'project_manager', NEW.id, 'project:' || NEW.id,
+          'scope:project-manager:' || NEW.id, 'project-manager-v1', NEW.registered_at);
+END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (23, CAST(strftime('%s','now') AS INTEGER));
+"#;

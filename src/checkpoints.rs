@@ -446,9 +446,16 @@ impl Store {
             .raw_mut()
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(db_error)?;
-        let project: (ResumeProjectHeader, String, Option<String>, bool, Option<i64>) = transaction
+        let project: (
+            ResumeProjectHeader,
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+            Option<i64>,
+        ) = transaction
             .query_row(
-                "SELECT id, name, status, priority, revision, path, git_head, git_dirty, reconciled_at
+                "SELECT id, name, status, priority, revision, kind, path, git_head, git_dirty, reconciled_at
                  FROM projects WHERE id = ?1",
                 params![project_id],
                 |row| {
@@ -464,6 +471,7 @@ impl Store {
                         row.get(6)?,
                         row.get(7)?,
                         row.get(8)?,
+                        row.get(9)?,
                     ))
                 },
             )
@@ -485,15 +493,20 @@ impl Store {
             .map(|id| checkpoint_from_connection(&transaction, id))
             .transpose()?
             .flatten();
-        let repository_available =
-            Path::new(&project.1).is_dir() && Path::new(&project.1).join(".git").exists();
-        let freshness = if !repository_available {
+        let repository_applicable = project.1 == "repository";
+        let repository_available = project
+            .2
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_dir() && Path::new(path).join(".git").exists());
+        let freshness = if !repository_applicable {
+            "not_applicable"
+        } else if !repository_available {
             "unavailable"
         } else if let (Some(checkpoint_head), Some(stored_head)) = (
             checkpoint
                 .as_ref()
                 .and_then(|item| item.repository_head.as_deref()),
-            project.2.as_deref(),
+            project.3.as_deref(),
         ) {
             if checkpoint_head == stored_head {
                 "same"
@@ -504,7 +517,9 @@ impl Store {
             "unknown"
         };
         let repository = ResumeRepository {
-            availability: if repository_available {
+            availability: if !repository_applicable {
+                "not_applicable"
+            } else if repository_available {
                 "available"
             } else {
                 "unavailable"
@@ -514,9 +529,9 @@ impl Store {
             checkpoint_head: checkpoint
                 .as_ref()
                 .and_then(|item| item.repository_head.clone()),
-            stored_head: project.2,
-            observed_at: project.4,
-            dirty_at_observation: project.3,
+            stored_head: project.3,
+            observed_at: project.5,
+            dirty_at_observation: project.4,
         };
         let objectives = transaction
             .prepare("SELECT id, title, status FROM objectives WHERE project_id = ?1 ORDER BY id")

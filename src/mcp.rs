@@ -52,6 +52,12 @@ struct RegisterProjectArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CreateNonCodeProjectArgs {
+    /// Local project name. This does not create a personal-memory record.
+    name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ReconcileProjectArgs {
     /// Cathulu project ID returned by register_project.
     project_id: i64,
@@ -613,6 +619,19 @@ fn default_promotion_support() -> i64 {
 #[tool_router]
 impl CathuluServer {
     #[tool(
+        description = "Create a private non-code project for provider-free objectives, tasks, and checkpoints. This stores no repository path, does not inspect Git, and does not create a personal-memory record or enable provider disclosure."
+    )]
+    fn create_non_code_project(
+        &self,
+        Parameters(arguments): Parameters<CreateNonCodeProjectArgs>,
+    ) -> CallToolResult {
+        self.store
+            .create_non_code_project(&arguments.name)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
         description = "Register a local Git repository and save its current branch, HEAD, and changed paths."
     )]
     fn register_project(
@@ -637,6 +656,13 @@ impl CathuluServer {
     ) -> CallToolResult {
         match self.store.reconcile_project(arguments.project_id) {
             Ok(project) => success(project),
+            Err(error) if error == "not_applicable:project_has_no_repository" => {
+                success(serde_json::json!({
+                    "status": "not_applicable",
+                    "projectId": arguments.project_id,
+                    "reason": "project_has_no_repository"
+                }))
+            }
             Err(error) => tool_error(error),
         }
     }
@@ -1913,6 +1939,18 @@ impl ServerHandler for CathuluServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         if let Some(capability) = &self.role_capability {
+            if let Some(project_id) = capability.project_id {
+                if self
+                    .store
+                    .project_is_private(project_id)
+                    .map_err(internal_error)?
+                {
+                    return Err(McpError::invalid_params(
+                        "role capability cannot read a private project",
+                        None,
+                    ));
+                }
+            }
             let allowed = if capability.role_kind == "main_overseer" {
                 matches!(
                     request.uri.as_str(),
@@ -1952,32 +1990,105 @@ impl ServerHandler for CathuluServer {
                     None,
                 ));
             }
+            if capability.role_kind == "main_overseer" {
+                if request.uri == "cathulu://dashboard"
+                    && self.store.has_private_projects().map_err(internal_error)?
+                {
+                    return Err(McpError::invalid_params(
+                        "Main dashboard is withheld while private projects exist",
+                        None,
+                    ));
+                }
+                if let Some(project_id) = resource_project_id(&self.store, &request.uri)? {
+                    if self
+                        .store
+                        .project_is_private(project_id)
+                        .map_err(internal_error)?
+                    {
+                        return Err(McpError::invalid_params(
+                            "Main cannot read a private project resource",
+                            None,
+                        ));
+                    }
+                }
+            }
         }
         let data = if request.uri == "cathulu://projects" {
             let mut projects = self.store.list_projects().map_err(internal_error)?;
             if let Some(capability) = &self.role_capability {
-                if let Some(project_id) = capability.project_id {
+                if capability.role_kind == "main_overseer" {
+                    for project in &mut projects {
+                        if project.visibility == crate::ProjectVisibility::Private {
+                            project.name = format!("Private project #{}", project.id);
+                            project.path = None;
+                            project.branch = None;
+                            project.head = None;
+                            project.dirty = false;
+                            project.changed_paths.clear();
+                        }
+                    }
+                } else if let Some(project_id) = capability.project_id {
                     projects.retain(|project| project.id == project_id);
                 }
             }
             serde_json::to_string(&projects).map_err(internal_error)?
         } else if request.uri == "cathulu://portfolio/tasks" {
-            serde_json::to_string(
-                &self
-                    .store
-                    .list_tasks(None, false, 100)
-                    .map_err(internal_error)?,
-            )
-            .map_err(internal_error)?
+            let tasks = self
+                .store
+                .list_tasks(None, false, 100)
+                .map_err(internal_error)?;
+            let tasks = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                tasks
+                    .into_iter()
+                    .filter(|task| shared_projects.contains(&task.project_id))
+                    .collect::<Vec<_>>()
+            } else {
+                tasks
+            };
+            serde_json::to_string(&tasks).map_err(internal_error)?
         } else if request.uri == "cathulu://roles" {
-            serde_json::to_string(&self.store.logical_agent_roles().map_err(internal_error)?)
-                .map_err(internal_error)?
+            let roles = self.store.logical_agent_roles().map_err(internal_error)?;
+            let roles = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                roles
+                    .into_iter()
+                    .filter(|role| {
+                        role.project_id
+                            .is_none_or(|project_id| shared_projects.contains(&project_id))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                roles
+            };
+            serde_json::to_string(&roles).map_err(internal_error)?
         } else if request.uri == "cathulu://dashboard" {
             serde_json::to_string(&self.store.dashboard_snapshot().map_err(internal_error)?)
                 .map_err(internal_error)?
         } else if request.uri == "cathulu://dispatches" {
-            serde_json::to_string(&self.store.role_dispatches(100).map_err(internal_error)?)
-                .map_err(internal_error)?
+            let dispatches = self.store.role_dispatches(100).map_err(internal_error)?;
+            let dispatches = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                dispatches
+                    .into_iter()
+                    .filter(|dispatch| shared_projects.contains(&dispatch.project_id))
+                    .collect::<Vec<_>>()
+            } else {
+                dispatches
+            };
+            serde_json::to_string(&dispatches).map_err(internal_error)?
         } else if let Some(delegation_id) = request.uri.strip_prefix("cathulu://delegations/") {
             let delegation_id = parse_resource_id(delegation_id, &request.uri)?;
             let delegation = self
@@ -2300,6 +2411,43 @@ fn role_can_read_task_resource(role_kind: &str, project_id: Option<i64>, uri: &s
                     "planning" | "tasks" | "checkpoints/latest" | "resume"
                 )
         })
+}
+
+fn resource_project_id(store: &Store, uri: &str) -> Result<Option<i64>, McpError> {
+    let resource_id = |prefix: &str| {
+        uri.strip_prefix(prefix)
+            .and_then(|value| value.split('/').next())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(id) = resource_id("cathulu://projects/") {
+        return Ok(Some(parse_resource_id(id, uri)?));
+    }
+    if let Some(id) = resource_id("cathulu://delegations/") {
+        return store
+            .get_delegation(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    if let Some(id) = resource_id("cathulu://work-plans/") {
+        return store
+            .get_role_work_plan(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    if let Some(id) = resource_id("cathulu://owner-approvals/") {
+        return store
+            .get_owner_approval_request(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    let run_id = resource_id("cathulu://runs/").or_else(|| resource_id("cathulu://events/run/"));
+    if let Some(id) = run_id {
+        return store
+            .get_run(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    Ok(None)
 }
 
 fn parse_resource_id(id: &str, uri: &str) -> Result<i64, McpError> {

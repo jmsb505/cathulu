@@ -65,7 +65,7 @@ pub struct RoleDispatchWorkItem {
     pub delegation_id: i64,
     pub project_id: i64,
     pub project_name: String,
-    pub project_path: String,
+    pub project_path: Option<String>,
     pub run_id: i64,
     pub role: String,
     pub parent_delegation_id: Option<i64>,
@@ -1142,6 +1142,9 @@ impl Store {
         let project_id = capability
             .project_id
             .ok_or_else(|| "role capability has no project scope".to_string())?;
+        if self.project_is_private(project_id)? {
+            return Err("role capability cannot access a private project".into());
+        }
         let delegation_id = capability
             .delegation_id
             .ok_or_else(|| "role capability has no delegation assignment".to_string())?;
@@ -1294,7 +1297,7 @@ impl Store {
                     connection
                         .raw()
                         .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND visibility = 'shared')",
                             params![project_id],
                             |row| row.get(0),
                         )
@@ -1559,13 +1562,26 @@ impl Store {
             .map_err(sqlite_error)?;
         let delegation = transaction
             .query_row(
-                "SELECT status, packet_hash FROM delegations WHERE id = ?1",
+                "SELECT delegation.status, delegation.packet_hash, project.kind, project.path
+                 FROM delegations delegation JOIN projects project
+                   ON project.id = delegation.project_id
+                 WHERE delegation.id = ?1",
                 params![delegation_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| format!("delegation {delegation_id} was not found"))?;
+        if delegation.2 != "repository" || delegation.3.is_none() {
+            return Err("project_has_no_repository".into());
+        }
         let idempotency_key_hash = content_hash(&format!(
             "cathulu-role-dispatch-v1:{delegation_id}:{}",
             delegation.1
@@ -1763,7 +1779,7 @@ impl Store {
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, Option<i64>>(7)?,
@@ -2103,14 +2119,15 @@ impl Store {
                 "SELECT path FROM projects WHERE name = 'cathulu' COLLATE NOCASE
                  ORDER BY id LIMIT 1",
                 [],
-                |row| row.get::<_, String>(0),
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
             .map_err(sqlite_error)?
             .ok_or_else(|| {
                 "the registered Cathulu project workspace is required for the Main thread"
                     .to_string()
-            })?;
+            })?
+            .ok_or_else(|| "project_has_no_repository".to_string())?;
         let path = PathBuf::from(path);
         if !path.is_dir() {
             return Err(
@@ -2759,6 +2776,9 @@ fn dispatch_one(
     owner_id: &str,
     item: RoleDispatchWorkItem,
 ) -> Result<(), (i64, &'static str, String)> {
+    if item.project_path.is_none() {
+        return Err((item.id, "blocked", "project_has_no_repository".into()));
+    }
     if !matches!(item.role.as_str(), "sub_overseer" | "worker") {
         return Err((item.id, "failed", "unsupported delegation role".to_string()));
     }
@@ -3436,6 +3456,7 @@ fn role_turn_prompt(item: &RoleDispatchWorkItem) -> String {
         .and_then(|brief| serde_json::to_string(brief).ok())
         .unwrap_or_else(|| "unavailable; do not widen scope beyond the task packet".to_string());
     let memory_scope = format!("scope_type=project, scope_id={}", item.project_id);
+    let project_path = item.project_path.as_deref().unwrap_or("none");
     let role_instructions = if item.role == "sub_overseer" {
         "You are this project's persistent Project Manager role. Read the project's Cathulu memory before planning. Create and record a bounded Project Manager plan, then report that the plan is ready and end this turn. Do not claim Main approval or self-review as Main. Prepare and dispatch at most two scoped Workers only after the latest plan review is explicitly accepted. Once Workers are dispatched, end this turn; never wait or poll for their completion. Review only results returned through later routed turns. Escalate only decisions outside your authority."
     } else {
@@ -3445,7 +3466,7 @@ fn role_turn_prompt(item: &RoleDispatchWorkItem) -> String {
         "{role_instructions}\n\nCathulu is authoritative for role assignment, memory references, approvals, and reports. Do not copy transcripts into memory. Do not access another repository unless the task packet explicitly names an approved dependency. No credential, account, permission, external disclosure, destructive operation, publication, or out-of-scope action is pre-approved. If Owner input is required, record the exact request through Cathulu and stop only this project task.\n\nBefore acting, call read_memories for {memory_scope}; search HOT/WARM candidates selectively when needed. The activation record associated with this delegation is the delivery receipt; do not assume absent memories exist.\n\nDelegation ID: {}\nProject: {}\nProject path: {}\nRun ID: {}\nRole: {}\nParent delegation: {}\nMain workflow brief (authoritative): {}\nTask packet (authoritative): {}",
         item.delegation_id,
         item.project_name,
-        item.project_path,
+        project_path,
         item.run_id,
         item.role,
         item.parent_delegation_id
@@ -4011,7 +4032,7 @@ mod dispatcher_admission_tests {
                 delegation_id: self.delegation_id,
                 project_id: self.project_id,
                 project_name: "dispatcher-admission-fixture".into(),
-                project_path: "C:/fixture/dispatcher-admission".into(),
+                project_path: Some("C:/fixture/dispatcher-admission".into()),
                 run_id: self.run_id,
                 role: "sub_overseer".into(),
                 parent_delegation_id: None,

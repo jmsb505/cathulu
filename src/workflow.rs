@@ -209,6 +209,19 @@ impl Store {
         let now = now();
         let mut connection = self.connection()?;
         let transaction = connection.raw_mut().transaction().map_err(sqlite_error)?;
+        let touches_private_project: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM projects
+                   WHERE id IN (?1, ?2) AND visibility = 'private'
+                 )",
+                params![from_project_id, to_project_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if touches_private_project {
+            return Err("private_project_dependency_requires_owner_grant".into());
+        }
         transaction
             .execute(
                 "INSERT OR IGNORE INTO project_dependencies (from_project_id, to_project_id, relation, created_at)

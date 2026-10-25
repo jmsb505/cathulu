@@ -116,7 +116,10 @@ impl Store {
         let project = self
             .get_project(project_id)?
             .ok_or_else(|| format!("project {project_id} is not registered"))?;
-        let live = match crate::inspect_git_repository(Path::new(&project.path)) {
+        let Some(project_path) = project.path.as_deref() else {
+            return Ok(unavailable(project_id, "project_has_no_repository"));
+        };
+        let live = match crate::inspect_git_repository(Path::new(project_path)) {
             Ok(snapshot) => snapshot,
             Err(_) => {
                 self.mark_graphify_unavailable(project_id, "repository_unavailable")?;

@@ -3212,17 +3212,7 @@ impl Store {
 }
 
 fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<String>, String> {
-    let project_path = store
-        .connection()?
-        .raw()
-        .query_row(
-            "SELECT path FROM projects WHERE id = ?1",
-            params![project_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(sqlite_error)?
-        .ok_or_else(|| format!("registered project {project_id} was not found"))?;
+    let project_path = store.project_repository_path(project_id)?;
     let mut command = Command::new("git");
     crate::suppress_windows_console(&mut command);
     let output = command
