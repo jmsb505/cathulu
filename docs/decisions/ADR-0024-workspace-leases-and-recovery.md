@@ -37,4 +37,4 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 
 ## Evidence
 
-The [CX-05 handoff](../parallel/codex/CX-05-m52.md) records the v22 migration, admission implementation, R1 cleanup behavior, B1/D1 review, local operator recovery behavior, R-A/B/C fixes, validation and open runtime limitations. No real provider was invoked, no live store was migrated, and no app-server or MCP process was started or reloaded; the Job Object unit test used only an isolated loopback child process.
+The [CX-05 handoff](../parallel/codex/CX-05-m52.md) records the v22 migration, admission implementation, R1 cleanup behavior, B1/D1 review, local operator recovery behavior, R-A/B/C fixes, validation and open runtime limitations. No real provider was invoked, no live store was migrated, and no production app-server/MCP process was started or reloaded. The role-capability integration test started isolated MCP binaries against scratch stores; the Job Object unit test used an isolated loopback child process.
