@@ -443,6 +443,21 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         &worker_binding,
         "workspace_write",
     );
+    let unbound_worker_capability = store
+        .issue_role_thread_capability(&worker_binding, "worker", project_id, worker.id)
+        .expect("issue legacy unbound Worker capability fixture");
+    let unbound_worker_scope = store
+        .resolve_role_thread_capability(&unbound_worker_capability.token)
+        .expect("resolve unbound Worker capability");
+    assert!(store
+        .authorize_role_tool_call(
+            &unbound_worker_scope,
+            "record_delegation_update",
+            &json!({"delegation_id":worker.id}),
+        )
+        .unwrap_err()
+        .contains("require a bound workspace lease"));
+
     let worker_capability = store
         .issue_role_thread_capability_for_workspace(
             &worker_binding,

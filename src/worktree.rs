@@ -518,22 +518,32 @@ impl Store {
             record.access,
             false,
         ) {
-            Ok(verified)
-                if verified.workspace_path_hash == record.workspace_path_hash
-                    && verified.common_dir_hash == record.common_dir_hash =>
-            {
-                verified
-            }
-            _ => {
+            Ok(verified) => verified,
+            Err(_) => {
                 self.mark_workspace_lease_needs_reconcile(
                     lease_id,
                     &record.owner_id,
                     now,
-                    "workspace or Git identity could not be verified during provider admission",
+                    "workspace verification failed during provider admission",
                 )?;
-                return Err("leased workspace or Git identity could not be verified".into());
+                return Err(
+                    "leased workspace verification failed during provider admission".into(),
+                );
             }
         };
+        if verified.workspace_path_hash != record.workspace_path_hash
+            || verified.common_dir_hash != record.common_dir_hash
+        {
+            self.mark_workspace_lease_needs_reconcile(
+                lease_id,
+                &record.owner_id,
+                now,
+                "workspace or Git identity changed during provider admission",
+            )?;
+            return Err(
+                "leased workspace or Git identity changed during provider admission".into(),
+            );
+        }
         Ok(ValidatedWorkspaceLease {
             record,
             workspace_root: verified.workspace_root,

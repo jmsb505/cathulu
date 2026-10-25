@@ -746,7 +746,7 @@ fn provider_workspace_git_identity_failure_quarantines_lease_and_revokes_capabil
             now,
         )
         .unwrap_err()
-        .contains("could not be verified"));
+        .contains("verification failed during provider admission"));
     let connection = Connection::open(fixture.store.database_path()).unwrap();
     let status: String = connection
         .query_row(
@@ -761,6 +761,69 @@ fn provider_workspace_git_identity_failure_quarantines_lease_and_revokes_capabil
         .resolve_role_thread_capability(&capability.token)
         .unwrap_err()
         .contains("revoked"));
+}
+
+#[test]
+fn provider_workspace_identity_hash_mismatch_has_a_distinct_quarantine_reason() {
+    let fixture = fixture();
+    let now = now();
+    let binding_key = format!("project-manager:{}", fixture.project_id);
+    let connection = Connection::open(fixture.store.database_path()).unwrap();
+    connection
+        .execute(
+            "INSERT INTO workspace_leases
+             (project_id, delegation_id, role_kind, role_binding_key, access, owner_id,
+              workspace_path, workspace_path_hash, common_dir_hash, base_commit, status,
+              lease_expires_at, created_at, updated_at)
+             VALUES (?1, ?2, 'sub_overseer', ?3, 'read_only', 'identity-mismatch-test',
+                     ?4, ?5, ?6, 'abcdef0', 'active', ?7, ?8, ?8)",
+            params![
+                fixture.project_id,
+                fixture.manager_id,
+                binding_key,
+                fixture.repo.to_string_lossy(),
+                "0".repeat(64),
+                "f".repeat(64),
+                now + 3600,
+                now
+            ],
+        )
+        .expect("insert isolated lease with validly shaped but stale identity hashes");
+    let lease_id = connection.last_insert_rowid();
+    drop(connection);
+
+    let provider = ScriptedProvider::new(ProviderId::codex());
+    let mut capabilities = provider.capabilities();
+    capabilities.credential_source = CredentialSource::Subscription;
+    let permissions = PermissionManifest {
+        schema_version: 1,
+        workspace_root: fixture.repo.clone(),
+        access: WorkspaceAccess::ReadOnly,
+        allowed_scope: vec![],
+        network_access: true,
+        allowed_credential_sources: vec![CredentialSource::Subscription],
+    };
+
+    assert!(fixture
+        .store
+        .validate_provider_workspace(lease_id, &permissions, &capabilities, now)
+        .unwrap_err()
+        .contains("identity changed during provider admission"));
+
+    let connection = Connection::open(fixture.store.database_path()).unwrap();
+    let (status, details): (String, String) = connection
+        .query_row(
+            "SELECT lease.status, event.details_json
+             FROM workspace_leases lease
+             JOIN workspace_lease_events event ON event.lease_id = lease.id
+             WHERE lease.id = ?1 AND event.event_type = 'needs_reconcile'
+             ORDER BY event.id DESC LIMIT 1",
+            params![lease_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "needs_reconcile");
+    assert!(details.contains("identity changed during provider admission"));
 }
 
 #[test]

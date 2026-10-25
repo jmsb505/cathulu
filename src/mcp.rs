@@ -29,9 +29,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
-// The Owner holds product dispatch off until Claude reviews the completed admission boundary.
-// This also preserves the explicit default-off behavior after admission review; the prior
-// environment default enabled dispatch when CATHULU_ROLE_DISPATCHER_ENABLED was unset.
+// Product dispatch stays off until the admission boundary is reviewed and the Owner explicitly
+// approves enablement. Review is a prerequisite, not an activation decision. This gate also
+// changes the default: an unset CATHULU_ROLE_DISPATCHER_ENABLED previously enabled dispatch.
 const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = false;
 
 const SERVER_NAME: &str = "cathulu";

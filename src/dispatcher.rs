@@ -2487,9 +2487,11 @@ fn dispatcher_loop(
             }
         };
         if let Some(item) = item {
+            let provider_capabilities = crate::codex_adapter::declared_capabilities();
             let result = dispatch_one(
                 &store,
                 &admission_policy,
+                &provider_capabilities,
                 &mut app_server,
                 &mut active_turns,
                 &owner_id,
@@ -2510,9 +2512,11 @@ fn dispatcher_loop(
             .claim_next_role_inbox_message(&active_binding_keys)
             .unwrap_or_default();
         if let Some(message) = message {
+            let provider_capabilities = crate::codex_adapter::declared_capabilities();
             if let Err((inbox_id, status, error)) = dispatch_role_inbox_message(
                 &store,
                 &admission_policy,
+                &provider_capabilities,
                 &mut app_server,
                 &mut active_turns,
                 message,
@@ -2535,6 +2539,7 @@ fn dispatcher_loop(
 fn dispatch_one(
     store: &Store,
     admission_policy: &RoleDispatchAdmissionPolicy,
+    provider_capabilities: &ProviderCapabilities,
     app_server: &mut Option<AppServerProcess>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     owner_id: &str,
@@ -2577,23 +2582,6 @@ fn dispatch_one(
     let lease_id = store
         .active_workspace_lease_id_for_delegation(item.delegation_id, unix_time())
         .map_err(|message| (item.id, "blocked", message))?;
-    let permissions = admission_policy
-        .permission_manifest(store, lease_id, item.task_packet.allowed_scope.clone())
-        .map_err(|message| (item.id, "blocked", message))?;
-    let provider_capabilities = crate::codex_adapter::declared_capabilities();
-    let preflight = store
-        .validate_provider_workspace(lease_id, &permissions, &provider_capabilities, unix_time())
-        .map_err(|message| (item.id, "blocked", message))?;
-    if preflight.record.project_id != item.project_id
-        || preflight.record.delegation_id != item.delegation_id
-        || preflight.record.role_kind != item.role
-    {
-        return Err((
-            item.id,
-            "blocked",
-            "active workspace lease does not match this role assignment".to_string(),
-        ));
-    }
     if existing_thread_id.is_some()
         && store
             .active_role_thread_capability_workspace_lease_id(&binding_key)
@@ -2606,6 +2594,22 @@ fn dispatch_one(
             "stored role thread is not bound to this exact workspace lease".to_string(),
         ));
     }
+    let permissions = admission_policy
+        .permission_manifest(store, lease_id, item.task_packet.allowed_scope.clone())
+        .map_err(|message| (item.id, "blocked", message))?;
+    let preflight = store
+        .validate_provider_workspace(lease_id, &permissions, provider_capabilities, unix_time())
+        .map_err(|message| (item.id, "blocked", message))?;
+    if preflight.record.project_id != item.project_id
+        || preflight.record.delegation_id != item.delegation_id
+        || preflight.record.role_kind != item.role
+    {
+        return Err((
+            item.id,
+            "blocked",
+            "active workspace lease does not match this role assignment".to_string(),
+        ));
+    }
     let capability = store
         .issue_role_thread_capability_for_workspace(
             &binding_key,
@@ -2615,15 +2619,19 @@ fn dispatch_one(
             lease_id,
         )
         .map_err(|message| (item.id, "blocked", message))?;
-    let admission = store
-        .validate_role_provider_start(
-            &capability.token,
-            lease_id,
-            &permissions,
-            &provider_capabilities,
-            unix_time(),
-        )
-        .map_err(|message| (item.id, "blocked", message))?;
+    let admission = match store.validate_role_provider_start(
+        &capability.token,
+        lease_id,
+        &permissions,
+        provider_capabilities,
+        unix_time(),
+    ) {
+        Ok(admission) => admission,
+        Err(message) => {
+            let _ = store.revoke_role_thread_capability(&binding_key);
+            return Err((item.id, "blocked", message));
+        }
+    };
     if app_server.is_none() {
         *app_server = Some(
             AppServerProcess::start(&admission).map_err(|message| (item.id, "blocked", message))?,
@@ -2642,7 +2650,7 @@ fn dispatch_one(
                     &capability.token,
                     lease_id,
                     &permissions,
-                    &provider_capabilities,
+                    provider_capabilities,
                     unix_time(),
                 )
                 .map_err(|message| (item.id, "blocked", message))?;
@@ -2663,7 +2671,7 @@ fn dispatch_one(
                     &capability.token,
                     lease_id,
                     &permissions,
-                    &provider_capabilities,
+                    provider_capabilities,
                     unix_time(),
                 )
                 .map_err(|message| (item.id, "blocked", message))?;
@@ -2747,7 +2755,7 @@ fn dispatch_one(
             &capability.token,
             lease_id,
             &permissions,
-            &provider_capabilities,
+            provider_capabilities,
             unix_time(),
         )
         .map_err(|message| (item.id, "needs_reconcile", message))?;
@@ -2825,6 +2833,7 @@ fn required_tools_for_role(role: &str) -> &'static [&'static str] {
 fn dispatch_role_inbox_message(
     store: &Store,
     admission_policy: &RoleDispatchAdmissionPolicy,
+    provider_capabilities: &ProviderCapabilities,
     app_server: &mut Option<AppServerProcess>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     message: RoleTurnInboxRecord,
@@ -2880,23 +2889,6 @@ fn dispatch_role_inbox_message(
     let lease_id = store
         .active_workspace_lease_id_for_delegation(manager_delegation_id, unix_time())
         .map_err(|error| (message.id, "blocked", error))?;
-    let permissions = admission_policy
-        .permission_manifest(store, lease_id, Vec::new())
-        .map_err(|error| (message.id, "blocked", error))?;
-    let provider_capabilities = crate::codex_adapter::declared_capabilities();
-    let preflight = store
-        .validate_provider_workspace(lease_id, &permissions, &provider_capabilities, unix_time())
-        .map_err(|error| (message.id, "blocked", error))?;
-    if preflight.record.project_id != message.project_id
-        || preflight.record.delegation_id != manager_delegation_id
-        || preflight.record.role_kind != "sub_overseer"
-    {
-        return Err((
-            message.id,
-            "blocked",
-            "active workspace lease does not match the Project Manager assignment".to_string(),
-        ));
-    }
     if store
         .active_role_thread_capability_workspace_lease_id(&message.target_binding_key)
         .map_err(|error| (message.id, "blocked", error))?
@@ -2908,6 +2900,22 @@ fn dispatch_role_inbox_message(
             "stored Project Manager thread is not bound to this exact workspace lease".to_string(),
         ));
     }
+    let permissions = admission_policy
+        .permission_manifest(store, lease_id, Vec::new())
+        .map_err(|error| (message.id, "blocked", error))?;
+    let preflight = store
+        .validate_provider_workspace(lease_id, &permissions, provider_capabilities, unix_time())
+        .map_err(|error| (message.id, "blocked", error))?;
+    if preflight.record.project_id != message.project_id
+        || preflight.record.delegation_id != manager_delegation_id
+        || preflight.record.role_kind != "sub_overseer"
+    {
+        return Err((
+            message.id,
+            "blocked",
+            "active workspace lease does not match the Project Manager assignment".to_string(),
+        ));
+    }
     let capability = store
         .issue_role_thread_capability_for_workspace(
             &message.target_binding_key,
@@ -2917,15 +2925,19 @@ fn dispatch_role_inbox_message(
             lease_id,
         )
         .map_err(|error| (message.id, "blocked", error))?;
-    let admission = store
-        .validate_role_provider_start(
-            &capability.token,
-            lease_id,
-            &permissions,
-            &provider_capabilities,
-            unix_time(),
-        )
-        .map_err(|error| (message.id, "blocked", error))?;
+    let admission = match store.validate_role_provider_start(
+        &capability.token,
+        lease_id,
+        &permissions,
+        provider_capabilities,
+        unix_time(),
+    ) {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = store.revoke_role_thread_capability(&message.target_binding_key);
+            return Err((message.id, "blocked", error));
+        }
+    };
     if app_server.is_none() {
         *app_server = Some(
             AppServerProcess::start(&admission).map_err(|error| (message.id, "blocked", error))?,
@@ -2941,7 +2953,7 @@ fn dispatch_role_inbox_message(
             &capability.token,
             lease_id,
             &permissions,
-            &provider_capabilities,
+            provider_capabilities,
             unix_time(),
         )
         .map_err(|error| (message.id, "blocked", error))?;
@@ -2964,7 +2976,7 @@ fn dispatch_role_inbox_message(
             &capability.token,
             lease_id,
             &permissions,
-            &provider_capabilities,
+            provider_capabilities,
             unix_time(),
         )
         .map_err(|error| (message.id, "needs_reconcile", error))?;
@@ -3318,5 +3330,425 @@ mod admission_policy_tests {
             vec![CredentialSource::Subscription, CredentialSource::ApiKey]
         );
         assert!(parse_allowed_credential_sources(Some("subscription,unknown")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod dispatcher_admission_tests {
+    use super::*;
+    use crate::agent_provider::{
+        FeatureSupport, IsolationCapabilities, ProviderId, CONTRACT_VERSION,
+    };
+    use rusqlite::Connection;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct Fixture {
+        data_dir: PathBuf,
+        store: Store,
+        project_id: i64,
+        delegation_id: i64,
+        run_id: i64,
+        binding_key: String,
+        lease_id: Option<i64>,
+    }
+
+    fn packet() -> DelegationTaskPacket {
+        DelegationTaskPacket {
+            schema_version: 1,
+            title: "Dispatcher admission fixture".into(),
+            objective: "Exercise provider-free admission refusals.".into(),
+            acceptance_criteria: vec!["No refusal starts an app-server.".into()],
+            constraints: vec![],
+            allowed_scope: vec!["src/**".into()],
+            referenced_memory_ids: vec![],
+            referenced_artifact_ids: vec![],
+            requested_report_fields: vec!["summary".into()],
+        }
+    }
+
+    fn main_brief() -> Value {
+        json!({
+            "schema_version": 1,
+            "desired_outcome": "Exercise dispatcher admission fixtures.",
+            "phases": ["Prepare", "Verify"],
+            "project_boundary": ["Fixture data only."],
+            "dependencies": [],
+            "acceptance_criteria": ["Provider starts remain blocked."],
+            "owner_approval_gates": ["No external actions."],
+            "known_risks": []
+        })
+    }
+
+    fn fixture() -> Fixture {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let data_dir = std::env::current_dir()
+            .expect("resolve repository root")
+            .join("target")
+            .join("manual-dev")
+            .join("codex")
+            .join(format!(
+                "dispatcher-admission-{}-{stamp}",
+                std::process::id()
+            ));
+        let store = Store::open(&data_dir).expect("initialize isolated dispatcher fixture");
+        let connection = Connection::open(store.database_path()).expect("open fixture database");
+        connection
+            .execute(
+                "INSERT INTO projects
+                 (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
+                 VALUES ('dispatcher-admission-fixture', 'C:/fixture/dispatcher-admission', 'main', NULL, 0, '[]', 1, 1)",
+                [],
+            )
+            .expect("seed fixture project");
+        let project_id = connection.last_insert_rowid();
+        drop(connection);
+
+        let objective = store
+            .create_objective(
+                project_id,
+                "Admission fixture",
+                "Provider-free dispatcher tests",
+            )
+            .expect("create fixture objective");
+        let task = store
+            .create_task(objective.id, "Check admission", "Keep all starts blocked")
+            .expect("create fixture task");
+        let run = store
+            .start_run(project_id, Some(objective.id), Some(task.id), None)
+            .expect("start fixture run");
+        store
+            .record_role_work_plan(
+                project_id,
+                run.id,
+                "main",
+                None,
+                &main_brief(),
+                "dispatcher-admission-main-plan",
+            )
+            .expect("record fixture Main brief");
+        let delegation = store
+            .prepare_delegation(
+                project_id,
+                task.id,
+                run.id,
+                "sub_overseer",
+                None,
+                &packet(),
+                None,
+                "dispatcher-admission-manager",
+                None,
+                None,
+                None,
+            )
+            .expect("prepare fixture Project Manager assignment");
+        let binding_key = format!("project-manager:{project_id}");
+        Fixture {
+            data_dir,
+            store,
+            project_id,
+            delegation_id: delegation.id,
+            run_id: run.id,
+            binding_key,
+            lease_id: None,
+        }
+    }
+
+    impl Fixture {
+        fn add_active_lease(&mut self) -> i64 {
+            let now = unix_time();
+            let connection =
+                Connection::open(self.store.database_path()).expect("open fixture lease database");
+            connection
+                .execute(
+                    "INSERT INTO workspace_leases
+                     (project_id, delegation_id, role_kind, role_binding_key, access, owner_id,
+                      workspace_path, workspace_path_hash, common_dir_hash, base_commit, status,
+                      lease_expires_at, created_at, updated_at)
+                     VALUES (?1, ?2, 'sub_overseer', ?3, 'read_only', 'dispatcher-admission-fixture',
+                             ?4, ?5, ?6, 'abcdef0', 'active', ?7, ?8, ?8)",
+                    rusqlite::params![
+                        self.project_id,
+                        self.delegation_id,
+                        self.binding_key,
+                        format!("C:/fixture/dispatcher-admission-worktree/{}", self.delegation_id),
+                        format!("{:064x}", self.delegation_id),
+                        "b".repeat(64),
+                        now + 3600,
+                        now
+                    ],
+                )
+                .expect("insert fixture active lease");
+            let lease_id = connection.last_insert_rowid();
+            self.lease_id = Some(lease_id);
+            lease_id
+        }
+
+        fn bind_thread(&self) {
+            self.store
+                .bind_role_thread(
+                    &self.binding_key,
+                    Some(&self.binding_key),
+                    None,
+                    self.project_id,
+                    "fixture-thread",
+                    "active",
+                    None,
+                )
+                .expect("bind fixture Project Manager thread");
+        }
+
+        fn issue_capability(&self, bound: bool) {
+            match (bound, self.lease_id) {
+                (true, Some(lease_id)) => {
+                    self.store
+                        .issue_role_thread_capability_for_workspace(
+                            &self.binding_key,
+                            "sub_overseer",
+                            self.project_id,
+                            self.delegation_id,
+                            lease_id,
+                        )
+                        .expect("issue fixture lease-bound capability");
+                }
+                (false, _) => {
+                    self.store
+                        .issue_role_thread_capability(
+                            &self.binding_key,
+                            "sub_overseer",
+                            self.project_id,
+                            self.delegation_id,
+                        )
+                        .expect("issue fixture unbound capability");
+                }
+                (true, None) => panic!("bound capability fixture requires a lease"),
+            }
+        }
+
+        fn work_item(&self) -> RoleDispatchWorkItem {
+            RoleDispatchWorkItem {
+                id: 41,
+                delegation_id: self.delegation_id,
+                project_id: self.project_id,
+                project_name: "dispatcher-admission-fixture".into(),
+                project_path: "C:/fixture/dispatcher-admission".into(),
+                run_id: self.run_id,
+                role: "sub_overseer".into(),
+                parent_delegation_id: None,
+                task_packet: packet(),
+                main_workflow_brief: None,
+                packet_hash: "a".repeat(64),
+                requested_model: None,
+                requested_effort: None,
+            }
+        }
+
+        fn inbox_message(&self, target_binding_key: &str) -> RoleTurnInboxRecord {
+            RoleTurnInboxRecord {
+                id: 42,
+                source_event_id: 1,
+                source_delegation_id: self.delegation_id,
+                target_binding_key: target_binding_key.into(),
+                target_delegation_id: Some(self.delegation_id),
+                project_id: self.project_id,
+                event_type: "agent_action_required".into(),
+                payload_json: "{}".into(),
+                status: "starting".into(),
+                attempt_count: 1,
+                last_error: None,
+                created_at: unix_time(),
+                updated_at: unix_time(),
+            }
+        }
+    }
+
+    fn policy(network_access: bool) -> RoleDispatchAdmissionPolicy {
+        RoleDispatchAdmissionPolicy {
+            allowed_credential_sources: vec![CredentialSource::Subscription],
+            network_access,
+        }
+    }
+
+    fn capabilities(credential_source: CredentialSource) -> ProviderCapabilities {
+        let supported = FeatureSupport::Supported;
+        ProviderCapabilities {
+            contract_version: CONTRACT_VERSION,
+            provider_id: ProviderId::codex(),
+            adapter_version: "dispatcher-admission-test".into(),
+            harness_version: None,
+            resume_session: supported,
+            interrupt: supported,
+            status_query: supported,
+            structured_result: supported,
+            per_turn_model: supported,
+            isolation: IsolationCapabilities {
+                settings: supported,
+                plugins: supported,
+                mcp_servers: supported,
+                instructions: supported,
+                memory: supported,
+            },
+            credential_source,
+            max_prompt_bytes: 1024,
+            notes: vec![],
+        }
+    }
+
+    fn assert_refused_without_spawn(
+        result: Result<(), (i64, &'static str, String)>,
+        app_server: &Option<AppServerProcess>,
+        expected_status: &str,
+        expected_reason: &str,
+    ) {
+        let (_, status, reason) = result.expect_err("admission case must be refused");
+        assert_eq!(status, expected_status, "{reason}");
+        assert!(reason.contains(expected_reason), "{reason}");
+        assert!(
+            app_server.is_none(),
+            "refusal must not create an app-server"
+        );
+    }
+
+    #[test]
+    fn both_dispatch_routes_block_missing_lease_and_unbound_capability_before_spawn() {
+        let mut fixture = fixture();
+        fixture.bind_thread();
+        let caps = capabilities(CredentialSource::Subscription);
+
+        let mut app_server = None;
+        let result = dispatch_one(
+            &fixture.store,
+            &policy(true),
+            &caps,
+            &mut app_server,
+            &mut HashMap::new(),
+            "dispatcher-admission-test",
+            fixture.work_item(),
+        );
+        assert_refused_without_spawn(
+            result,
+            &app_server,
+            "blocked",
+            "no exact active workspace lease",
+        );
+
+        let result = dispatch_role_inbox_message(
+            &fixture.store,
+            &policy(true),
+            &caps,
+            &mut app_server,
+            &mut HashMap::new(),
+            fixture.inbox_message(&fixture.binding_key),
+        );
+        assert_refused_without_spawn(
+            result,
+            &app_server,
+            "blocked",
+            "no exact active workspace lease",
+        );
+
+        fixture.add_active_lease();
+        fixture.issue_capability(false);
+        let result = dispatch_one(
+            &fixture.store,
+            &policy(true),
+            &caps,
+            &mut app_server,
+            &mut HashMap::new(),
+            "dispatcher-admission-test",
+            fixture.work_item(),
+        );
+        assert_refused_without_spawn(
+            result,
+            &app_server,
+            "needs_reconcile",
+            "not bound to this exact workspace lease",
+        );
+
+        let result = dispatch_role_inbox_message(
+            &fixture.store,
+            &policy(true),
+            &caps,
+            &mut app_server,
+            &mut HashMap::new(),
+            fixture.inbox_message(&fixture.binding_key),
+        );
+        assert_refused_without_spawn(
+            result,
+            &app_server,
+            "needs_reconcile",
+            "not bound to this exact workspace lease",
+        );
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn both_dispatch_routes_block_unknown_unpermitted_credentials_and_denied_network_before_spawn()
+    {
+        for (credential_source, network_access, expected_reason) in [
+            (CredentialSource::Unknown, true, "unknown"),
+            (CredentialSource::ApiKey, true, "not permitted"),
+            (
+                CredentialSource::Subscription,
+                false,
+                "network access is not explicitly allowed",
+            ),
+        ] {
+            let mut fixture = fixture();
+            fixture.add_active_lease();
+            fixture.bind_thread();
+            fixture.issue_capability(true);
+            let caps = capabilities(credential_source);
+            let admission_policy = policy(network_access);
+            let mut app_server = None;
+
+            let result = dispatch_one(
+                &fixture.store,
+                &admission_policy,
+                &caps,
+                &mut app_server,
+                &mut HashMap::new(),
+                "dispatcher-admission-test",
+                fixture.work_item(),
+            );
+            assert_refused_without_spawn(result, &app_server, "blocked", expected_reason);
+
+            let result = dispatch_role_inbox_message(
+                &fixture.store,
+                &admission_policy,
+                &caps,
+                &mut app_server,
+                &mut HashMap::new(),
+                fixture.inbox_message(&fixture.binding_key),
+            );
+            assert_refused_without_spawn(result, &app_server, "blocked", expected_reason);
+            let _ = std::fs::remove_dir_all(fixture.data_dir);
+        }
+    }
+
+    #[test]
+    fn main_inbox_is_blocked_before_any_store_or_provider_access() {
+        let fixture = fixture();
+        let mut app_server = None;
+        let mut message = fixture.inbox_message("main-overseer");
+        message.target_delegation_id = None;
+        let result = dispatch_role_inbox_message(
+            &fixture.store,
+            &policy(true),
+            &capabilities(CredentialSource::Subscription),
+            &mut app_server,
+            &mut HashMap::new(),
+            message,
+        );
+        assert_refused_without_spawn(
+            result,
+            &app_server,
+            "blocked",
+            "Main inbox provider start is held",
+        );
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
     }
 }
