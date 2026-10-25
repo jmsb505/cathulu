@@ -1,6 +1,6 @@
 # ADR-0024 — Product workspace leases and uncertain execution recovery
 
-- Status: Accepted M52 safety baseline; dispatcher admission amendments A–D are committed at `3444829134e7630c60b2e97b836cf5dbd7367300` and await Claude's re-review. Product dispatch remains held off by explicit Owner direction; review does not activate it.
+- Status: Accepted M52 safety baseline; Claude accepted dispatcher admission amendments A–D at `3444829134e7630c60b2e97b836cf5dbd7367300` and required R1. Codex implemented and locally validated R1 at `6153cdc155a1ac3b10fc62b3e8b904e2b76e5bef`; Claude's re-review is pending. Product dispatch remains held off by explicit Owner direction; review does not activate it.
 - Scope: Durable workspace assignment, role/session/attempt binding, credential-source eligibility and recovery for Cathulu-managed product execution.
 - Depends on: [PLAN-020](../plans/PLAN-020-mixed-provider-personal-project-os.md) M52 and [PLAN-021](../plans/PLAN-021-manual-claude-codex-development.md) CX-05.
 
@@ -17,7 +17,7 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 3. Permit one active provider session for each logical `binding_key` across all providers. On v21 upgrade, conflicting active session rows are retained but marked `unknown`, so the system does not silently choose a winner. A new session can replace the role's session only after every other attempt for that role is terminal; replacement inactivates the old session and revokes capabilities tied to it.
 4. Bind a provider attempt and role capability to the same exact lease. Provider execution is eligible only when the adapter reports a known credential source and the permission manifest explicitly allows it. Unknown or unapproved credential sources block.
 5. On expiry, release or revocation with unresolved attempts, mark the attempt `needs_reconcile`, quarantine the lease and revoke the capability. Retain its role/path locks until explicit terminal reconciliation. Do not automatically retry the provider call or delete, move or clean a worktree.
-6. Keep product dispatch behind the Owner's fail-closed runtime gate. Before every Worker or Project Manager provider start, resolve and validate the exact active workspace lease, workspace identity, role capability, permission manifest and known allowed credential source. Reject unbound capabilities and attempts. Block Main inbox starts until Main has an exact lease model. Review is a prerequisite; only the Owner may decide whether to enable dispatch later. Do not migrate the live store or alter a running process as part of CX-05.
+6. Keep product dispatch behind the Owner's fail-closed runtime gate. Before every Worker or Project Manager provider start, resolve and validate the exact active workspace lease, workspace identity, role capability, permission manifest and known allowed credential source. Reject unbound capabilities and attempts. Once a capability is issued, revoke it on any refusal before calling `start_turn`; validate admission before marking the delegation dispatched. Preserve the capability after calling `start_turn`, even if its acknowledgement fails, because submission may be ambiguous. Block Main inbox starts until Main has an exact lease model. Review is a prerequisite; only the Owner may decide whether to enable dispatch later. Do not migrate the live store or alter a running process as part of CX-05.
 
 ## Consequences
 
@@ -33,4 +33,4 @@ The Owner's same-directory Claude Code/Codex development arrangement is a separa
 
 ## Evidence
 
-The [CX-05 handoff](../parallel/codex/CX-05-m52.md) records the v22 migration, admission implementation, amendment tests, full offline suite result and open runtime limitations. No real provider was invoked, no live store was migrated, and no dispatcher process was started or reloaded.
+The [CX-05 handoff](../parallel/codex/CX-05-m52.md) records the v22 migration, admission implementation, R1 cleanup behavior, full offline suite result and open runtime limitations. No real provider was invoked, no live store was migrated, and no dispatcher process was started or reloaded.
