@@ -1098,3 +1098,400 @@ fn public_mcp_task_flow_survives_restart_with_dispatch_and_provider_calls_disabl
     assert_eq!(reopened_task["status"], json!("queued"));
     assert_eq!(reopened_task["cancellationReason"], Value::Null);
 }
+
+// F1 gate (CC-01-review-CX-01-final.md §3). Administrative completion is refused while a linked
+// run is blocked, failed, inconclusive or cancelled, or while a verified run is linked. The
+// verified-run path stays open, and reasoned cancellation remains the child waiver.
+
+fn finish_linked_run(
+    store: &Store,
+    project_id: i64,
+    objective_id: i64,
+    task_id: i64,
+    workflow_id: Option<i64>,
+    check_status: Option<&str>,
+) -> cathulu_core::workflow::RunRecord {
+    let run = store
+        .start_run(project_id, Some(objective_id), Some(task_id), workflow_id)
+        .expect("start run");
+    if let Some(check_status) = check_status {
+        store
+            .record_quality_check(run.id, "unit", true, check_status, &json!({ "count": 1 }))
+            .expect("record mandatory check");
+    }
+    store
+        .record_project_memory_review(
+            run.id,
+            "no_durable_change",
+            "task_produced_no_reusable_knowledge",
+            &[],
+        )
+        .expect("record memory review");
+    store
+        .finish_run(run.id, "F1 gate fixture")
+        .expect("finish run")
+}
+
+fn accepted_project_summary(store: &Store, project_id: i64) {
+    let summary = store
+        .create_memory(&MemoryCreateInput {
+            scope_type: "project".to_string(),
+            scope_id: Some(project_id.to_string()),
+            memory_class: "canonical".to_string(),
+            temperature: "hot".to_string(),
+            kind: "summary".to_string(),
+            body: "Fixture summary that existed before the F1 gate runs.".to_string(),
+            sources: vec![
+                MemorySource {
+                    source_type: "project".to_string(),
+                    source_id: project_id.to_string(),
+                },
+                MemorySource {
+                    source_type: "source_file".to_string(),
+                    source_id: "README.md".to_string(),
+                },
+            ],
+            artifact_ids: Vec::new(),
+            valid_from: None,
+            valid_until: None,
+            supersedes_id: None,
+            freshness_basis: FreshnessBasis::default(),
+            importance: 0.9,
+            confidence: 0.95,
+            active: true,
+            protected: false,
+        })
+        .expect("create project summary");
+    store
+        .review_memory_candidate(summary.id, "accepted")
+        .expect("accept project summary");
+}
+
+fn qa_workflow(store: &Store) -> i64 {
+    store
+        .create_workflow_version(
+            "m48_f1_gate",
+            "M48 F1 gate",
+            1,
+            &json!({ "mandatory_checks": ["unit"] }),
+        )
+        .expect("create QA workflow")
+        .id
+}
+
+fn assert_administrative_completion_refused(store: &Store, task_id: i64, named: &[&str]) {
+    let before = store
+        .get_task(task_id)
+        .expect("read task")
+        .expect("task exists");
+    let event_count = store
+        .list_events("task", &task_id.to_string())
+        .expect("read task events before refusal")
+        .len();
+    let error = store
+        .complete_task_administratively(task_id, before.revision, "ship anyway")
+        .expect_err("the F1 gate must refuse administrative completion");
+    for fragment in named {
+        assert!(
+            error.contains(fragment),
+            "error should name {fragment:?}: {error}"
+        );
+    }
+    let after = store
+        .get_task(task_id)
+        .expect("read task")
+        .expect("task exists");
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.revision, before.revision);
+    assert!(after.completion_kind.is_none());
+    assert_eq!(
+        store
+            .list_events("task", &task_id.to_string())
+            .expect("read task events after refusal")
+            .len(),
+        event_count
+    );
+}
+
+fn parent_and_child(
+    store: &Store,
+    objective_id: i64,
+) -> (cathulu_core::workflow::Task, cathulu_core::workflow::Task) {
+    let parent = create_task(store, objective_id, &input("Parent", 0, None));
+    let child = create_task(store, objective_id, &input("Child", 0, None));
+    let child = store
+        .update_task_plan(
+            child.id,
+            child.revision,
+            &TaskPlanInput {
+                parent_task_id: Some(parent.id),
+                ..input("Child", 0, None)
+            },
+        )
+        .expect("assign same-project parent");
+    (parent, child)
+}
+
+#[test]
+fn f1_refuses_administrative_completion_after_failed_run() {
+    let root = scratch_root("f1-failed");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(&store, objective.id, &input("Failed QA", 0, None));
+    let workflow = qa_workflow(&store);
+    let run = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("failed"),
+    );
+    assert_eq!(run.status, "failed");
+    let run_id = run.id.to_string();
+    assert_administrative_completion_refused(&store, task.id, &[run_id.as_str(), "failed"]);
+}
+
+#[test]
+fn f1_refuses_administrative_completion_after_blocked_run() {
+    let root = scratch_root("f1-blocked");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(&store, objective.id, &input("No checks", 0, None));
+    let run = finish_linked_run(&store, project_id, objective.id, task.id, None, None);
+    assert_eq!(run.status, "blocked");
+    let run_id = run.id.to_string();
+    assert_administrative_completion_refused(&store, task.id, &[run_id.as_str(), "blocked"]);
+}
+
+#[test]
+fn f1_refuses_administrative_completion_after_inconclusive_run() {
+    let root = scratch_root("f1-inconclusive");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(&store, objective.id, &input("Inconclusive QA", 0, None));
+    let workflow = qa_workflow(&store);
+    let run = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("inconclusive"),
+    );
+    assert_eq!(run.status, "inconclusive");
+    let run_id = run.id.to_string();
+    assert_administrative_completion_refused(&store, task.id, &[run_id.as_str(), "inconclusive"]);
+}
+
+#[test]
+fn f1_refuses_administrative_completion_after_cancelled_run() {
+    let root = scratch_root("f1-cancelled");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(&store, objective.id, &input("Cancelled run", 0, None));
+    let run = finish_linked_run(&store, project_id, objective.id, task.id, None, None);
+    // No public path sets runs.status to 'cancelled'; this fixture pins the gate's coverage.
+    let connection = Connection::open(store.database_path()).expect("open fixture database");
+    connection
+        .execute(
+            "UPDATE runs SET status = 'cancelled' WHERE id = ?1",
+            [run.id],
+        )
+        .expect("fixture: cancel run");
+    drop(connection);
+    let run_id = run.id.to_string();
+    assert_administrative_completion_refused(&store, task.id, &[run_id.as_str(), "cancelled"]);
+}
+
+#[test]
+fn f1_refuses_administrative_completion_when_failed_run_precedes_verified_run() {
+    let root = scratch_root("f1-failed-then-verified");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(
+        &store,
+        objective.id,
+        &input("Failed then verified", 0, None),
+    );
+    let workflow = qa_workflow(&store);
+    let failed = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("failed"),
+    );
+    let verified = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("passed"),
+    );
+    assert_eq!(verified.status, "verified_success");
+    let failed_id = failed.id.to_string();
+    assert_administrative_completion_refused(&store, task.id, &[failed_id.as_str(), "failed"]);
+}
+
+#[test]
+fn f1_refuses_administrative_completion_while_verified_run_is_unaccepted() {
+    let root = scratch_root("f1-verified-unaccepted");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "administrative completion")
+        .expect("create objective");
+    let task = create_task(
+        &store,
+        objective.id,
+        &input("Verified, unaccepted", 0, None),
+    );
+    let workflow = qa_workflow(&store);
+    let verified = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("passed"),
+    );
+    assert_eq!(verified.status, "verified_success");
+    let verified_id = verified.id.to_string();
+    assert_administrative_completion_refused(
+        &store,
+        task.id,
+        &[verified_id.as_str(), "accept_task_run"],
+    );
+}
+
+#[test]
+fn f1_verified_completion_still_works_after_earlier_failed_run() {
+    let root = scratch_root("f1-verified-guard");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    accepted_project_summary(&store, project_id);
+    let objective = store
+        .create_objective(project_id, "F1 gate", "verified path")
+        .expect("create objective");
+    let task = create_task(
+        &store,
+        objective.id,
+        &input("Failed then verified", 0, None),
+    );
+    let workflow = qa_workflow(&store);
+    let failed = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("failed"),
+    );
+    let verified = finish_linked_run(
+        &store,
+        project_id,
+        objective.id,
+        task.id,
+        Some(workflow),
+        Some("passed"),
+    );
+    assert_eq!(failed.status, "failed");
+    assert_eq!(verified.status, "verified_success");
+    let current = store
+        .get_task(task.id)
+        .expect("read task")
+        .expect("task exists");
+    let accepted = store
+        .accept_task_run(task.id, verified.id, current.revision)
+        .expect("a verified run must still complete the task");
+    assert_eq!(accepted.status, "completed");
+    assert_eq!(accepted.completion_kind.as_deref(), Some("verified_run"));
+    assert_eq!(accepted.completion_run_id, Some(verified.id));
+}
+
+#[test]
+fn f1_failed_child_keeps_parent_open_until_cancelled_with_reason() {
+    let root = scratch_root("f1-failed-child");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    let objective = store
+        .create_objective(project_id, "F1 gate", "parent and child")
+        .expect("create objective");
+    let (parent, child) = parent_and_child(&store, objective.id);
+    let child = store
+        .set_task_status(child.id, "failed")
+        .expect("mark child failed");
+    let parent = store
+        .get_task(parent.id)
+        .expect("read parent")
+        .expect("parent exists");
+    let error = store
+        .complete_task_administratively(parent.id, parent.revision, "finish parent")
+        .expect_err("a failed child keeps the parent open");
+    assert!(error.contains("child task"), "{error}");
+    let child = store
+        .cancel_task(child.id, child.revision, "descoped after failed QA")
+        .expect("cancel failed child with a reason");
+    assert_eq!(child.status, "cancelled");
+    let parent = store
+        .get_task(parent.id)
+        .expect("read parent")
+        .expect("parent exists");
+    let completed = store
+        .complete_task_administratively(parent.id, parent.revision, "finish parent")
+        .expect("reasoned cancellation is the child waiver");
+    assert_eq!(completed.status, "completed");
+}
+
+#[test]
+fn f1_legacy_cancelled_child_keeps_parent_open() {
+    let root = scratch_root("f1-legacy-child");
+    let store = Store::open(root.join("data")).expect("open isolated M48 store");
+    let project_id = register_fixture_project(&store, &root.join("repos"), "project");
+    let objective = store
+        .create_objective(project_id, "F1 gate", "legacy child")
+        .expect("create objective");
+    let (parent, child) = parent_and_child(&store, objective.id);
+    // Migrated cancellations carry the reserved reason, which is not waiver evidence.
+    let connection = Connection::open(store.database_path()).expect("open fixture database");
+    connection
+        .execute(
+            "UPDATE tasks SET status = 'cancelled', cancellation_reason = 'legacy_unknown',
+               cancelled_at = updated_at WHERE id = ?1",
+            [child.id],
+        )
+        .expect("fixture: legacy cancellation");
+    drop(connection);
+    let parent = store
+        .get_task(parent.id)
+        .expect("read parent")
+        .expect("parent exists");
+    let error = store
+        .complete_task_administratively(parent.id, parent.revision, "finish parent")
+        .expect_err("legacy cancellation is not waiver evidence");
+    assert!(error.contains("child task"), "{error}");
+}

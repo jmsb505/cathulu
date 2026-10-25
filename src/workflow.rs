@@ -1205,6 +1205,9 @@ impl Store {
         if !matches!(status.as_str(), "queued" | "active") {
             return Err(format!("a {status} task cannot be completed"));
         }
+        if completion_kind == "administrative" {
+            ensure_no_linked_run_blocks_administrative_completion(&transaction, task_id)?;
+        }
         ensure_task_completable(&transaction, task_id)?;
         transaction
             .execute(
@@ -2571,6 +2574,36 @@ fn ensure_task_completable(transaction: &Transaction<'_>, task_id: i64) -> Resul
         ));
     }
     ensure_no_open_task_children(transaction, task_id)?;
+    Ok(())
+}
+
+fn ensure_no_linked_run_blocks_administrative_completion(
+    transaction: &Transaction<'_>,
+    task_id: i64,
+) -> Result<(), String> {
+    // Non-verified runs sort first, so the refusal names the run that blocks the todo.
+    let linked_run: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT id, status FROM runs
+             WHERE task_id = ?1
+               AND status IN ('blocked', 'failed', 'inconclusive', 'cancelled', 'verified_success')
+             ORDER BY status = 'verified_success', id LIMIT 1",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    if let Some((run_id, status)) = linked_run {
+        return Err(if status == "verified_success" {
+            format!(
+                "task cannot be completed administratively while verified run {run_id} exists; complete it with accept_task_run"
+            )
+        } else {
+            format!(
+                "task cannot be completed administratively while linked run {run_id} is {status}; start a new run that reaches verified_success and complete it with accept_task_run"
+            )
+        });
+    }
     Ok(())
 }
 
