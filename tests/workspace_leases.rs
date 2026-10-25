@@ -348,7 +348,7 @@ fn workspace_path_aliases_and_wrong_git_common_directories_are_rejected() {
 }
 
 #[test]
-fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconciled() {
+fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacement() {
     let fixture = fixture();
     let started = now();
     let lease = fixture
@@ -364,7 +364,7 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
         .expect("claim lease for provider attempt fixture");
 
     let binding_key = format!("worker:{}", fixture.worker_one_id);
-    let session_id = "lease-provider-session";
+    let codex_session_id = "replacement-codex-session";
     let connection = Connection::open(fixture.store.database_path()).unwrap();
     connection
         .execute(
@@ -376,7 +376,7 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
                 binding_key,
                 fixture.worker_one_id,
                 fixture.project_id,
-                session_id,
+                codex_session_id,
                 started
             ],
         )
@@ -393,8 +393,9 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
     drop(connection);
 
     let session = cathulu_core::agent_provider::ExternalSession {
-        provider_id: ProviderId::codex(),
-        session_id: cathulu_core::agent_provider::ExternalId::new(session_id).unwrap(),
+        provider_id: ProviderId::claude(),
+        session_id: cathulu_core::agent_provider::ExternalId::new("initial-claude-session")
+            .unwrap(),
     };
     fixture
         .store
@@ -440,15 +441,26 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
         Some(lease.id)
     );
 
-    let claude_session = cathulu_core::agent_provider::ExternalSession {
-        provider_id: ProviderId::claude(),
-        session_id: cathulu_core::agent_provider::ExternalId::new("replacement-session").unwrap(),
+    let codex_session = cathulu_core::agent_provider::ExternalSession {
+        provider_id: ProviderId::codex(),
+        session_id: cathulu_core::agent_provider::ExternalId::new(codex_session_id).unwrap(),
     };
     assert!(fixture
         .store
-        .record_provider_session(&claude_session, &binding_key, "active", None, None)
+        .record_provider_session(&codex_session, &binding_key, "active", None, None)
         .unwrap_err()
         .contains("unresolved provider attempt"));
+    let claude_status_before_reconciliation: String =
+        Connection::open(fixture.store.database_path())
+            .unwrap()
+            .query_row(
+                "SELECT status FROM provider_sessions
+             WHERE provider_id = 'claude' AND session_id = 'initial-claude-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("keep the Claude session active while its attempt is unresolved");
+    assert_eq!(claude_status_before_reconciliation, "active");
 
     let future = lease.lease_expires_at + 1;
     assert_eq!(
@@ -520,7 +532,7 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
     assert_eq!(resolved.status, WorkspaceLeaseStatus::Released);
     fixture
         .store
-        .record_provider_session(&claude_session, &binding_key, "active", None, None)
+        .record_provider_session(&codex_session, &binding_key, "active", None, None)
         .expect("replace the provider session after reconciliation");
     assert!(fixture
         .store
@@ -536,6 +548,37 @@ fn workspace_lease_binds_capability_attempt_and_uncertain_expiry_until_reconcile
         )
         .unwrap();
     assert_eq!(active_provider_sessions, 1);
+
+    let connection = Connection::open(fixture.store.database_path()).unwrap();
+    let claude_status: String = connection
+        .query_row(
+            "SELECT status FROM provider_sessions
+             WHERE provider_id = 'claude' AND session_id = 'initial-claude-session'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("keep the replaced Claude session in provider history");
+    let codex_status: String = connection
+        .query_row(
+            "SELECT status FROM provider_sessions
+             WHERE provider_id = 'codex' AND session_id = ?1",
+            params![codex_session_id],
+            |row| row.get(0),
+        )
+        .expect("persist the replacement Codex session");
+    let (attempt_provider, attempt_session, attempt_status): (String, String, String) = connection
+        .query_row(
+            "SELECT provider_id, session_id, status FROM provider_attempts
+             WHERE attempt_key = ?1",
+            params![attempt_key.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("retain the reconciled Claude attempt");
+    assert_eq!(claude_status, "inactive");
+    assert_eq!(codex_status, "active");
+    assert_eq!(attempt_provider, "claude");
+    assert_eq!(attempt_session, "initial-claude-session");
+    assert_eq!(attempt_status, "completed");
 }
 
 #[test]
