@@ -24,6 +24,47 @@ fn temporary_data_dir() -> PathBuf {
         ))
 }
 
+fn insert_workspace_lease_fixture(
+    store: &Store,
+    project_id: i64,
+    delegation_id: i64,
+    role_kind: &str,
+    binding_key: &str,
+    access: &str,
+) -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_secs() as i64;
+    let connection = Connection::open(store.database_path()).expect("open lease fixture DB");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("enable foreign keys");
+    connection
+        .execute(
+            "INSERT INTO workspace_leases
+             (project_id, delegation_id, role_kind, role_binding_key, access, owner_id,
+              workspace_path, workspace_path_hash, common_dir_hash, base_commit, status,
+              lease_expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'role-capability-fixture',
+                     ?6, ?7, ?8, 'abcdef0', 'active', ?9, ?10, ?10)",
+            rusqlite::params![
+                project_id,
+                delegation_id,
+                role_kind,
+                binding_key,
+                access,
+                format!("C:/fixture/role-capability-worktree/{delegation_id}"),
+                format!("{delegation_id:064x}"),
+                "b".repeat(64),
+                now + 3600,
+                now
+            ],
+        )
+        .expect("insert active role workspace lease");
+    connection.last_insert_rowid()
+}
+
 fn task_packet(title: &str) -> DelegationTaskPacket {
     DelegationTaskPacket {
         schema_version: 1,
@@ -233,8 +274,22 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .mark_delegation_dispatched(manager.id)
         .expect("dispatch Project Manager assignment");
     let manager_binding = format!("project-manager:{project_id}");
+    let manager_lease_id = insert_workspace_lease_fixture(
+        &store,
+        project_id,
+        manager.id,
+        "sub_overseer",
+        &manager_binding,
+        "read_only",
+    );
     let manager_capability = store
-        .issue_role_thread_capability(&manager_binding, "sub_overseer", project_id, manager.id)
+        .issue_role_thread_capability_for_workspace(
+            &manager_binding,
+            "sub_overseer",
+            project_id,
+            manager.id,
+            manager_lease_id,
+        )
         .expect("issue Project Manager capability");
     assert_eq!(manager_capability.token.len(), 32);
     let manager_scope = store
@@ -380,8 +435,22 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .mark_delegation_dispatched(worker.id)
         .expect("dispatch Worker assignment");
     let worker_binding = format!("worker:{}", worker.id);
+    let worker_lease_id = insert_workspace_lease_fixture(
+        &store,
+        project_id,
+        worker.id,
+        "worker",
+        &worker_binding,
+        "workspace_write",
+    );
     let worker_capability = store
-        .issue_role_thread_capability(&worker_binding, "worker", project_id, worker.id)
+        .issue_role_thread_capability_for_workspace(
+            &worker_binding,
+            "worker",
+            project_id,
+            worker.id,
+            worker_lease_id,
+        )
         .expect("issue Worker capability");
     let worker_scope = store
         .resolve_role_thread_capability(&worker_capability.token)

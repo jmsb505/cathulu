@@ -401,6 +401,16 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         .store
         .record_provider_session(&session, &binding_key, "active", None, None)
         .expect("persist scoped provider session");
+    let capability = fixture
+        .store
+        .issue_role_thread_capability_for_workspace(
+            &binding_key,
+            "worker",
+            fixture.project_id,
+            fixture.worker_one_id,
+            lease.id,
+        )
+        .expect("issue a worker capability bound to its exact lease");
     let attempt_key = cathulu_core::agent_provider::AttemptKey::new("lease-attempt-one").unwrap();
     let attempt = fixture
         .store
@@ -415,19 +425,6 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         )
         .expect("persist a provider attempt under its exact lease");
     assert_eq!(attempt.workspace_lease_id, Some(lease.id));
-    let capability = fixture
-        .store
-        .issue_role_thread_capability(
-            &binding_key,
-            "worker",
-            fixture.project_id,
-            fixture.worker_one_id,
-        )
-        .expect("issue a scoped worker capability");
-    fixture
-        .store
-        .bind_role_thread_capability_to_workspace_lease(&capability.token, lease.id)
-        .expect("bind capability to its assigned lease");
     fixture
         .store
         .bind_capability_to_provider_attempt(&capability.token, &session, &attempt_key)
@@ -604,7 +601,7 @@ fn provider_workspace_requires_matching_lease_and_verified_credential_source() {
         workspace_root: fixture.worker_one.clone(),
         access: WorkspaceAccess::WorkspaceWrite,
         allowed_scope: vec!["src/**".into()],
-        network_access: false,
+        network_access: true,
         allowed_credential_sources: vec![CredentialSource::Subscription],
     };
     let validated = fixture
@@ -622,6 +619,148 @@ fn provider_workspace_requires_matching_lease_and_verified_credential_source() {
         .contains("unknown"));
     capabilities.credential_source = CredentialSource::Subscription;
     permissions_with_wrong_path(&fixture, lease.id, &capabilities, now);
+}
+
+#[test]
+fn provider_start_admission_requires_a_bound_lease_and_explicit_source() {
+    let fixture = fixture();
+    let now = now();
+    let lease = fixture
+        .store
+        .claim_delegation_workspace(
+            fixture.worker_one_id,
+            "worker-admission-test",
+            &fixture.worker_one,
+            WorkspaceAccess::WorkspaceWrite,
+            now,
+            60,
+        )
+        .expect("claim a clean linked worktree");
+    let provider = ScriptedProvider::new(ProviderId::codex());
+    let mut capabilities = provider.capabilities();
+    capabilities.credential_source = CredentialSource::Subscription;
+    let permissions = PermissionManifest {
+        schema_version: 1,
+        workspace_root: fixture.worker_one.clone(),
+        access: WorkspaceAccess::WorkspaceWrite,
+        allowed_scope: vec!["src/**".into()],
+        network_access: true,
+        allowed_credential_sources: vec![CredentialSource::Subscription],
+    };
+    let binding_key = format!("worker:{}", fixture.worker_one_id);
+    let unbound = fixture
+        .store
+        .issue_role_thread_capability(
+            &binding_key,
+            "worker",
+            fixture.project_id,
+            fixture.worker_one_id,
+        )
+        .expect("issue a legacy unbound fixture capability");
+    assert!(fixture
+        .store
+        .validate_role_provider_start(&unbound.token, lease.id, &permissions, &capabilities, now,)
+        .unwrap_err()
+        .contains("require an active workspace lease"));
+
+    let bound = fixture
+        .store
+        .issue_role_thread_capability_for_workspace(
+            &binding_key,
+            "worker",
+            fixture.project_id,
+            fixture.worker_one_id,
+            lease.id,
+        )
+        .expect("bind capability to exact active lease");
+    let admission = fixture
+        .store
+        .validate_role_provider_start(&bound.token, lease.id, &permissions, &capabilities, now)
+        .expect("admit exact lease and known allowed source");
+    assert!(admission.is_admitted());
+
+    capabilities.credential_source = CredentialSource::Unknown;
+    assert!(fixture
+        .store
+        .validate_role_provider_start(&bound.token, lease.id, &permissions, &capabilities, now,)
+        .unwrap_err()
+        .contains("unknown"));
+    capabilities.credential_source = CredentialSource::ApiKey;
+    assert!(fixture
+        .store
+        .validate_role_provider_start(&bound.token, lease.id, &permissions, &capabilities, now,)
+        .unwrap_err()
+        .contains("not permitted"));
+}
+
+#[test]
+fn provider_workspace_git_identity_failure_quarantines_lease_and_revokes_capability() {
+    let fixture = fixture();
+    let now = now();
+    let lease = fixture
+        .store
+        .claim_delegation_workspace(
+            fixture.worker_one_id,
+            "worker-identity-mismatch-test",
+            &fixture.worker_one,
+            WorkspaceAccess::WorkspaceWrite,
+            now,
+            60,
+        )
+        .expect("claim a clean linked worktree");
+    let binding_key = format!("worker:{}", fixture.worker_one_id);
+    let capability = fixture
+        .store
+        .issue_role_thread_capability_for_workspace(
+            &binding_key,
+            "worker",
+            fixture.project_id,
+            fixture.worker_one_id,
+            lease.id,
+        )
+        .expect("bind capability to exact active lease");
+    let provider = ScriptedProvider::new(ProviderId::codex());
+    let mut capabilities = provider.capabilities();
+    capabilities.credential_source = CredentialSource::Subscription;
+    let permissions = PermissionManifest {
+        schema_version: 1,
+        workspace_root: fixture.worker_one.clone(),
+        access: WorkspaceAccess::WorkspaceWrite,
+        allowed_scope: vec!["src/**".into()],
+        network_access: true,
+        allowed_credential_sources: vec![CredentialSource::Subscription],
+    };
+    fs::write(
+        fixture.worker_one.join(".git"),
+        "gitdir: missing-worktree-metadata\n",
+    )
+    .expect("change linked worktree identity");
+
+    assert!(fixture
+        .store
+        .validate_role_provider_start(
+            &capability.token,
+            lease.id,
+            &permissions,
+            &capabilities,
+            now,
+        )
+        .unwrap_err()
+        .contains("could not be verified"));
+    let connection = Connection::open(fixture.store.database_path()).unwrap();
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM workspace_leases WHERE id = ?1",
+            params![lease.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "needs_reconcile");
+    assert!(fixture
+        .store
+        .resolve_role_thread_capability(&capability.token)
+        .unwrap_err()
+        .contains("revoked"));
 }
 
 #[test]
@@ -687,7 +826,7 @@ fn permissions_with_wrong_path(
         workspace_root: fixture.repo.clone(),
         access: WorkspaceAccess::ReadOnly,
         allowed_scope: vec!["src/**".into()],
-        network_access: false,
+        network_access: true,
         allowed_credential_sources: vec![CredentialSource::Subscription],
     };
     assert!(fixture

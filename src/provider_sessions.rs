@@ -321,6 +321,8 @@ impl Store {
                 "provider attempt must identify exactly one dispatch or inbox record".into(),
             );
         }
+        let lease_id = workspace_lease_id
+            .ok_or_else(|| "provider attempt requires an exact workspace lease".to_string())?;
         let now = unix_time();
         let mut connection = self.connection()?;
         let transaction = connection
@@ -338,35 +340,52 @@ impl Store {
             .map_err(sqlite_error)?
             .ok_or_else(|| "provider attempt requires an active persisted session".to_string())?;
 
-        if let Some(lease_id) = workspace_lease_id {
-            let lease_is_current: bool = transaction
-                .query_row(
-                    "SELECT EXISTS(
-                       SELECT 1 FROM workspace_leases lease
-                       JOIN provider_sessions session
-                         ON session.provider_id = ?1 AND session.session_id = ?2
-                       WHERE lease.id = ?3 AND lease.status = 'active'
-                         AND lease.lease_expires_at > ?4
-                         AND lease.project_id IS session.project_id
-                         AND lease.delegation_id IS ?5
-                         AND lease.role_binding_key = session.binding_key
-                     )",
-                    params![
-                        session.provider_id.as_str(),
-                        session.session_id.as_str(),
-                        lease_id,
-                        now,
-                        delegation_id
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(sqlite_error)?;
-            if !lease_is_current {
-                return Err(
-                    "provider attempt workspace lease is inactive or outside this role assignment"
-                        .into(),
-                );
-            }
+        let lease_is_current: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM workspace_leases lease
+                   JOIN provider_sessions session
+                     ON session.provider_id = ?1 AND session.session_id = ?2
+                   WHERE lease.id = ?3 AND lease.status = 'active'
+                     AND lease.lease_expires_at > ?4
+                     AND lease.project_id IS session.project_id
+                     AND lease.delegation_id IS ?5
+                     AND lease.role_binding_key = session.binding_key
+                 )",
+                params![
+                    session.provider_id.as_str(),
+                    session.session_id.as_str(),
+                    lease_id,
+                    now,
+                    delegation_id
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !lease_is_current {
+            return Err(
+                "provider attempt workspace lease is inactive or outside this role assignment"
+                    .into(),
+            );
+        }
+        let capability_is_bound: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM role_thread_capabilities capability
+                   JOIN workspace_leases lease ON lease.id = capability.workspace_lease_id
+                   WHERE capability.binding_key = ?1 AND capability.status = 'active'
+                     AND capability.workspace_lease_id = ?2
+                     AND lease.status = 'active' AND lease.lease_expires_at > ?3
+                 )",
+                params![binding_key, lease_id, now],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !capability_is_bound {
+            return Err(
+                "provider attempt requires an active role capability bound to the exact workspace lease"
+                    .into(),
+            );
         }
 
         if let Some(existing) = read_provider_attempt(&transaction, attempt_key)? {
@@ -376,7 +395,7 @@ impl Store {
                 && existing.inbox_id == inbox_id
                 && existing.delegation_id == delegation_id
                 && existing.request_hash == request_hash
-                && existing.workspace_lease_id == workspace_lease_id
+                && existing.workspace_lease_id == Some(lease_id)
             {
                 transaction.commit().map_err(sqlite_error)?;
                 return Ok(existing);
@@ -430,7 +449,7 @@ impl Store {
                     delegation_id,
                     request_hash,
                     now,
-                    workspace_lease_id,
+                    Some(lease_id),
                 ],
             )
             .map_err(sqlite_error)?;
@@ -1352,6 +1371,49 @@ mod tests {
         path.join("cathulu.sqlite3")
     }
 
+    fn insert_test_workspace_lease(
+        store: &Store,
+        project_id: i64,
+        delegation_id: i64,
+        binding_key: &str,
+        owner_id: &str,
+    ) -> i64 {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("target/manual-dev/codex/provider-session-workspace")
+            .join(Uuid::new_v4().to_string());
+        let path_text = path.to_string_lossy().to_string();
+        let path_hash = content_hash(&path_text);
+        let common_dir_hash = content_hash("provider-session-test-common-dir");
+        let now = unix_time();
+        let connection = rusqlite::Connection::open(store.database_path()).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO workspace_leases
+                 (project_id, delegation_id, role_kind, role_binding_key, access, owner_id,
+                  workspace_path, workspace_path_hash, common_dir_hash, base_commit, status,
+                  lease_expires_at, created_at, updated_at)
+                 VALUES (?1, ?2, 'sub_overseer', ?3, 'read_only', ?4, ?5, ?6, ?7,
+                         'abcdef0', 'active', ?8, ?9, ?9)",
+                params![
+                    project_id,
+                    delegation_id,
+                    binding_key,
+                    owner_id,
+                    path_text,
+                    path_hash,
+                    common_dir_hash,
+                    now + 3600,
+                    now
+                ],
+            )
+            .unwrap();
+        connection.last_insert_rowid()
+    }
+
     #[test]
     fn version_20_upgrade_backfills_sessions_and_fails_closed_on_active_role_collisions() {
         let database_path = scratch_database("provider-sessions-migration");
@@ -1724,6 +1786,23 @@ mod tests {
             provider_id: ProviderId::codex(),
             session_id: ExternalId::new(session_id).unwrap(),
         };
+        let first_lease_id = insert_test_workspace_lease(
+            &store,
+            project_id,
+            delegation_id,
+            &binding_key,
+            "provider-session-test-owner-1",
+        );
+        let unbound_capability = store
+            .issue_role_thread_capability(&binding_key, "sub_overseer", project_id, delegation_id)
+            .unwrap();
+        assert_eq!(
+            store
+                .resolve_role_thread_capability(&unbound_capability.token)
+                .unwrap()
+                .workspace_lease_id,
+            None
+        );
         store
             .record_provider_session(&codex_session, &binding_key, "active", None, None)
             .unwrap();
@@ -1731,7 +1810,7 @@ mod tests {
         assert_eq!(manifest.entries.len(), 1);
         assert_eq!(manifest.entries[0].memory_id, memory_id);
         let first_attempt = AttemptKey::new("codex-attempt").unwrap();
-        store
+        assert!(store
             .begin_provider_attempt(
                 &first_attempt,
                 &codex_session,
@@ -1740,12 +1819,42 @@ mod tests {
                 Some(delegation_id),
                 &content_hash(&serde_json::to_string(&manifest).unwrap()),
             )
+            .unwrap_err()
+            .contains("exact workspace lease"));
+        assert!(store
+            .begin_provider_attempt_under_workspace_lease(
+                &first_attempt,
+                &codex_session,
+                Some(dispatch_id),
+                None,
+                delegation_id,
+                &content_hash(&serde_json::to_string(&manifest).unwrap()),
+                first_lease_id,
+            )
+            .unwrap_err()
+            .contains("role capability bound"));
+        let codex_capability = store
+            .issue_role_thread_capability_for_workspace(
+                &binding_key,
+                "sub_overseer",
+                project_id,
+                delegation_id,
+                first_lease_id,
+            )
+            .unwrap();
+        store
+            .begin_provider_attempt_under_workspace_lease(
+                &first_attempt,
+                &codex_session,
+                Some(dispatch_id),
+                None,
+                delegation_id,
+                &content_hash(&serde_json::to_string(&manifest).unwrap()),
+                first_lease_id,
+            )
             .unwrap();
         store
             .record_selected_provider_context(&codex_session, &first_attempt, &manifest)
-            .unwrap();
-        let codex_capability = store
-            .issue_role_thread_capability(&binding_key, "sub_overseer", project_id, delegation_id)
             .unwrap();
         store
             .bind_capability_to_provider_attempt(
@@ -1772,8 +1881,32 @@ mod tests {
         store
             .set_provider_attempt_state(&first_attempt, "completed", None)
             .unwrap();
+        store
+            .release_workspace_lease(
+                first_lease_id,
+                "provider-session-test-owner-1",
+                unix_time(),
+                "completed provider attempt",
+            )
+            .unwrap();
 
         // The same provider session text is a separate identity under Claude's namespace.
+        let second_lease_id = insert_test_workspace_lease(
+            &store,
+            project_id,
+            delegation_id,
+            &binding_key,
+            "provider-session-test-owner-2",
+        );
+        let claude_capability = store
+            .issue_role_thread_capability_for_workspace(
+                &binding_key,
+                "sub_overseer",
+                project_id,
+                delegation_id,
+                second_lease_id,
+            )
+            .unwrap();
         let claude_session = ExternalSession {
             provider_id: ProviderId::claude(),
             session_id: ExternalId::new(session_id).unwrap(),
@@ -1783,21 +1916,19 @@ mod tests {
             .unwrap();
         let second_attempt = AttemptKey::new("claude-attempt").unwrap();
         store
-            .begin_provider_attempt(
+            .begin_provider_attempt_under_workspace_lease(
                 &second_attempt,
                 &claude_session,
                 Some(dispatch_id),
                 None,
-                Some(delegation_id),
+                delegation_id,
                 &content_hash("replacement request"),
+                second_lease_id,
             )
             .unwrap();
         let second_manifest = store.preview_delegation_context(delegation_id).unwrap();
         store
             .record_selected_provider_context(&claude_session, &second_attempt, &second_manifest)
-            .unwrap();
-        let claude_capability = store
-            .issue_role_thread_capability(&binding_key, "sub_overseer", project_id, delegation_id)
             .unwrap();
         store
             .bind_capability_to_provider_attempt(

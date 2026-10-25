@@ -300,6 +300,60 @@ impl Store {
 }
 
 impl Store {
+    pub fn active_workspace_lease_id_for_delegation(
+        &self,
+        delegation_id: i64,
+        now: i64,
+    ) -> Result<i64, String> {
+        if delegation_id <= 0 || now < 0 {
+            return Err("workspace lease assignment identity or validation time is invalid".into());
+        }
+        let connection = self.connection()?;
+        let mut statement = connection
+            .raw()
+            .prepare(
+                "SELECT id FROM workspace_leases
+                 WHERE delegation_id = ?1 AND status = 'active' AND lease_expires_at > ?2
+                 ORDER BY id LIMIT 2",
+            )
+            .map_err(sqlite_error)?;
+        let mut rows = statement
+            .query(params![delegation_id, now])
+            .map_err(sqlite_error)?;
+        let lease_id = rows
+            .next()
+            .map_err(sqlite_error)?
+            .map(|row| row.get::<_, i64>(0))
+            .transpose()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| "delegation has no exact active workspace lease".to_string())?;
+        if rows.next().map_err(sqlite_error)?.is_some() {
+            return Err("delegation has ambiguous active workspace leases".into());
+        }
+        Ok(lease_id)
+    }
+
+    pub fn permission_manifest_for_workspace_lease(
+        &self,
+        lease_id: i64,
+        allowed_scope: Vec<String>,
+        network_access: bool,
+        allowed_credential_sources: Vec<CredentialSource>,
+    ) -> Result<PermissionManifest, String> {
+        if lease_id <= 0 {
+            return Err("workspace lease ID must be positive".into());
+        }
+        let (record, workspace_path, _) = self.workspace_lease_context(lease_id)?;
+        Ok(PermissionManifest {
+            schema_version: 1,
+            workspace_root: PathBuf::from(workspace_path),
+            access: record.access,
+            allowed_scope,
+            network_access,
+            allowed_credential_sources,
+        })
+    }
+
     /// Acquire one bounded lease for a prepared/dispatched delegation. Writable leases are
     /// worker-only, require a clean linked worktree, and serialize writers per project until a
     /// narrower semantic-overlap contract exists.
@@ -440,6 +494,9 @@ impl Store {
         now: i64,
     ) -> Result<ValidatedWorkspaceLease, String> {
         let credential_source = validate_provider_credential_source(capabilities, permissions)?;
+        if !permissions.network_access {
+            return Err("provider workspace permission manifest denies network access".into());
+        }
         if lease_id <= 0 || now < 0 {
             return Err("workspace lease identity or validation time is invalid".into());
         }
@@ -455,17 +512,28 @@ impl Store {
         {
             return Err("read-only workspace lease cannot grant provider write access".into());
         }
-        let verified = verify_project_workspace(
+        let verified = match verify_project_workspace(
             &project_path,
             &permissions.workspace_root,
             record.access,
             false,
-        )?;
-        if verified.workspace_path_hash != record.workspace_path_hash
-            || verified.common_dir_hash != record.common_dir_hash
-        {
-            return Err("leased workspace path or Git common directory has changed".into());
-        }
+        ) {
+            Ok(verified)
+                if verified.workspace_path_hash == record.workspace_path_hash
+                    && verified.common_dir_hash == record.common_dir_hash =>
+            {
+                verified
+            }
+            _ => {
+                self.mark_workspace_lease_needs_reconcile(
+                    lease_id,
+                    &record.owner_id,
+                    now,
+                    "workspace or Git identity could not be verified during provider admission",
+                )?;
+                return Err("leased workspace or Git identity could not be verified".into());
+            }
+        };
         Ok(ValidatedWorkspaceLease {
             record,
             workspace_root: verified.workspace_root,

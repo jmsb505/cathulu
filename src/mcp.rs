@@ -1,5 +1,7 @@
 use crate::delegation::{ActivationMemoryReference, DelegationTaskPacket, WorkerReport};
-use crate::dispatcher::{role_allowed_tools, RoleCapabilityScope, RoleDispatcherService};
+use crate::dispatcher::{
+    role_allowed_tools, RoleCapabilityScope, RoleDispatchAdmissionPolicy, RoleDispatcherService,
+};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::optimization::{
@@ -27,9 +29,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
-// Keep product dispatch off until it acquires an exact workspace lease and validates its
-// permission manifest and credential source before every provider session/turn. The current
-// dispatcher still starts AppServerProcess directly and cannot satisfy that admission contract.
+// The Owner holds product dispatch off until Claude reviews the completed admission boundary.
+// This also preserves the explicit default-off behavior after admission review; the prior
+// environment default enabled dispatch when CATHULU_ROLE_DISPATCHER_ENABLED was unset.
 const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = false;
 
 const SERVER_NAME: &str = "cathulu";
@@ -2159,20 +2161,21 @@ pub async fn run_stdio() -> Result<(), String> {
             return Err("Cathulu role capability environment is not valid Unicode".to_string())
         }
     };
-    let dispatcher_requested =
-        std::env::var("CATHULU_ROLE_DISPATCHER_ENABLED").map_or(true, |value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        });
+    let dispatcher_requested = role_dispatcher_requested(
+        std::env::var("CATHULU_ROLE_DISPATCHER_ENABLED")
+            .ok()
+            .as_deref(),
+    );
     let dispatcher_client_requested = std::env::var("CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED")
         .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
     let dispatcher_enabled =
         role_dispatcher_runtime_enabled(dispatcher_requested, dispatcher_client_requested);
     let dispatcher =
         if role_dispatcher_service_enabled(dispatcher_requested, role_capability.is_some()) {
-            Some(RoleDispatcherService::start(store.clone())?)
+            Some(RoleDispatcherService::start(
+                store.clone(),
+                RoleDispatchAdmissionPolicy::from_environment()?,
+            )?)
         } else {
             None
         };
@@ -2194,6 +2197,15 @@ pub async fn run_stdio() -> Result<(), String> {
 
 fn role_dispatcher_runtime_enabled(dispatcher_requested: bool, client_requested: bool) -> bool {
     (dispatcher_requested || client_requested) && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
+}
+
+fn role_dispatcher_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
 }
 
 fn role_dispatcher_service_enabled(dispatcher_requested: bool, has_role_capability: bool) -> bool {
@@ -2242,12 +2254,17 @@ fn internal_error(error: impl std::fmt::Display) -> McpError {
 #[cfg(test)]
 mod schema_tests {
     use super::{
-        role_can_read_task_resource, role_dispatcher_runtime_enabled,
+        role_can_read_task_resource, role_dispatcher_requested, role_dispatcher_runtime_enabled,
         role_dispatcher_service_enabled, CathuluServer,
     };
 
     #[test]
     fn m52_admission_gate_keeps_product_dispatch_off_even_when_requested() {
+        assert!(!role_dispatcher_requested(None));
+        assert!(!role_dispatcher_requested(Some("")));
+        assert!(!role_dispatcher_requested(Some("invalid")));
+        assert!(role_dispatcher_requested(Some("true")));
+        assert!(role_dispatcher_requested(Some("1")));
         assert!(!role_dispatcher_runtime_enabled(true, false));
         assert!(!role_dispatcher_runtime_enabled(false, true));
         assert!(!role_dispatcher_runtime_enabled(true, true));

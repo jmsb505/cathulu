@@ -4,6 +4,9 @@
 //! delegation packet, project state, memory, and evidence tables remain authoritative. A queued
 //! record is not evidence that a Codex turn started or completed.
 
+use crate::agent_provider::{
+    CredentialSource, PermissionManifest, ProviderCapabilities, ProviderStartAdmission,
+};
 use crate::app_server::{AppServerMessage, AppServerProcess};
 use crate::delegation::DelegationTaskPacket;
 use crate::events::append_event;
@@ -13,7 +16,7 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -693,6 +696,245 @@ impl Store {
         })
     }
 
+    /// Rotate a worker or Project Manager capability while binding it atomically to the exact
+    /// active workspace lease that will authorize provider startup.
+    pub fn issue_role_thread_capability_for_workspace(
+        &self,
+        binding_key: &str,
+        role_kind: &str,
+        project_id: i64,
+        delegation_id: i64,
+        workspace_lease_id: i64,
+    ) -> Result<RoleCapability, String> {
+        if binding_key.trim().is_empty()
+            || !matches!(role_kind, "sub_overseer" | "worker")
+            || project_id <= 0
+            || delegation_id <= 0
+            || workspace_lease_id <= 0
+            || (role_kind == "sub_overseer"
+                && binding_key != format!("project-manager:{project_id}"))
+            || (role_kind == "worker" && binding_key != format!("worker:{delegation_id}"))
+        {
+            return Err("role thread capability identity is invalid".into());
+        }
+        let token = Uuid::new_v4().simple().to_string();
+        let token_hash = content_hash(&token);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let lease_matches: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM workspace_leases
+                   WHERE id = ?1 AND project_id = ?2 AND delegation_id = ?3
+                     AND role_kind = ?4 AND role_binding_key = ?5
+                     AND status = 'active' AND lease_expires_at > ?6
+                 )",
+                params![
+                    workspace_lease_id,
+                    project_id,
+                    delegation_id,
+                    role_kind,
+                    binding_key,
+                    now
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !lease_matches {
+            return Err("workspace lease is not active for this role assignment".into());
+        }
+        let unresolved_attempt: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM provider_attempts
+                   WHERE binding_key = ?1
+                     AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                 )",
+                params![binding_key],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if unresolved_attempt {
+            return Err(
+                "role capability cannot rotate while a provider attempt needs reconciliation"
+                    .into(),
+            );
+        }
+        let current: Option<(Option<i64>, String)> = transaction
+            .query_row(
+                "SELECT workspace_lease_id, status FROM role_thread_capabilities
+                 WHERE binding_key = ?1",
+                params![binding_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        if let Some((Some(current_lease_id), status)) = current {
+            if current_lease_id != workspace_lease_id {
+                if status != "revoked" {
+                    return Err("role capability is bound to a different workspace lease".into());
+                }
+                transaction
+                    .execute(
+                        "UPDATE role_thread_capabilities
+                         SET workspace_lease_id = NULL, provider_id = NULL,
+                             provider_session_id = NULL, attempt_key = NULL
+                         WHERE binding_key = ?1 AND status = 'revoked'",
+                        params![binding_key],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+        transaction
+            .execute(
+                "INSERT INTO role_thread_capabilities
+                 (binding_key, role_kind, project_id, delegation_id, capability_hash, status,
+                  created_at, updated_at, workspace_lease_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6, ?7)
+                 ON CONFLICT(binding_key) DO UPDATE SET delegation_id = excluded.delegation_id,
+                   capability_hash = excluded.capability_hash, status = 'active',
+                   provider_id = NULL, provider_session_id = NULL, attempt_key = NULL,
+                   workspace_lease_id = excluded.workspace_lease_id, updated_at = excluded.updated_at",
+                params![
+                    binding_key,
+                    role_kind,
+                    project_id,
+                    delegation_id,
+                    token_hash,
+                    now,
+                    workspace_lease_id
+                ],
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+        Ok(RoleCapability {
+            token,
+            role_kind: role_kind.to_string(),
+            project_id,
+            delegation_id,
+        })
+    }
+
+    pub fn active_role_thread_capability_workspace_lease_id(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<i64>, String> {
+        let connection = self.connection()?;
+        connection
+            .raw()
+            .query_row(
+                "SELECT workspace_lease_id FROM role_thread_capabilities
+                 WHERE binding_key = ?1 AND status = 'active'",
+                params![binding_key],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(sqlite_error)
+    }
+
+    pub fn validate_role_provider_start(
+        &self,
+        capability_token: &str,
+        workspace_lease_id: i64,
+        permissions: &PermissionManifest,
+        provider_capabilities: &ProviderCapabilities,
+        now: i64,
+    ) -> Result<ProviderStartAdmission, String> {
+        let scope = self.resolve_role_thread_capability(capability_token)?;
+        let bound_lease_id = scope.workspace_lease_id.ok_or_else(|| {
+            "worker and Project Manager capabilities require an active workspace lease".to_string()
+        })?;
+        if bound_lease_id != workspace_lease_id
+            || !matches!(scope.role_kind.as_str(), "worker" | "sub_overseer")
+        {
+            return Err(
+                "role capability is not bound to the exact provider workspace lease".into(),
+            );
+        }
+        let validated = self.validate_provider_workspace(
+            workspace_lease_id,
+            permissions,
+            provider_capabilities,
+            now,
+        )?;
+        if scope.project_id != Some(validated.record.project_id)
+            || scope.delegation_id != Some(validated.record.delegation_id)
+            || scope.role_kind != validated.record.role_kind
+        {
+            return Err(
+                "provider workspace lease does not match the active role capability".into(),
+            );
+        }
+        let binding_key = match scope.role_kind.as_str() {
+            "sub_overseer" => format!("project-manager:{}", validated.record.project_id),
+            "worker" => format!("worker:{}", validated.record.delegation_id),
+            _ => unreachable!(),
+        };
+        let connection = self.connection()?;
+        let capability_and_lease_still_active: bool = connection
+            .raw()
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM role_thread_capabilities capability
+                   JOIN workspace_leases lease ON lease.id = capability.workspace_lease_id
+                   WHERE capability.capability_hash = ?1
+                     AND capability.binding_key = ?2
+                     AND capability.role_kind = ?3
+                     AND capability.project_id = ?4
+                     AND capability.delegation_id = ?5
+                     AND capability.status = 'active'
+                     AND capability.workspace_lease_id = ?6
+                     AND lease.project_id = ?4 AND lease.delegation_id = ?5
+                     AND lease.role_kind = ?3 AND lease.status = 'active'
+                     AND lease.lease_expires_at > ?7
+                 )",
+                params![
+                    scope.capability_hash,
+                    binding_key,
+                    scope.role_kind,
+                    validated.record.project_id,
+                    validated.record.delegation_id,
+                    workspace_lease_id,
+                    now
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if !capability_and_lease_still_active {
+            return Err(
+                "role capability or workspace lease changed during provider admission".into(),
+            );
+        }
+        let unresolved_attempt: bool = connection
+            .raw()
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM provider_attempts
+                   WHERE binding_key = ?1
+                     AND status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                 )",
+                params![binding_key],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)?;
+        if unresolved_attempt {
+            return Err("provider start is blocked by an unresolved attempt for this role".into());
+        }
+        ProviderStartAdmission::from_validated_workspace(
+            validated.record.id,
+            validated.workspace_root,
+            validated.record.workspace_path_hash,
+            permissions.content_hash()?,
+            validated.credential_source,
+            validated.record.lease_expires_at,
+        )
+    }
+
     /// Bind an already-issued role capability to the delegation's exact active workspace lease.
     pub fn bind_role_thread_capability_to_workspace_lease(
         &self,
@@ -877,6 +1119,13 @@ impl Store {
         let delegation_id = capability
             .delegation_id
             .ok_or_else(|| "role capability has no delegation assignment".to_string())?;
+        if matches!(capability.role_kind.as_str(), "worker" | "sub_overseer")
+            && capability.workspace_lease_id.is_none()
+        {
+            return Err(
+                "worker and Project Manager capabilities require a bound workspace lease".into(),
+            );
+        }
         if let Some(lease_id) = capability.workspace_lease_id {
             let connection = self.connection()?;
             let active: bool = connection
@@ -2053,13 +2302,94 @@ pub struct RoleDispatcherService {
     _thread: JoinHandle<()>,
 }
 
+/// Runtime policy supplied to dispatcher admission. The default is deny: no source is allowed
+/// and provider network access is off until the Owner configures both explicitly.
+#[derive(Clone, Debug, Default)]
+pub struct RoleDispatchAdmissionPolicy {
+    allowed_credential_sources: Vec<CredentialSource>,
+    network_access: bool,
+}
+
+impl RoleDispatchAdmissionPolicy {
+    pub fn from_environment() -> Result<Self, String> {
+        let allowed_credential_sources = parse_allowed_credential_sources(
+            std::env::var("CATHULU_ROLE_DISPATCHER_ALLOWED_CREDENTIAL_SOURCES")
+                .ok()
+                .as_deref(),
+        )?;
+        let network_access = std::env::var("CATHULU_ROLE_DISPATCHER_NETWORK_ACCESS")
+            .is_ok_and(|value| explicitly_enabled(&value));
+        Ok(Self {
+            allowed_credential_sources,
+            network_access,
+        })
+    }
+
+    fn permission_manifest(
+        &self,
+        store: &Store,
+        workspace_lease_id: i64,
+        allowed_scope: Vec<String>,
+    ) -> Result<PermissionManifest, String> {
+        if self.allowed_credential_sources.is_empty() {
+            return Err("no provider credential source is explicitly allowed".into());
+        }
+        if !self.network_access {
+            return Err("provider network access is not explicitly allowed".into());
+        }
+        store.permission_manifest_for_workspace_lease(
+            workspace_lease_id,
+            allowed_scope,
+            self.network_access,
+            self.allowed_credential_sources.clone(),
+        )
+    }
+}
+
+fn explicitly_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
+fn parse_allowed_credential_sources(value: Option<&str>) -> Result<Vec<CredentialSource>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut sources = Vec::new();
+    for entry in value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let source = match entry.to_ascii_lowercase().as_str() {
+            "subscription" => CredentialSource::Subscription,
+            "api_key" => CredentialSource::ApiKey,
+            "other" => CredentialSource::Other,
+            _ => {
+                return Err(
+                    "dispatcher credential-source allow-list contains an unknown value".into(),
+                )
+            }
+        };
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    Ok(sources)
+}
+
 impl RoleDispatcherService {
-    pub fn start(store: Store) -> Result<Self, String> {
+    pub fn start(
+        store: Store,
+        admission_policy: RoleDispatchAdmissionPolicy,
+    ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = thread::Builder::new()
             .name("cathulu-role-dispatcher".into())
-            .spawn(move || dispatcher_loop(store, thread_stop))
+            .spawn(move || dispatcher_loop(store, admission_policy, thread_stop))
             .map_err(|error| format!("cannot start local role dispatcher: {error}"))?;
         Ok(Self {
             stop,
@@ -2082,7 +2412,11 @@ struct ActiveTurn {
     turn_id: Option<String>,
 }
 
-fn dispatcher_loop(store: Store, stop: Arc<AtomicBool>) {
+fn dispatcher_loop(
+    store: Store,
+    admission_policy: RoleDispatchAdmissionPolicy,
+    stop: Arc<AtomicBool>,
+) {
     let owner_id = format!("{}:{}", std::process::id(), unix_time());
     const LEASE_SECONDS: i64 = 45;
     let mut lease_held = false;
@@ -2153,7 +2487,14 @@ fn dispatcher_loop(store: Store, stop: Arc<AtomicBool>) {
             }
         };
         if let Some(item) = item {
-            let result = dispatch_one(&store, &mut app_server, &mut active_turns, &owner_id, item);
+            let result = dispatch_one(
+                &store,
+                &admission_policy,
+                &mut app_server,
+                &mut active_turns,
+                &owner_id,
+                item,
+            );
             if let Err((dispatch_id, status, message)) = result {
                 let _ = store.set_role_dispatch_status(dispatch_id, status, Some(&message));
             }
@@ -2169,9 +2510,13 @@ fn dispatcher_loop(store: Store, stop: Arc<AtomicBool>) {
             .claim_next_role_inbox_message(&active_binding_keys)
             .unwrap_or_default();
         if let Some(message) = message {
-            if let Err((inbox_id, status, error)) =
-                dispatch_role_inbox_message(&store, &mut app_server, &mut active_turns, message)
-            {
+            if let Err((inbox_id, status, error)) = dispatch_role_inbox_message(
+                &store,
+                &admission_policy,
+                &mut app_server,
+                &mut active_turns,
+                message,
+            ) {
                 let _ = store.set_role_inbox_status(inbox_id, status, Some(&error));
             }
             continue;
@@ -2189,6 +2534,7 @@ fn dispatcher_loop(store: Store, stop: Arc<AtomicBool>) {
 
 fn dispatch_one(
     store: &Store,
+    admission_policy: &RoleDispatchAdmissionPolicy,
     app_server: &mut Option<AppServerProcess>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     owner_id: &str,
@@ -2212,11 +2558,6 @@ fn dispatch_one(
             "this logical role already has an active Codex turn".to_string(),
         ));
     }
-    if app_server.is_none() {
-        *app_server =
-            Some(AppServerProcess::start().map_err(|message| (item.id, "failed", message))?);
-    }
-    let server = app_server.as_mut().expect("app-server was started");
     let binding = store
         .get_role_thread_binding(&binding_key)
         .map_err(|message| (item.id, "failed", message))?;
@@ -2233,38 +2574,120 @@ fn dispatch_one(
         None => None,
     };
 
+    let lease_id = store
+        .active_workspace_lease_id_for_delegation(item.delegation_id, unix_time())
+        .map_err(|message| (item.id, "blocked", message))?;
+    let permissions = admission_policy
+        .permission_manifest(store, lease_id, item.task_packet.allowed_scope.clone())
+        .map_err(|message| (item.id, "blocked", message))?;
+    let provider_capabilities = crate::codex_adapter::declared_capabilities();
+    let preflight = store
+        .validate_provider_workspace(lease_id, &permissions, &provider_capabilities, unix_time())
+        .map_err(|message| (item.id, "blocked", message))?;
+    if preflight.record.project_id != item.project_id
+        || preflight.record.delegation_id != item.delegation_id
+        || preflight.record.role_kind != item.role
+    {
+        return Err((
+            item.id,
+            "blocked",
+            "active workspace lease does not match this role assignment".to_string(),
+        ));
+    }
+    if existing_thread_id.is_some()
+        && store
+            .active_role_thread_capability_workspace_lease_id(&binding_key)
+            .map_err(|message| (item.id, "blocked", message))?
+            != Some(lease_id)
+    {
+        return Err((
+            item.id,
+            "needs_reconcile",
+            "stored role thread is not bound to this exact workspace lease".to_string(),
+        ));
+    }
     let capability = store
-        .issue_role_thread_capability(
+        .issue_role_thread_capability_for_workspace(
             &binding_key,
             &item.role,
             item.project_id,
             item.delegation_id,
+            lease_id,
         )
         .map_err(|message| (item.id, "blocked", message))?;
+    let admission = store
+        .validate_role_provider_start(
+            &capability.token,
+            lease_id,
+            &permissions,
+            &provider_capabilities,
+            unix_time(),
+        )
+        .map_err(|message| (item.id, "blocked", message))?;
+    if app_server.is_none() {
+        *app_server = Some(
+            AppServerProcess::start(&admission).map_err(|message| (item.id, "blocked", message))?,
+        );
+    }
+    let server = app_server
+        .as_mut()
+        .expect("admitted app-server was started");
     let config = role_mcp_server_config(store, &capability)
         .map_err(|message| (item.id, "blocked", message))?;
     let new_thread = existing_thread_id.is_none();
     let thread_id = match existing_thread_id {
-        Some(thread_id) => match server.resume_thread(&thread_id, config) {
-            Ok(()) => thread_id,
-            Err(message) => {
-                let _ = store.revoke_role_thread_capability(&binding_key);
-                return Err((item.id, "needs_reconcile", message));
+        Some(thread_id) => {
+            let admission = store
+                .validate_role_provider_start(
+                    &capability.token,
+                    lease_id,
+                    &permissions,
+                    &provider_capabilities,
+                    unix_time(),
+                )
+                .map_err(|message| (item.id, "blocked", message))?;
+            server
+                .set_admission(admission)
+                .map_err(|message| (item.id, "blocked", message))?;
+            match server.resume_thread(&thread_id, config) {
+                Ok(()) => thread_id,
+                Err(message) => {
+                    let _ = store.revoke_role_thread_capability(&binding_key);
+                    return Err((item.id, "needs_reconcile", message));
+                }
             }
-        },
-        None => match server.start_thread(
-            Path::new(&item.project_path),
-            item.requested_model.as_deref(),
-            "on-request",
-            "workspace-write",
-            config,
-        ) {
-            Ok(thread_id) => thread_id,
-            Err(message) => {
-                let _ = store.revoke_role_thread_capability(&binding_key);
-                return Err((item.id, "failed", message));
+        }
+        None => {
+            let admission = store
+                .validate_role_provider_start(
+                    &capability.token,
+                    lease_id,
+                    &permissions,
+                    &provider_capabilities,
+                    unix_time(),
+                )
+                .map_err(|message| (item.id, "blocked", message))?;
+            server
+                .set_admission(admission)
+                .map_err(|message| (item.id, "blocked", message))?;
+            let sandbox = match permissions.access {
+                crate::agent_provider::WorkspaceAccess::WorkspaceWrite => "workspace-write",
+                crate::agent_provider::WorkspaceAccess::ReadOnly => "read-only",
+            };
+            match server.start_thread(
+                &permissions.workspace_root,
+                item.requested_model.as_deref(),
+                "on-request",
+                sandbox,
+                config,
+            ) {
+                Ok(thread_id) => thread_id,
+                Err(message) => {
+                    let _ = store.revoke_role_thread_capability(&binding_key);
+                    return Err((item.id, "failed", message));
+                }
             }
-        },
+        }
     };
 
     let required_tools = required_tools_for_role(&item.role);
@@ -2319,6 +2742,18 @@ fn dispatch_one(
         .set_role_dispatch_status(item.id, "turn_starting", None)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
     let prompt = role_turn_prompt(&item);
+    let admission = store
+        .validate_role_provider_start(
+            &capability.token,
+            lease_id,
+            &permissions,
+            &provider_capabilities,
+            unix_time(),
+        )
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
+    server
+        .set_admission(admission)
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
     let acknowledgement = server
         .start_turn(&thread_id, &prompt)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
@@ -2389,12 +2824,17 @@ fn required_tools_for_role(role: &str) -> &'static [&'static str] {
 
 fn dispatch_role_inbox_message(
     store: &Store,
+    admission_policy: &RoleDispatchAdmissionPolicy,
     app_server: &mut Option<AppServerProcess>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     message: RoleTurnInboxRecord,
 ) -> Result<(), (i64, &'static str, String)> {
     if message.target_binding_key == "main-overseer" {
-        return dispatch_main_inbox_message(store, app_server, active_turns, message);
+        return Err((
+            message.id,
+            "blocked",
+            "Main inbox provider start is held: Main has no workspace-lease admission model".into(),
+        ));
     }
     if message.target_binding_key != format!("project-manager:{}", message.project_id) {
         return Err((
@@ -2420,11 +2860,6 @@ fn dispatch_role_inbox_message(
             "the Project Manager already has an active Codex turn".to_string(),
         ));
     }
-    if app_server.is_none() {
-        *app_server =
-            Some(AppServerProcess::start().map_err(|error| (message.id, "blocked", error))?);
-    }
-    let server = app_server.as_mut().expect("app-server was started");
     let binding = store
         .get_role_thread_binding(&message.target_binding_key)
         .map_err(|error| (message.id, "blocked", error))?
@@ -2442,15 +2877,76 @@ fn dispatch_role_inbox_message(
             "the Project Manager Codex thread binding is not active".to_string(),
         ));
     }
+    let lease_id = store
+        .active_workspace_lease_id_for_delegation(manager_delegation_id, unix_time())
+        .map_err(|error| (message.id, "blocked", error))?;
+    let permissions = admission_policy
+        .permission_manifest(store, lease_id, Vec::new())
+        .map_err(|error| (message.id, "blocked", error))?;
+    let provider_capabilities = crate::codex_adapter::declared_capabilities();
+    let preflight = store
+        .validate_provider_workspace(lease_id, &permissions, &provider_capabilities, unix_time())
+        .map_err(|error| (message.id, "blocked", error))?;
+    if preflight.record.project_id != message.project_id
+        || preflight.record.delegation_id != manager_delegation_id
+        || preflight.record.role_kind != "sub_overseer"
+    {
+        return Err((
+            message.id,
+            "blocked",
+            "active workspace lease does not match the Project Manager assignment".to_string(),
+        ));
+    }
+    if store
+        .active_role_thread_capability_workspace_lease_id(&message.target_binding_key)
+        .map_err(|error| (message.id, "blocked", error))?
+        != Some(lease_id)
+    {
+        return Err((
+            message.id,
+            "needs_reconcile",
+            "stored Project Manager thread is not bound to this exact workspace lease".to_string(),
+        ));
+    }
     let capability = store
-        .issue_role_thread_capability(
+        .issue_role_thread_capability_for_workspace(
             &message.target_binding_key,
             "sub_overseer",
             message.project_id,
             manager_delegation_id,
+            lease_id,
         )
         .map_err(|error| (message.id, "blocked", error))?;
+    let admission = store
+        .validate_role_provider_start(
+            &capability.token,
+            lease_id,
+            &permissions,
+            &provider_capabilities,
+            unix_time(),
+        )
+        .map_err(|error| (message.id, "blocked", error))?;
+    if app_server.is_none() {
+        *app_server = Some(
+            AppServerProcess::start(&admission).map_err(|error| (message.id, "blocked", error))?,
+        );
+    }
+    let server = app_server
+        .as_mut()
+        .expect("admitted app-server was started");
     let config = role_mcp_server_config(store, &capability)
+        .map_err(|error| (message.id, "blocked", error))?;
+    let admission = store
+        .validate_role_provider_start(
+            &capability.token,
+            lease_id,
+            &permissions,
+            &provider_capabilities,
+            unix_time(),
+        )
+        .map_err(|error| (message.id, "blocked", error))?;
+    server
+        .set_admission(admission)
         .map_err(|error| (message.id, "blocked", error))?;
     if let Err(error) = server.resume_thread(&binding.thread_id, config) {
         let _ = store.revoke_role_thread_capability(&message.target_binding_key);
@@ -2463,6 +2959,18 @@ fn dispatch_role_inbox_message(
         return Err((message.id, "blocked", error));
     }
     let prompt = role_event_prompt(&message);
+    let admission = store
+        .validate_role_provider_start(
+            &capability.token,
+            lease_id,
+            &permissions,
+            &provider_capabilities,
+            unix_time(),
+        )
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
+    server
+        .set_admission(admission)
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
     let acknowledgement = server
         .start_turn(&binding.thread_id, &prompt)
         .map_err(|error| (message.id, "needs_reconcile", error))?;
@@ -2495,143 +3003,6 @@ fn dispatch_role_inbox_message(
         },
     );
     Ok(())
-}
-
-fn dispatch_main_inbox_message(
-    store: &Store,
-    app_server: &mut Option<AppServerProcess>,
-    active_turns: &mut HashMap<String, ActiveTurn>,
-    message: RoleTurnInboxRecord,
-) -> Result<(), (i64, &'static str, String)> {
-    let binding_key = "main-overseer";
-    if active_turns
-        .values()
-        .any(|turn| turn.binding_key == binding_key)
-    {
-        return Err((
-            message.id,
-            "blocked",
-            "Main already has an active event turn".to_string(),
-        ));
-    }
-    if app_server.is_none() {
-        *app_server =
-            Some(AppServerProcess::start().map_err(|error| (message.id, "blocked", error))?);
-    }
-    let server = app_server.as_mut().expect("app-server was started");
-    let binding = store
-        .get_role_thread_binding(binding_key)
-        .map_err(|error| (message.id, "blocked", error))?;
-    let existing_thread_id = match binding {
-        Some(binding) if binding.status == "active" && binding.project_id.is_none() => {
-            Some(binding.thread_id)
-        }
-        Some(_) => {
-            return Err((
-                message.id,
-                "needs_reconcile",
-                "the stored global Main thread binding is not active or is not global".to_string(),
-            ))
-        }
-        None => None,
-    };
-    let capability = store
-        .issue_main_overseer_capability()
-        .map_err(|error| (message.id, "blocked", error))?;
-    let config = role_mcp_server_config(store, &capability)
-        .map_err(|error| (message.id, "blocked", error))?;
-    let new_thread = existing_thread_id.is_none();
-    let thread_id = match existing_thread_id {
-        Some(thread_id) => match server.resume_thread(&thread_id, config) {
-            Ok(()) => thread_id,
-            Err(error) => {
-                let _ = store.revoke_role_thread_capability(binding_key);
-                return Err((message.id, "needs_reconcile", error));
-            }
-        },
-        None => {
-            let workspace = store
-                .cathulu_workspace_path()
-                .map_err(|error| (message.id, "blocked", error))?;
-            match server.start_thread(&workspace, None, "on-request", "read-only", config) {
-                Ok(thread_id) => thread_id,
-                Err(error) => {
-                    let _ = store.revoke_role_thread_capability(binding_key);
-                    return Err((message.id, "failed", error));
-                }
-            }
-        }
-    };
-    if let Err(error) =
-        server.require_cathulu_tools(&thread_id, required_tools_for_role("main_overseer"))
-    {
-        if new_thread {
-            let _ = store.bind_main_role_thread(&thread_id, "unknown", None);
-        }
-        let _ = store.revoke_role_thread_capability(binding_key);
-        return Err((message.id, "blocked", error));
-    }
-    if new_thread {
-        store
-            .bind_main_role_thread(&thread_id, "active", None)
-            .map_err(|error| (message.id, "failed", error))?;
-    }
-    let prompt = main_event_prompt(&message);
-    let acknowledgement = server
-        .start_turn(&thread_id, &prompt)
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
-    let turn_id = acknowledgement
-        .pointer("/turn/id")
-        .or_else(|| acknowledgement.get("turnId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    store
-        .bind_main_role_thread(&thread_id, "active", turn_id.as_deref())
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
-    store
-        .set_role_inbox_status(message.id, "dispatched", None)
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
-    active_turns.insert(
-        thread_id,
-        ActiveTurn {
-            dispatch_id: None,
-            inbox_id: Some(message.id),
-            binding_key: binding_key.to_string(),
-            turn_id,
-        },
-    );
-    Ok(())
-}
-
-fn main_event_prompt(message: &RoleTurnInboxRecord) -> String {
-    let payload = serde_json::from_str::<Value>(&message.payload_json)
-        .unwrap_or_else(|_| json!({ "unavailable": true }));
-    let action = match message.event_type.as_str() {
-        "role_work_plan_recorded" => format!(
-            "Review this Project Manager plan against the recorded Main brief and project boundary. Read cathulu://work-plans/{} and project memory, then record accepted, needs_follow_up, or rejected. The plan review event will wake only that Project Manager.",
-            payload.get("planId").and_then(Value::as_i64).unwrap_or_default()
-        ),
-        "delegation_report_submitted" => format!(
-            "Review this Project Manager report against its Main brief, accepted plan, Worker reviews, and deterministic evidence. Read cathulu://delegations/{} and project memory, then record a qualified review. Do not infer success from a report.",
-            message.source_delegation_id
-        ),
-        "agent_action_required" => "Resolve this Project Manager escalation if it is a bounded, reversible decision within the Owner's constraints. If it crosses the Owner authority boundary, create the exact owner approval request immediately. Do not wait for other projects.".to_string(),
-        "agent_action_resolved" => "A Project Manager reports an escalated action resolved. Inspect the current delegation and its evidence, then decide whether a new project-level review is needed. Do not wait for other projects.".to_string(),
-        "owner_approval_decided" => format!(
-            "An Owner decision arrived. Read cathulu://owner-approvals/{} and relay it to the affected active Project Manager with relay_owner_decision_to_project_manager. This records the decision for that project; it does not execute the action.",
-            payload.get("requestId").and_then(Value::as_i64).unwrap_or_default()
-        ),
-        _ => "Process this project event using Cathulu's current authoritative records and your authority boundary.".to_string(),
-    };
-    format!(
-        "You are the one persistent global Main Overseer for Cathulu. This is a short event-driven turn; handle only the event below, read the relevant project memory and authoritative records, then end the turn. Do not poll, wait for agents, inspect unrelated repositories, or keep a generation alive while projects work. Other project events remain queued independently. Escalate only actions that require Owner authority, and relay an Owner decision only to its affected Project Manager. Deterministic QA and stored evidence remain authoritative.\n\n{action}\n\nInbox message: {}\nProject ID: {}\nSource delegation: {}\nEvent ID: {}\nEvent type: {}\nPayload: {}",
-        message.id,
-        message.project_id,
-        message.source_delegation_id,
-        message.source_event_id,
-        message.event_type,
-        payload,
-    )
 }
 
 fn role_event_prompt(message: &RoleTurnInboxRecord) -> String {
@@ -2919,4 +3290,33 @@ fn unix_time() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod admission_policy_tests {
+    use super::{
+        explicitly_enabled, parse_allowed_credential_sources, CredentialSource,
+        RoleDispatchAdmissionPolicy,
+    };
+
+    #[test]
+    fn dispatcher_admission_defaults_to_no_sources_and_no_network() {
+        let policy = RoleDispatchAdmissionPolicy::default();
+        assert!(policy.allowed_credential_sources.is_empty());
+        assert!(!policy.network_access);
+        assert!(parse_allowed_credential_sources(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dispatcher_admission_requires_explicit_known_values() {
+        assert!(explicitly_enabled("true"));
+        assert!(explicitly_enabled("YES"));
+        assert!(!explicitly_enabled("false"));
+        assert!(!explicitly_enabled("invalid"));
+        assert_eq!(
+            parse_allowed_credential_sources(Some("subscription, api_key,subscription")).unwrap(),
+            vec![CredentialSource::Subscription, CredentialSource::ApiKey]
+        );
+        assert!(parse_allowed_credential_sources(Some("subscription,unknown")).is_err());
+    }
 }

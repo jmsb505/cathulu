@@ -7,8 +7,9 @@ use crate::agent_provider::{
     AckState, AgentProvider, ApprovalDecision, ApprovalKind, AttemptKey, CredentialSource,
     ExternalId, ExternalSession, ExternalTurn, FeatureSupport, IsolationCapabilities,
     McpToolConfig, ProviderCapabilities, ProviderError, ProviderEvent, ProviderEventKind,
-    ProviderId, ProviderOperation, SessionConfig, SessionStatus, SubmissionAck, SubmitTurnRequest,
-    TurnOutcome, UnavailableReason, WorkspaceAccess, CONTRACT_VERSION, MAX_PROMPT_BYTES,
+    ProviderId, ProviderOperation, ProviderStartAdmission, SessionConfig, SessionStatus,
+    SubmissionAck, SubmitTurnRequest, TurnOutcome, UnavailableReason, WorkspaceAccess,
+    CONTRACT_VERSION, MAX_PROMPT_BYTES,
 };
 use crate::app_server::{AppServerMessage, AppServerProcess};
 use serde_json::{json, Value};
@@ -38,6 +39,7 @@ struct PendingApproval {
 /// to own queueing, role capabilities, approval decisions, task state and reconciliation.
 pub struct CodexAdapter {
     process: Box<dyn AppServerTransport>,
+    admission: ProviderStartAdmission,
     sessions: HashSet<ExternalSession>,
     submissions: HashMap<AttemptKey, CachedSubmission>,
     active_turns: HashMap<ExternalSession, ExternalTurn>,
@@ -45,19 +47,23 @@ pub struct CodexAdapter {
 }
 
 impl CodexAdapter {
-    pub fn start() -> Result<Self, ProviderError> {
-        AppServerProcess::start()
-            .map(Self::from_process)
+    pub fn start(admission: ProviderStartAdmission) -> Result<Self, ProviderError> {
+        AppServerProcess::start(&admission)
+            .map(|process| Self::from_process(process, admission))
             .map_err(|message| unavailable(UnavailableReason::Transport, message))
     }
 
-    pub fn from_process(process: AppServerProcess) -> Self {
-        Self::from_transport(Box::new(process))
+    pub fn from_process(process: AppServerProcess, admission: ProviderStartAdmission) -> Self {
+        Self::from_transport(Box::new(process), admission)
     }
 
-    fn from_transport(process: Box<dyn AppServerTransport>) -> Self {
+    fn from_transport(
+        process: Box<dyn AppServerTransport>,
+        admission: ProviderStartAdmission,
+    ) -> Self {
         Self {
             process,
+            admission,
             sessions: HashSet::new(),
             submissions: HashMap::new(),
             active_turns: HashMap::new(),
@@ -75,6 +81,9 @@ impl CodexAdapter {
         sandbox: &str,
         config: Value,
     ) -> Result<ExternalSession, ProviderError> {
+        self.admission
+            .ensure_workspace_root(cwd)
+            .map_err(|message| ProviderError::Rejected { message })?;
         let id = self
             .process
             .start_thread(cwd, model, approval_policy, sandbox, config)
@@ -89,6 +98,9 @@ impl CodexAdapter {
         session: &ExternalSession,
         config: Value,
     ) -> Result<(), ProviderError> {
+        self.admission
+            .ensure_valid(crate::unix_time())
+            .map_err(|message| ProviderError::Rejected { message })?;
         ensure_codex_session(session)?;
         self.process
             .resume_thread(session.session_id.as_str(), config)
@@ -390,6 +402,9 @@ impl AgentProvider for CodexAdapter {
         config
             .validate()
             .map_err(|message| ProviderError::Rejected { message })?;
+        self.admission
+            .ensure_permissions(&config.permissions)
+            .map_err(|message| ProviderError::Rejected { message })?;
         enforce_unactivated_runtime_gates(&config.permissions)?;
         let provider_config = codex_config(&config.tools)?;
         let sandbox = match config.permissions.access {
@@ -422,6 +437,9 @@ impl AgentProvider for CodexAdapter {
     ) -> Result<ExternalSession, ProviderError> {
         config
             .validate()
+            .map_err(|message| ProviderError::Rejected { message })?;
+        self.admission
+            .ensure_permissions(&config.permissions)
             .map_err(|message| ProviderError::Rejected { message })?;
         enforce_unactivated_runtime_gates(&config.permissions)?;
         let provider_config = codex_config(&config.tools)?;
@@ -507,7 +525,7 @@ impl AgentProvider for CodexAdapter {
     }
 }
 
-fn declared_capabilities() -> ProviderCapabilities {
+pub(crate) fn declared_capabilities() -> ProviderCapabilities {
     ProviderCapabilities {
             contract_version: CONTRACT_VERSION,
             provider_id: ProviderId::codex(),
@@ -925,7 +943,17 @@ mod tests {
 
     fn fake_adapter() -> (CodexAdapter, Arc<Mutex<FakeState>>) {
         let state = Arc::new(Mutex::new(FakeState::default()));
-        let adapter = CodexAdapter::from_transport(Box::new(FakeTransport(Arc::clone(&state))));
+        let admission = ProviderStartAdmission::from_validated_workspace(
+            1,
+            std::path::PathBuf::from("C:\\workspace"),
+            "a".repeat(64),
+            "b".repeat(64),
+            CredentialSource::Subscription,
+            i64::MAX,
+        )
+        .unwrap();
+        let adapter =
+            CodexAdapter::from_transport(Box::new(FakeTransport(Arc::clone(&state))), admission);
         (adapter, state)
     }
 

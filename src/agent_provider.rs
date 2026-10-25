@@ -242,6 +242,109 @@ pub fn validate_provider_credential_source(
     Ok(capabilities.credential_source)
 }
 
+/// A runtime-only, fail-closed proof that a provider spawn was admitted for one exact workspace
+/// lease, permission manifest, and known credential source. The record is created only after the
+/// Store validates the live lease and bound role capability. Its default value denies startup.
+#[derive(Clone, Debug, Default)]
+pub struct ProviderStartAdmission {
+    grant: Option<ProviderStartGrant>,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderStartGrant {
+    workspace_lease_id: i64,
+    workspace_root: PathBuf,
+    workspace_path_hash: String,
+    permission_hash: String,
+    credential_source: CredentialSource,
+    lease_expires_at: i64,
+}
+
+impl ProviderStartAdmission {
+    pub(crate) fn from_validated_workspace(
+        workspace_lease_id: i64,
+        workspace_root: PathBuf,
+        workspace_path_hash: String,
+        permission_hash: String,
+        credential_source: CredentialSource,
+        lease_expires_at: i64,
+    ) -> Result<Self, String> {
+        if workspace_lease_id <= 0
+            || !workspace_root.is_absolute()
+            || workspace_path_hash.len() != 64
+            || !workspace_path_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || permission_hash.len() != 64
+            || !permission_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || credential_source == CredentialSource::Unknown
+            || lease_expires_at <= 0
+        {
+            return Err("provider start admission identity is incomplete".into());
+        }
+        Ok(Self {
+            grant: Some(ProviderStartGrant {
+                workspace_lease_id,
+                workspace_root,
+                workspace_path_hash,
+                permission_hash,
+                credential_source,
+                lease_expires_at,
+            }),
+        })
+    }
+
+    pub fn ensure_valid(&self, now: i64) -> Result<(), String> {
+        let Some(grant) = &self.grant else {
+            return Err("provider start has no validated workspace admission".into());
+        };
+        if now < 0 || grant.lease_expires_at <= now {
+            return Err("provider start admission is expired".into());
+        }
+        if grant.workspace_lease_id <= 0
+            || grant.workspace_path_hash.len() != 64
+            || grant.permission_hash.len() != 64
+            || grant.credential_source == CredentialSource::Unknown
+        {
+            return Err("provider start admission is invalid".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_workspace_root(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Result<(), String> {
+        self.ensure_valid(crate::unix_time())?;
+        let Some(grant) = &self.grant else {
+            return Err("provider start has no validated workspace admission".into());
+        };
+        if workspace_root != grant.workspace_root {
+            return Err("provider workspace does not match its admitted lease path".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_permissions(
+        &self,
+        permissions: &PermissionManifest,
+    ) -> Result<(), String> {
+        self.ensure_workspace_root(&permissions.workspace_root)?;
+        let hash = permissions.content_hash()?;
+        let Some(grant) = &self.grant else {
+            return Err("provider start has no validated workspace admission".into());
+        };
+        if hash != grant.permission_hash {
+            return Err("provider permission manifest differs from its admitted record".into());
+        }
+        Ok(())
+    }
+
+    pub fn is_admitted(&self) -> bool {
+        self.grant.is_some()
+    }
+}
+
 /// Runtime-only trusted MCP configuration. Deliberately neither Debug nor Serialize: env may contain capability tokens.
 #[derive(Clone)]
 pub struct McpToolConfig {

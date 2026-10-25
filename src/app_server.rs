@@ -3,6 +3,7 @@
 //! The client only starts/resumes persistent threads and submits bounded turns. It does not
 //! keep a model generation alive while Cathulu waits for project work.
 
+use crate::agent_provider::ProviderStartAdmission;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -54,10 +55,12 @@ pub struct AppServerProcess {
     next_request_id: u64,
     deferred_responses: HashMap<u64, Result<Value, String>>,
     events: Vec<AppServerMessage>,
+    admission: ProviderStartAdmission,
 }
 
 impl AppServerProcess {
-    pub fn start() -> Result<Self, String> {
+    pub fn start(admission: &ProviderStartAdmission) -> Result<Self, String> {
+        admission.ensure_valid(crate::unix_time())?;
         let mut command = app_server_command()?;
         command
             .stdin(Stdio::piped())
@@ -92,6 +95,7 @@ impl AppServerProcess {
             next_request_id: 1,
             deferred_responses: HashMap::new(),
             events: Vec::new(),
+            admission: admission.clone(),
         };
         process.request(
             "initialize",
@@ -108,6 +112,15 @@ impl AppServerProcess {
         Ok(process)
     }
 
+    pub(crate) fn set_admission(
+        &mut self,
+        admission: ProviderStartAdmission,
+    ) -> Result<(), String> {
+        admission.ensure_valid(crate::unix_time())?;
+        self.admission = admission;
+        Ok(())
+    }
+
     pub fn start_thread(
         &mut self,
         cwd: &Path,
@@ -116,6 +129,7 @@ impl AppServerProcess {
         sandbox: &str,
         config: Value,
     ) -> Result<String, String> {
+        self.admission.ensure_workspace_root(cwd)?;
         let mut params = json!({
             "cwd": cwd,
             "approvalPolicy": approval_policy,
@@ -135,6 +149,7 @@ impl AppServerProcess {
     }
 
     pub fn resume_thread(&mut self, thread_id: &str, config: Value) -> Result<(), String> {
+        self.admission.ensure_valid(crate::unix_time())?;
         if thread_id.is_empty() || thread_id.len() > 256 {
             return Err("stored Codex thread ID is invalid".to_string());
         }
@@ -172,6 +187,7 @@ impl AppServerProcess {
 
     /// Submit one turn and return on the app-server acknowledgement, never on turn completion.
     pub fn start_turn(&mut self, thread_id: &str, prompt: &str) -> Result<Value, String> {
+        self.admission.ensure_valid(crate::unix_time())?;
         if thread_id.is_empty() || thread_id.len() > 256 {
             return Err("stored Codex thread ID is invalid".to_string());
         }
@@ -516,7 +532,17 @@ mod tests {
         mcp_server_disable_overrides, parse_incoming, validate_cathulu_tools, AppServerMessage,
         IncomingMessage,
     };
+    use crate::agent_provider::ProviderStartAdmission;
     use serde_json::json;
+
+    #[test]
+    fn app_server_spawn_rejects_default_denied_admission_before_startup() {
+        let error = match super::AppServerProcess::start(&ProviderStartAdmission::default()) {
+            Ok(_) => panic!("default admission must not spawn a provider"),
+            Err(error) => error,
+        };
+        assert!(error.contains("no validated workspace admission"));
+    }
 
     #[test]
     fn parses_app_server_notifications_and_approval_requests_separately() {
