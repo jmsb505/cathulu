@@ -6,6 +6,8 @@ Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)
 Design and source evidence: [Pivot migration assessment](../pivot-migration.md)
 
+Manual development assignment: [PLAN-021](PLAN-021-manual-claude-codex-development.md) maps these milestones to Claude Code and Codex working in the same directory under [ADR-0023](../decisions/ADR-0023-manual-shared-directory-development.md). This plan retains capability acceptance; PLAN-021 owns file/agent assignments and stable-tree integration. Its scheduling split allows offline M53 adapter preparation after the actual M51a common-interface freeze while M51b/M52 progress. M53 activation/completion still requires all original prerequisites; M54 policy preparation similarly does not complete the integrated milestone early.
+
 ## Objective
 
 Pivot the existing Cathulu authority into a useful local personal project manager with provider-neutral coding execution. Preserve SQLite identity, curated memory, evidence, deterministic QA, role hierarchy and existing data. Claude Code and Codex become replaceable execution/judgment resources; provider availability must not affect basic project-management queries.

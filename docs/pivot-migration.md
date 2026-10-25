@@ -191,6 +191,8 @@ A capacity event stops same-provider retries until its backoff/recheck condition
 
 ## 17. Git/worktree isolation strategy
 
+Manual development exception: the Owner subsequently chose to run Claude Code and Codex in the same Cathulu checkout. [ADR-0023](decisions/ADR-0023-manual-shared-directory-development.md) / [PLAN-021](plans/PLAN-021-manual-claude-codex-development.md) govern that manual workflow with a committed clean launch, disjoint files, one shared Git/schema writer, normal early implement/review and brief concurrent-integration pauses using Git status/diff. Claude has a compilable scratch crate; a single worktree is only an Owner-selected fallback. It does not demonstrate or waive the product-agent isolation requirements below.
+
 [worktree](../src/worktree.rs) verifies linked worktrees and report claims; it does not allocate them. Current [dispatch_one](../src/dispatcher.rs) starts both PM and Worker at the project root. That contradicts the target's exclusive writable workspace requirement. Do not describe present allocation as safe mixed-provider isolation.
 
 Before enabling new execution, add a durable workspace lease with project/task/attempt, branch, base HEAD, exact canonical path/common-dir identity, allowed paths and semantic scope. Cathulu allocates a linked worktree for each independent writer; coordinators/reviewers use a read-only sandbox and receive no write lease. Reserve/claim the lease before starting a provider; reject shared aliases and overlapping semantic scopes even across different worktrees when the task DAG requires serialization.
