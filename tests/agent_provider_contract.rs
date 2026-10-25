@@ -300,6 +300,16 @@ fn artifact_envelopes_reject_tampering_scope_changes_and_accepted_state() {
         WorkResult::parse(&serde_json::to_vec(&result).unwrap(), &order).unwrap(),
         result
     );
+    let mut leased_order = order.clone();
+    leased_order.envelope.workspace_lease_id = Some(41);
+    let mut leased_result = result.clone();
+    leased_result.envelope.workspace_lease_id = Some(41);
+    assert!(leased_result.validate_against(&leased_order).is_ok());
+    leased_result.envelope.workspace_lease_id = Some(42);
+    assert!(leased_result
+        .validate_against(&leased_order)
+        .unwrap_err()
+        .contains("lease"));
     let mut changed = serde_json::to_value(&order).unwrap();
     changed["payload"]["taskPacket"]["title"] = json!("tampered title");
     assert!(WorkOrder::parse(

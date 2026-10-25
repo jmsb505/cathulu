@@ -2528,6 +2528,7 @@ fn persist_codex_provider_attempt<'a>(
     )?;
     let attempt_guard = ProviderAttemptSubmissionGuard::new(store, attempt_key.clone());
     store.bind_capability_to_provider_attempt(capability_token, &session, &attempt_key)?;
+    store.select_delegation_context(delegation_id, &session, &attempt_key)?;
     Ok((attempt_key, attempt_guard))
 }
 
@@ -2974,9 +2975,6 @@ fn dispatch_one(
     )
     .map_err(|message| (item.id, "needs_reconcile", message))?;
     store
-        .set_provider_attempt_state(&attempt_key, "submitted", None)
-        .map_err(|message| (item.id, "needs_reconcile", message))?;
-    store
         .mark_delegation_dispatched(item.delegation_id)
         .map_err(|message| (item.id, "blocked", message))?;
     capability_guard.preserve_for_turn_submission();
@@ -3232,9 +3230,6 @@ fn dispatch_role_inbox_message(
         &prompt,
     )
     .map_err(|error| (message.id, "needs_reconcile", error))?;
-    store
-        .set_provider_attempt_state(&attempt_key, "submitted", None)
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
     capability_guard.preserve_for_turn_submission();
     attempt_guard.preserve_for_provider_submission();
     let acknowledgement = match server.start_turn(&binding.thread_id, &prompt) {

@@ -327,13 +327,16 @@ impl WorkResult {
         }
         if self.envelope.permission_manifest_hash != order.envelope.permission_manifest_hash
             || self.envelope.role != order.envelope.role
+            || self.envelope.workspace_lease_id != order.envelope.workspace_lease_id
             || order
                 .envelope
                 .session
                 .as_ref()
                 .is_some_and(|session| self.envelope.session.as_ref() != Some(session))
         {
-            return Err("work result permission/role/session differs from work order".to_string());
+            return Err(
+                "work result permission/role/session/lease differs from work order".to_string(),
+            );
         }
         validate_report_scope(&self.report, &order.payload.task_packet)
     }

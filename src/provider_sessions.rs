@@ -512,6 +512,31 @@ impl Store {
                 params![state, turn_id.map(ExternalId::as_str), now, attempt_key.as_str()],
             )
             .map_err(sqlite_error)?;
+        if matches!(state, "submitted" | "running") {
+            transaction
+                .execute(
+                    "UPDATE provider_context_receipts SET state = 'submitted', observed_at = ?1
+                     WHERE attempt_key = ?2 AND state = 'selected'",
+                    params![now, attempt_key.as_str()],
+                )
+                .map_err(sqlite_error)?;
+        }
+        if matches!(state, "completed" | "failed" | "blocked") {
+            transaction
+                .execute(
+                    "UPDATE role_thread_capabilities SET status = 'revoked', updated_at = ?1
+                     WHERE attempt_key = ?2 AND status = 'active'",
+                    params![now, attempt_key.as_str()],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "UPDATE main_overseer_capability SET status = 'revoked', updated_at = ?1
+                     WHERE singleton = 1 AND attempt_key = ?2 AND status = 'active'",
+                    params![now, attempt_key.as_str()],
+                )
+                .map_err(sqlite_error)?;
+        }
         let record = transaction
             .query_row(
                 "SELECT attempt_key, provider_id, session_id, binding_key, dispatch_id, inbox_id,
@@ -1866,9 +1891,13 @@ mod tests {
         store
             .set_provider_attempt_state(&first_attempt, "submitted", None)
             .unwrap();
-        store
-            .set_provider_context_state(&codex_session, &first_attempt, DeliveryState::Submitted)
-            .unwrap();
+        assert_eq!(
+            store
+                .context_receipts_for_attempt(&codex_session, &first_attempt)
+                .unwrap()[0]
+                .state,
+            DeliveryState::Submitted
+        );
         let memories = store
             .list_memories("project", Some(&project_id.to_string()), false, false)
             .unwrap();
@@ -1881,6 +1910,9 @@ mod tests {
         store
             .set_provider_attempt_state(&first_attempt, "completed", None)
             .unwrap();
+        assert!(store
+            .resolve_role_thread_capability(&codex_capability.token)
+            .is_err());
         store
             .release_workspace_lease(
                 first_lease_id,
@@ -1939,9 +1971,6 @@ mod tests {
             .unwrap();
         store
             .set_provider_attempt_state(&second_attempt, "submitted", None)
-            .unwrap();
-        store
-            .set_provider_context_state(&claude_session, &second_attempt, DeliveryState::Submitted)
             .unwrap();
         assert_eq!(
             store
