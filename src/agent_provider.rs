@@ -222,6 +222,26 @@ impl PermissionManifest {
     }
 }
 
+/// Refuse provider execution unless the adapter reports a concrete credential source and the
+/// permission envelope explicitly allows that source. This check does not inspect credentials.
+pub fn validate_provider_credential_source(
+    capabilities: &ProviderCapabilities,
+    permissions: &PermissionManifest,
+) -> Result<CredentialSource, String> {
+    capabilities.validate()?;
+    permissions.validate()?;
+    if capabilities.credential_source == CredentialSource::Unknown {
+        return Err("provider credential source is unknown; execution is not eligible".into());
+    }
+    if !permissions
+        .allowed_credential_sources
+        .contains(&capabilities.credential_source)
+    {
+        return Err("provider credential source is not permitted by the execution scope".into());
+    }
+    Ok(capabilities.credential_source)
+}
+
 /// Runtime-only trusted MCP configuration. Deliberately neither Debug nor Serialize: env may contain capability tokens.
 #[derive(Clone)]
 pub struct McpToolConfig {

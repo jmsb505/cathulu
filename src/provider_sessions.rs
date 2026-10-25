@@ -48,6 +48,7 @@ pub struct ProviderAttemptRecord {
     pub request_hash: String,
     pub status: String,
     pub turn_id: Option<ExternalId>,
+    pub workspace_lease_id: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -112,19 +113,66 @@ impl Store {
                 }
             }
         }
-        transaction
-            .execute(
-                "UPDATE provider_sessions SET status = 'inactive', updated_at = ?1
-                 WHERE provider_id = ?2 AND binding_key = ?3 AND session_id <> ?4
-                   AND status = 'active'",
-                params![
-                    now,
-                    session.provider_id.as_str(),
-                    binding_key,
-                    session.session_id.as_str()
-                ],
-            )
-            .map_err(sqlite_error)?;
+        if status == "active" {
+            let unresolved_attempt: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM provider_attempts attempt
+                       WHERE attempt.binding_key = ?1
+                         AND (attempt.provider_id <> ?2 OR attempt.session_id <> ?3)
+                         AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+                     )",
+                    params![binding_key, session.provider_id.as_str(), session.session_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if unresolved_attempt {
+                return Err(
+                    "logical role has an unresolved provider attempt; session replacement is unsafe"
+                        .into(),
+                );
+            }
+            transaction
+                .execute(
+                    "UPDATE provider_sessions SET status = 'inactive', updated_at = ?1
+                     WHERE binding_key = ?2 AND status = 'active'
+                       AND (provider_id <> ?3 OR session_id <> ?4)",
+                    params![
+                        now,
+                        binding_key,
+                        session.provider_id.as_str(),
+                        session.session_id.as_str()
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "UPDATE role_thread_capabilities SET status = 'revoked', updated_at = ?1
+                     WHERE binding_key = ?2 AND status = 'active' AND provider_id IS NOT NULL
+                       AND (provider_id <> ?3 OR provider_session_id <> ?4)",
+                    params![
+                        now,
+                        binding_key,
+                        session.provider_id.as_str(),
+                        session.session_id.as_str()
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if binding_key == "main-overseer" {
+                transaction
+                    .execute(
+                        "UPDATE main_overseer_capability SET status = 'revoked', updated_at = ?1
+                         WHERE singleton = 1 AND status = 'active' AND provider_id IS NOT NULL
+                           AND (provider_id <> ?2 OR provider_session_id <> ?3)",
+                        params![
+                            now,
+                            session.provider_id.as_str(),
+                            session.session_id.as_str()
+                        ],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
         transaction
             .execute(
                 "INSERT INTO provider_sessions
@@ -216,6 +264,53 @@ impl Store {
         delegation_id: Option<i64>,
         request_hash: &str,
     ) -> Result<ProviderAttemptRecord, String> {
+        self.begin_provider_attempt_inner(
+            attempt_key,
+            session,
+            dispatch_id,
+            inbox_id,
+            delegation_id,
+            request_hash,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_provider_attempt_under_workspace_lease(
+        &self,
+        attempt_key: &AttemptKey,
+        session: &ExternalSession,
+        dispatch_id: Option<i64>,
+        inbox_id: Option<i64>,
+        delegation_id: i64,
+        request_hash: &str,
+        workspace_lease_id: i64,
+    ) -> Result<ProviderAttemptRecord, String> {
+        if workspace_lease_id <= 0 {
+            return Err("provider attempt workspace lease ID must be positive".into());
+        }
+        self.begin_provider_attempt_inner(
+            attempt_key,
+            session,
+            dispatch_id,
+            inbox_id,
+            Some(delegation_id),
+            request_hash,
+            Some(workspace_lease_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_provider_attempt_inner(
+        &self,
+        attempt_key: &AttemptKey,
+        session: &ExternalSession,
+        dispatch_id: Option<i64>,
+        inbox_id: Option<i64>,
+        delegation_id: Option<i64>,
+        request_hash: &str,
+        workspace_lease_id: Option<i64>,
+    ) -> Result<ProviderAttemptRecord, String> {
         validate_hash(request_hash)?;
         if (dispatch_id.is_some()) == (inbox_id.is_some())
             || dispatch_id.is_some_and(|id| id <= 0)
@@ -243,6 +338,37 @@ impl Store {
             .map_err(sqlite_error)?
             .ok_or_else(|| "provider attempt requires an active persisted session".to_string())?;
 
+        if let Some(lease_id) = workspace_lease_id {
+            let lease_is_current: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM workspace_leases lease
+                       JOIN provider_sessions session
+                         ON session.provider_id = ?1 AND session.session_id = ?2
+                       WHERE lease.id = ?3 AND lease.status = 'active'
+                         AND lease.lease_expires_at > ?4
+                         AND lease.project_id IS session.project_id
+                         AND lease.delegation_id IS ?5
+                         AND lease.role_binding_key = session.binding_key
+                     )",
+                    params![
+                        session.provider_id.as_str(),
+                        session.session_id.as_str(),
+                        lease_id,
+                        now,
+                        delegation_id
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !lease_is_current {
+                return Err(
+                    "provider attempt workspace lease is inactive or outside this role assignment"
+                        .into(),
+                );
+            }
+        }
+
         if let Some(existing) = read_provider_attempt(&transaction, attempt_key)? {
             if existing.session == *session
                 && existing.binding_key == binding_key
@@ -250,6 +376,7 @@ impl Store {
                 && existing.inbox_id == inbox_id
                 && existing.delegation_id == delegation_id
                 && existing.request_hash == request_hash
+                && existing.workspace_lease_id == workspace_lease_id
             {
                 transaction.commit().map_err(sqlite_error)?;
                 return Ok(existing);
@@ -291,8 +418,8 @@ impl Store {
             .execute(
                 "INSERT INTO provider_attempts
                  (attempt_key, provider_id, session_id, binding_key, dispatch_id, inbox_id,
-                  delegation_id, request_hash, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'created', ?9, ?9)",
+                  delegation_id, request_hash, status, created_at, updated_at, workspace_lease_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'created', ?9, ?9, ?10)",
                 params![
                     attempt_key.as_str(),
                     session.provider_id.as_str(),
@@ -302,7 +429,8 @@ impl Store {
                     inbox_id,
                     delegation_id,
                     request_hash,
-                    now
+                    now,
+                    workspace_lease_id,
                 ],
             )
             .map_err(sqlite_error)?;
@@ -368,7 +496,8 @@ impl Store {
         let record = transaction
             .query_row(
                 "SELECT attempt_key, provider_id, session_id, binding_key, dispatch_id, inbox_id,
-                        delegation_id, request_hash, status, turn_id, created_at, updated_at
+                        delegation_id, request_hash, status, turn_id, created_at, updated_at,
+                        workspace_lease_id
                  FROM provider_attempts WHERE attempt_key = ?1",
                 params![attempt_key.as_str()],
                 provider_attempt_from_row,
@@ -626,7 +755,8 @@ impl Store {
         let role_scope = connection
             .raw()
             .query_row(
-                "SELECT binding_key, project_id, delegation_id FROM role_thread_capabilities
+                "SELECT binding_key, project_id, delegation_id, workspace_lease_id
+                 FROM role_thread_capabilities
                  WHERE capability_hash = ?1 AND status = 'active'",
                 params![capability_hash],
                 |row| {
@@ -634,27 +764,29 @@ impl Store {
                         row.get::<_, String>(0)?,
                         Some(row.get::<_, i64>(1)?),
                         Some(row.get::<_, i64>(2)?),
+                        row.get::<_, Option<i64>>(3)?,
                     ))
                 },
             )
             .optional()
             .map_err(sqlite_error)?;
-        let (binding_key, project_id, delegation_id, is_main) = if let Some(scope) = role_scope {
-            (scope.0, scope.1, scope.2, false)
-        } else {
-            let main_role = connection
-                .raw()
-                .query_row(
-                    "SELECT role_key FROM main_overseer_capability
-                     WHERE capability_hash = ?1 AND status = 'active'",
-                    params![capability_hash],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(sqlite_error)?
-                .ok_or_else(|| "active role capability was not found".to_string())?;
-            (main_role, None, None, true)
-        };
+        let (binding_key, project_id, delegation_id, workspace_lease_id, is_main) =
+            if let Some(scope) = role_scope {
+                (scope.0, scope.1, scope.2, scope.3, false)
+            } else {
+                let main_role = connection
+                    .raw()
+                    .query_row(
+                        "SELECT role_key FROM main_overseer_capability
+                         WHERE capability_hash = ?1 AND status = 'active'",
+                        params![capability_hash],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(sqlite_error)?
+                    .ok_or_else(|| "active role capability was not found".to_string())?;
+                (main_role, None, None, None, true)
+            };
         if is_main && binding_key != "main-overseer" {
             return Err("Main capability resolved to an unexpected logical role".into());
         }
@@ -671,6 +803,7 @@ impl Store {
                      AND provider_session.project_id IS ?5
                      AND attempt.delegation_id IS ?6
                      AND (?7 = 0 OR (attempt.inbox_id IS NOT NULL AND attempt.delegation_id IS NULL))
+                     AND attempt.workspace_lease_id IS ?8
                      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
                  )",
                 params![
@@ -680,7 +813,8 @@ impl Store {
                     binding_key,
                     project_id,
                     delegation_id,
-                    is_main
+                    is_main,
+                    workspace_lease_id
                 ],
                 |row| row.get(0),
             )
@@ -921,7 +1055,8 @@ fn read_provider_attempt(
     transaction
         .query_row(
             "SELECT attempt_key, provider_id, session_id, binding_key, dispatch_id, inbox_id,
-                    delegation_id, request_hash, status, turn_id, created_at, updated_at
+                    delegation_id, request_hash, status, turn_id, created_at, updated_at,
+                    workspace_lease_id
              FROM provider_attempts WHERE attempt_key = ?1",
             params![attempt_key.as_str()],
             provider_attempt_from_row,
@@ -953,6 +1088,7 @@ fn provider_attempt_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Provid
             .map_err(to_sql_error)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+        workspace_lease_id: row.get(12)?,
     })
 }
 
@@ -1217,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn version_20_upgrade_backfills_legacy_codex_session_and_namespaces_collisions() {
+    fn version_20_upgrade_backfills_sessions_and_fails_closed_on_active_role_collisions() {
         let database_path = scratch_database("provider-sessions-migration");
         let connection = rusqlite::Connection::open(&database_path).unwrap();
         connection
@@ -1290,6 +1426,7 @@ mod tests {
                 [],
             )
             .unwrap();
+        connection.execute_batch(migrations::VERSION_22).unwrap();
         let namespaced_rows: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM provider_sessions WHERE session_id = 'same-provider-id'",
@@ -1307,6 +1444,53 @@ mod tests {
             .unwrap();
         assert_eq!(namespaced_rows, 2);
         assert_eq!(legacy_turn, "turn-1");
+        let active_sessions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_sessions
+                 WHERE binding_key = 'main-overseer' AND status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_sessions, 0, "ambiguous legacy sessions fail closed");
+        drop(connection);
+
+        let store = Store::open(database_path.parent().unwrap()).unwrap();
+        let claude_session = ExternalSession {
+            provider_id: ProviderId::claude(),
+            session_id: ExternalId::new("same-provider-id").unwrap(),
+        };
+        store
+            .record_provider_session(&claude_session, "main-overseer", "active", None, None)
+            .unwrap();
+        let codex_session = ExternalSession {
+            provider_id: ProviderId::codex(),
+            session_id: ExternalId::new("same-provider-id").unwrap(),
+        };
+        store
+            .record_provider_session(&codex_session, "main-overseer", "active", None, None)
+            .unwrap();
+        drop(store);
+
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        let active_sessions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_sessions
+                 WHERE binding_key = 'main-overseer' AND status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_sessions, 1);
+        let duplicate = connection.execute(
+            "UPDATE provider_sessions SET status = 'active'
+             WHERE provider_id = 'claude' AND session_id = 'same-provider-id'",
+            [],
+        );
+        assert!(
+            duplicate.is_err(),
+            "database index enforces one active role session"
+        );
     }
 
     #[test]

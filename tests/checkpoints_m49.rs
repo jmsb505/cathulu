@@ -61,7 +61,18 @@ fn remove_v20_for_populated_upgrade(database_path: &Path) {
     let database = Connection::open(database_path).expect("open populated v21 fixture");
     database
         .execute_batch(
-            "DROP TRIGGER role_capability_provider_attempt_insert_valid;
+            "DROP TRIGGER role_capability_workspace_lease_valid;
+             DROP TRIGGER role_capability_workspace_lease_immutable;
+             DROP TRIGGER role_capability_workspace_attempt_valid;
+             DROP TRIGGER provider_attempts_lease_insert_valid;
+             DROP TRIGGER provider_attempts_lease_update_valid;
+             DROP INDEX provider_attempts_workspace_lease_once_idx;
+             DROP TABLE workspace_lease_events;
+             DROP TABLE workspace_leases;
+             ALTER TABLE provider_attempts DROP COLUMN workspace_lease_id;
+             ALTER TABLE role_thread_capabilities DROP COLUMN workspace_lease_id;
+             DELETE FROM schema_migrations WHERE version = 22;
+             DROP TRIGGER role_capability_provider_attempt_insert_valid;
              DROP TRIGGER main_capability_provider_attempt_insert_valid;
              DROP TRIGGER role_capability_provider_attempt_valid;
              DROP TRIGGER main_capability_provider_attempt_valid;
@@ -121,7 +132,7 @@ fn populated_v19_upgrade_preserves_tasks_and_checkpoint_revisions_are_immutable(
     drop(store);
 
     remove_v20_for_populated_upgrade(&data_dir.join("cathulu.sqlite3"));
-    let store = Store::open(&data_dir).expect("upgrade populated v19 to v21");
+    let store = Store::open(&data_dir).expect("upgrade populated v19 to v22");
     assert_eq!(
         Connection::open(data_dir.join("cathulu.sqlite3"))
             .unwrap()
@@ -130,7 +141,7 @@ fn populated_v19_upgrade_preserves_tasks_and_checkpoint_revisions_are_immutable(
                 0
             ))
             .unwrap(),
-        21
+        22
     );
     assert_eq!(
         store.get_task(first.id).unwrap().unwrap().title,

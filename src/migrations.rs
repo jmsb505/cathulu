@@ -1769,3 +1769,155 @@ BEGIN SELECT RAISE(ABORT, 'Main capability must match its active provider inbox 
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (21, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_22: &str = r#"
+-- A single logical role cannot have active sessions at two providers. When upgrading a v21
+-- database that already has a cross-provider collision, preserve both records but mark every
+-- conflicting session unknown so a later explicit session record can resolve the role safely.
+UPDATE provider_sessions
+SET status = 'unknown', updated_at = MAX(updated_at, CAST(strftime('%s','now') AS INTEGER))
+WHERE status = 'active' AND binding_key IN (
+  SELECT binding_key FROM provider_sessions
+  WHERE status = 'active'
+  GROUP BY binding_key HAVING COUNT(*) > 1
+);
+DROP INDEX provider_sessions_active_binding_idx;
+CREATE UNIQUE INDEX provider_sessions_active_binding_idx
+  ON provider_sessions(binding_key) WHERE status = 'active';
+
+CREATE TABLE workspace_leases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  role_kind TEXT NOT NULL CHECK(role_kind IN ('sub_overseer', 'worker')),
+  role_binding_key TEXT NOT NULL CHECK(length(role_binding_key) BETWEEN 1 AND 256),
+  access TEXT NOT NULL CHECK(access IN ('read_only', 'workspace_write')),
+  owner_id TEXT NOT NULL CHECK(length(trim(owner_id)) BETWEEN 1 AND 256),
+  workspace_path TEXT NOT NULL CHECK(length(workspace_path) BETWEEN 1 AND 4096),
+  workspace_path_hash TEXT NOT NULL CHECK(length(workspace_path_hash) = 64
+    AND workspace_path_hash NOT GLOB '*[^0-9a-fA-F]*'),
+  common_dir_hash TEXT NOT NULL CHECK(length(common_dir_hash) = 64
+    AND common_dir_hash NOT GLOB '*[^0-9a-fA-F]*'),
+  base_commit TEXT NOT NULL CHECK(length(base_commit) BETWEEN 7 AND 128),
+  status TEXT NOT NULL CHECK(status IN ('active', 'needs_reconcile', 'released', 'revoked', 'expired')),
+  lease_expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK((role_kind = 'sub_overseer' AND access = 'read_only'
+      AND role_binding_key = 'project-manager:' || project_id)
+    OR (role_kind = 'worker' AND role_binding_key = 'worker:' || delegation_id))
+);
+CREATE UNIQUE INDEX workspace_leases_active_path_idx
+  ON workspace_leases(workspace_path_hash)
+  WHERE status IN ('active', 'needs_reconcile');
+CREATE UNIQUE INDEX workspace_leases_active_role_idx
+  ON workspace_leases(role_binding_key)
+  WHERE status IN ('active', 'needs_reconcile');
+CREATE UNIQUE INDEX workspace_leases_one_writer_per_project_idx
+  ON workspace_leases(project_id)
+  WHERE access = 'workspace_write' AND status IN ('active', 'needs_reconcile');
+CREATE INDEX workspace_leases_delegation_history_idx
+  ON workspace_leases(delegation_id, created_at DESC, id DESC);
+CREATE TRIGGER workspace_leases_scope_valid BEFORE INSERT ON workspace_leases
+WHEN NOT EXISTS (
+  SELECT 1 FROM delegations delegation
+  WHERE delegation.id = NEW.delegation_id
+    AND delegation.project_id = NEW.project_id
+    AND delegation.role = NEW.role_kind
+    AND delegation.status IN ('prepared', 'dispatched')
+)
+BEGIN SELECT RAISE(ABORT, 'workspace lease must match an active project delegation'); END;
+CREATE TRIGGER workspace_leases_identity_immutable BEFORE UPDATE ON workspace_leases
+WHEN NEW.id IS NOT OLD.id OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.role_kind IS NOT OLD.role_kind
+  OR NEW.role_binding_key IS NOT OLD.role_binding_key OR NEW.access IS NOT OLD.access
+  OR NEW.owner_id IS NOT OLD.owner_id OR NEW.workspace_path IS NOT OLD.workspace_path
+  OR NEW.workspace_path_hash IS NOT OLD.workspace_path_hash
+  OR NEW.common_dir_hash IS NOT OLD.common_dir_hash OR NEW.base_commit IS NOT OLD.base_commit
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+  OR NOT (
+    NEW.status IS OLD.status
+    OR (OLD.status = 'active' AND NEW.status IN ('needs_reconcile','released','revoked','expired'))
+    OR (OLD.status = 'needs_reconcile' AND NEW.status IN ('released','revoked'))
+  )
+BEGIN SELECT RAISE(ABORT, 'workspace lease identity or state transition is invalid'); END;
+CREATE TRIGGER workspace_leases_no_delete BEFORE DELETE ON workspace_leases
+BEGIN SELECT RAISE(ABORT, 'workspace leases are retained for recovery and audit'); END;
+
+CREATE TABLE workspace_lease_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES workspace_leases(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL CHECK(event_type IN (
+    'claimed','renewed','released','revoked','expired','needs_reconcile','reconciled'
+  )),
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX workspace_lease_events_lease_idx ON workspace_lease_events(lease_id, id);
+CREATE TRIGGER workspace_lease_events_no_update BEFORE UPDATE ON workspace_lease_events
+BEGIN SELECT RAISE(ABORT, 'workspace lease events are append-only'); END;
+CREATE TRIGGER workspace_lease_events_no_delete BEFORE DELETE ON workspace_lease_events
+BEGIN SELECT RAISE(ABORT, 'workspace lease events are retained for audit'); END;
+
+ALTER TABLE provider_attempts ADD COLUMN workspace_lease_id INTEGER
+  REFERENCES workspace_leases(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX provider_attempts_workspace_lease_once_idx
+  ON provider_attempts(workspace_lease_id)
+  WHERE workspace_lease_id IS NOT NULL;
+CREATE TRIGGER provider_attempts_lease_insert_valid BEFORE INSERT ON provider_attempts
+WHEN NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM workspace_leases lease
+  WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+    AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+    AND lease.project_id = (SELECT project_id FROM delegations WHERE id = NEW.delegation_id)
+    AND lease.delegation_id = NEW.delegation_id
+)
+BEGIN SELECT RAISE(ABORT, 'provider attempt must match a current active workspace lease'); END;
+CREATE TRIGGER provider_attempts_lease_update_valid BEFORE UPDATE OF workspace_lease_id ON provider_attempts
+WHEN (OLD.workspace_lease_id IS NOT NULL AND NEW.workspace_lease_id IS NOT OLD.workspace_lease_id)
+  OR (NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM workspace_leases lease
+    WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+      AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+      AND lease.project_id = (SELECT project_id FROM delegations WHERE id = NEW.delegation_id)
+      AND lease.delegation_id = NEW.delegation_id
+  ))
+BEGIN SELECT RAISE(ABORT, 'provider attempt workspace lease is immutable or no longer active'); END;
+
+ALTER TABLE role_thread_capabilities ADD COLUMN workspace_lease_id INTEGER
+  REFERENCES workspace_leases(id) ON DELETE RESTRICT;
+CREATE TRIGGER role_capability_workspace_lease_valid BEFORE UPDATE OF workspace_lease_id
+ON role_thread_capabilities
+WHEN NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM workspace_leases lease
+  WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+    AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+    AND lease.project_id = NEW.project_id AND lease.delegation_id = NEW.delegation_id
+    AND lease.role_kind = NEW.role_kind
+)
+BEGIN SELECT RAISE(ABORT, 'role capability must match a current active workspace lease'); END;
+CREATE TRIGGER role_capability_workspace_lease_immutable BEFORE UPDATE OF workspace_lease_id
+ON role_thread_capabilities
+WHEN OLD.workspace_lease_id IS NOT NULL AND NEW.workspace_lease_id IS NOT OLD.workspace_lease_id
+  AND NOT (OLD.status = 'revoked' AND NEW.workspace_lease_id IS NULL AND EXISTS (
+    SELECT 1 FROM workspace_leases lease
+    WHERE lease.id = OLD.workspace_lease_id AND lease.status IN ('released','revoked','expired')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability workspace lease cannot be replaced'); END;
+CREATE TRIGGER role_capability_workspace_attempt_valid
+BEFORE UPDATE OF workspace_lease_id, provider_id, provider_session_id, attempt_key
+ON role_thread_capabilities
+WHEN NEW.attempt_key IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM provider_attempts attempt
+  WHERE attempt.attempt_key = NEW.attempt_key
+    AND attempt.provider_id = NEW.provider_id
+    AND attempt.session_id = NEW.provider_session_id
+    AND attempt.binding_key = NEW.binding_key
+    AND attempt.delegation_id = NEW.delegation_id
+    AND attempt.workspace_lease_id IS NEW.workspace_lease_id
+)
+BEGIN SELECT RAISE(ABORT, 'role capability and provider attempt must share a workspace lease'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (22, CAST(strftime('%s','now') AS INTEGER));
+"#;

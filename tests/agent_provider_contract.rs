@@ -41,6 +41,31 @@ fn submission(session: &ExternalSession, key: &str) -> SubmitTurnRequest {
 }
 
 #[test]
+fn execution_credential_source_must_be_known_and_explicitly_allowed() {
+    let permissions = config().permissions;
+    let mut capabilities = ScriptedProvider::new(ProviderId::codex()).capabilities();
+    capabilities.credential_source = CredentialSource::Unknown;
+    assert!(
+        validate_provider_credential_source(&capabilities, &permissions)
+            .unwrap_err()
+            .contains("unknown")
+    );
+
+    capabilities.credential_source = CredentialSource::ApiKey;
+    assert!(
+        validate_provider_credential_source(&capabilities, &permissions)
+            .unwrap_err()
+            .contains("not permitted")
+    );
+
+    capabilities.credential_source = CredentialSource::Subscription;
+    assert_eq!(
+        validate_provider_credential_source(&capabilities, &permissions).unwrap(),
+        CredentialSource::Subscription
+    );
+}
+
+#[test]
 fn identifiers_are_validated_during_deserialization_and_namespaced() {
     assert!(ProviderId::new("Codex").is_err());
     assert!(ExternalId::new("x".repeat(257)).is_err());

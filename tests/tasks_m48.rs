@@ -198,7 +198,7 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
             row.get(0)
         })
         .expect("read upgraded migration version");
-    assert_eq!(version, 21);
+    assert_eq!(version, 22);
 }
 
 #[test]
@@ -721,6 +721,7 @@ fn task_portfolio_enforces_revisions_scope_blockers_order_and_completion_guards(
         project_id: Some(project_id),
         delegation_id: Some(1),
         capability_hash: "0".repeat(64),
+        workspace_lease_id: None,
     };
     assert!(role_allowed_tools("worker").iter().all(|tool| {
         !matches!(

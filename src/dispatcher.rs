@@ -95,6 +95,7 @@ pub struct RoleCapabilityScope {
     pub project_id: Option<i64>,
     pub delegation_id: Option<i64>,
     pub capability_hash: String,
+    pub workspace_lease_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -673,7 +674,7 @@ impl Store {
                  ON CONFLICT(binding_key) DO UPDATE SET delegation_id = excluded.delegation_id,
                    capability_hash = excluded.capability_hash, status = 'active',
                    provider_id = NULL, provider_session_id = NULL, attempt_key = NULL,
-                   updated_at = excluded.updated_at",
+                   workspace_lease_id = NULL, updated_at = excluded.updated_at",
                 params![
                     binding_key,
                     role_kind,
@@ -690,6 +691,65 @@ impl Store {
             project_id,
             delegation_id,
         })
+    }
+
+    /// Bind an already-issued role capability to the delegation's exact active workspace lease.
+    pub fn bind_role_thread_capability_to_workspace_lease(
+        &self,
+        token: &str,
+        workspace_lease_id: i64,
+    ) -> Result<(), String> {
+        if token.len() != 32
+            || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || workspace_lease_id <= 0
+        {
+            return Err("role capability or workspace lease identity is invalid".into());
+        }
+        let token_hash = content_hash(token);
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT workspace_lease_id FROM role_thread_capabilities
+                 WHERE capability_hash = ?1 AND status = 'active'",
+                params![token_hash],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .ok_or_else(|| "role capability is unknown or revoked".to_string())?;
+        if current == Some(workspace_lease_id) {
+            transaction.commit().map_err(sqlite_error)?;
+            return Ok(());
+        }
+        if current.is_some() {
+            return Err("role capability is already bound to another workspace lease".into());
+        }
+        let updated = transaction
+            .execute(
+                "UPDATE role_thread_capabilities SET workspace_lease_id = ?1, updated_at = ?2
+                 WHERE capability_hash = ?3 AND status = 'active' AND workspace_lease_id IS NULL
+                   AND EXISTS (
+                     SELECT 1 FROM workspace_leases lease
+                     WHERE lease.id = ?1 AND lease.status = 'active'
+                       AND lease.lease_expires_at > ?2
+                       AND lease.project_id = role_thread_capabilities.project_id
+                       AND lease.delegation_id = role_thread_capabilities.delegation_id
+                       AND lease.role_kind = role_thread_capabilities.role_kind
+                   )",
+                params![workspace_lease_id, now, token_hash],
+            )
+            .map_err(sqlite_error)?;
+        if updated != 1 {
+            return Err(
+                "workspace lease is not active for this capability's role assignment".into(),
+            );
+        }
+        transaction.commit().map_err(sqlite_error)
     }
 
     pub fn issue_main_overseer_capability(&self) -> Result<RoleCapability, String> {
@@ -766,12 +826,13 @@ impl Store {
                 project_id: None,
                 delegation_id: None,
                 capability_hash: token_hash,
+                workspace_lease_id: None,
             });
         }
         let capability = connection
             .raw()
             .query_row(
-                "SELECT role_kind, project_id, delegation_id
+                "SELECT role_kind, project_id, delegation_id, workspace_lease_id
                  FROM role_thread_capabilities
                  WHERE capability_hash = ?1 AND status = 'active'",
                 params![token_hash],
@@ -781,6 +842,7 @@ impl Store {
                         project_id: Some(row.get(1)?),
                         delegation_id: Some(row.get(2)?),
                         capability_hash: token_hash.clone(),
+                        workspace_lease_id: row.get(3)?,
                     })
                 },
             )
@@ -815,6 +877,32 @@ impl Store {
         let delegation_id = capability
             .delegation_id
             .ok_or_else(|| "role capability has no delegation assignment".to_string())?;
+        if let Some(lease_id) = capability.workspace_lease_id {
+            let connection = self.connection()?;
+            let active: bool = connection
+                .raw()
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM workspace_leases
+                       WHERE id = ?1 AND project_id = ?2 AND delegation_id = ?3
+                         AND role_kind = ?4 AND status = 'active' AND lease_expires_at > ?5
+                     )",
+                    params![
+                        lease_id,
+                        project_id,
+                        delegation_id,
+                        capability.role_kind,
+                        unix_time()
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            if !active {
+                return Err(
+                    "role capability workspace lease is expired, revoked or mismatched".into(),
+                );
+            }
+        }
         let object = arguments.as_object();
         let number = |key: &str| {
             object
