@@ -125,6 +125,7 @@ Subtasks:
 
 - [x] Revisit P-Q2 at M50 start: it remains unresolved. No personal categories are approved; do not collect or disclose personal facts until categories and per-provider grants are explicitly decided. Keep schema/proposal work independent.
 - [x] Introduce optional repository association while preserving project IDs, existing registration semantics, logical PM keys and Git-only command failures for non-code projects. CX-06's provider-free foundation preserves these identities and rejects/skips pathless Git operations; it does not complete M50.
+- [x] Apply Claude's CC-06 amendments A-1 through A-5 in the Codex-owned M50 paths: omit private IDs/metadata from Main's project list, select only repository-kind workspaces, preserve the prior SQLite foreign-key setting across migration, clarify the FTS claim, and test dispatch's pathless refusal. The full offline all-target suite passes 164 tests on the uncommitted follow-up based at `33c9ee7`; M50 remains open for the personal-data decisions below.
 - [ ] Add explicit reviewed personal preference scope and minimal deterministic profile settings; keep portfolio summaries separate.
 - [ ] Define correction, export/deletion/retention and provider disclosure behavior for the collected categories before activation.
 
@@ -134,7 +135,7 @@ Acceptance: a non-code project has tasks/checkpoint without Git calls or fake pa
 
 Validation: mixed repository/non-code populated migration, trigger/FK/FTS checks, restart, scope leakage and consent-denial tests, correction/retention scenarios; full relevant core checks.
 
-Documentation: [ADR-0025](../decisions/ADR-0025-optional-project-repository.md) records the repository-identity decision and the unresolved privacy boundary. The source model and pathless foundation are updated in CX-06; data/retention/disclosure contract and any personal categories remain open. Skills: milestone-delivery, ponytail-balanced; privacy/capability review using existing tests. Git checkpoint: separately validated M50 foundation; no personal-data activation.
+Documentation: [ADR-0025](../decisions/ADR-0025-optional-project-repository.md) records the repository-identity decision and the unresolved privacy boundary. CX-06 records the source model, pathless foundation and reviewed A-1–A-5 corrections; data/retention/disclosure contract and any personal categories remain open. Skills: milestone-delivery, ponytail-balanced; privacy/capability review using existing tests. Git checkpoint: separately validated provider-free M50 slice; no personal-data activation.
 
 ### M51 — Typed artifacts and Codex adapter parity
 

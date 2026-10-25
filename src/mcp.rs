@@ -2017,16 +2017,8 @@ impl ServerHandler for CathuluServer {
             let mut projects = self.store.list_projects().map_err(internal_error)?;
             if let Some(capability) = &self.role_capability {
                 if capability.role_kind == "main_overseer" {
-                    for project in &mut projects {
-                        if project.visibility == crate::ProjectVisibility::Private {
-                            project.name = format!("Private project #{}", project.id);
-                            project.path = None;
-                            project.branch = None;
-                            project.head = None;
-                            project.dirty = false;
-                            project.changed_paths.clear();
-                        }
-                    }
+                    projects
+                        .retain(|project| project.visibility == crate::ProjectVisibility::Shared);
                 } else if let Some(project_id) = capability.project_id {
                     projects.retain(|project| project.id == project_id);
                 }

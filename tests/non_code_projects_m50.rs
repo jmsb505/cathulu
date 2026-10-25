@@ -537,6 +537,38 @@ fn populated_v22_project_rows_migrate_without_losing_ids_roles_memory_or_childre
 }
 
 #[test]
+fn main_workspace_lookup_skips_a_pathless_project_with_the_same_name() {
+    let root = scratch_root("main-workspace-path");
+    let data_dir = root.join("data");
+    let store = Store::open(&data_dir).expect("open isolated workspace lookup store");
+    let pathless = store
+        .create_non_code_project("cathulu")
+        .expect("create earlier pathless project with the repository name");
+    assert_eq!(pathless.kind, ProjectKind::NonCode);
+
+    let repository_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .expect("canonicalize repository workspace");
+    let repository = store
+        .register_project(&repository_path)
+        .expect("register repository project with the same name");
+    assert_eq!(repository.kind, ProjectKind::Repository);
+    assert_eq!(repository.name.to_ascii_lowercase(), "cathulu");
+    let resolved_path = store
+        .cathulu_workspace_path()
+        .expect("find repository path while an earlier pathless project exists");
+    assert_eq!(
+        resolved_path
+            .canonicalize()
+            .expect("canonicalize resolved workspace path"),
+        repository_path
+    );
+
+    drop(store);
+    fs::remove_dir_all(root).expect("remove isolated workspace lookup fixture");
+}
+
+#[test]
 fn mcp_creates_private_non_code_project_and_withholds_it_from_main_context() {
     let root = scratch_root("mcp-privacy");
     let data_dir = root.join("data");
@@ -647,6 +679,11 @@ fn mcp_creates_private_non_code_project_and_withholds_it_from_main_context() {
         ],
     );
     let projects = resource_value(response(&main_view, 2));
+    assert!(projects
+        .as_array()
+        .expect("Main's shared project list")
+        .iter()
+        .all(|project| project["id"] != project_id));
     assert!(!projects.to_string().contains("Private planning fixture"));
     assert!(!projects.to_string().contains("Private objective text"));
     assert!(!projects.to_string().contains("Private task text"));

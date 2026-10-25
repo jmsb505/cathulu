@@ -2117,6 +2117,7 @@ impl Store {
             .raw()
             .query_row(
                 "SELECT path FROM projects WHERE name = 'cathulu' COLLATE NOCASE
+                   AND kind = 'repository'
                  ORDER BY id LIMIT 1",
                 [],
                 |row| row.get::<_, Option<String>>(0),
@@ -4830,6 +4831,26 @@ mod dispatcher_admission_tests {
             "needs_reconcile",
             "not bound to this exact workspace lease",
         );
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn dispatch_one_refuses_pathless_project_before_any_provider_start() {
+        let fixture = fixture();
+        let mut item = fixture.work_item();
+        item.project_path = None;
+        let mut app_server = None;
+        let result = dispatch_one(
+            &fixture.store,
+            &policy(true),
+            &capabilities(CredentialSource::Subscription),
+            &mut app_server,
+            &mut HashMap::new(),
+            "dispatcher-pathless-test",
+            item,
+        );
+
+        assert_refused_without_spawn(result, &app_server, "blocked", "project_has_no_repository");
         let _ = std::fs::remove_dir_all(fixture.data_dir);
     }
 

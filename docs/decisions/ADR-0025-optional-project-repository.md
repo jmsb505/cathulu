@@ -15,7 +15,7 @@ The current `projects` table equates a project with a Git repository: its path i
 3. Migrate every existing project as `kind = repository`, `visibility = shared`, preserving its ID, canonical path, Git state, registration history, and child references. Enforce uniqueness on non-null repository paths.
 4. Create non-code projects through a separate provider-free command. They default to `visibility = private`. The existing logical Project Manager role row is retained for identity consistency, but a private non-code project is not dispatchable.
 5. Git-only operations report `project_has_no_repository` or skip non-code projects. Task, objective, checkpoint, and resume operations remain keyed by project ID and do not call Git.
-6. Private non-code project data is denied to role capabilities and excluded or denied in Main's context resources. It remains available through the local unscoped management interface. That local interface does not itself authenticate an Owner; the product must remain local-only.
+6. Private project data is denied to role capabilities, and private projects (including their IDs and metadata) are excluded from Main's project list and other context resources. It remains available through the local unscoped management interface. That local interface does not itself authenticate an Owner; the product must remain local-only.
 7. Do not add personal memory categories, collect personal facts, change retention, or disclose non-code content to any provider. P-Q2 remains open. Sharing a private project and enabling provider dispatch require later explicit decisions and validation.
 
 ## Consequences

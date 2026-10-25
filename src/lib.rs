@@ -880,6 +880,11 @@ impl Store {
 }
 
 fn migrate_projects_to_v23(connection: &mut sqlite::Connection) -> Result<(), String> {
+    let previous_foreign_keys: bool = connection
+        .raw()
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("cannot read SQLite foreign-key setting: {error}"))?
+        != 0;
     let previous_sequence: Option<i64> = connection
         .raw()
         .query_row(
@@ -925,10 +930,22 @@ fn migrate_projects_to_v23(connection: &mut sqlite::Connection) -> Result<(), St
     if migration.is_err() {
         let _ = connection.execute("ROLLBACK");
     }
-    let restore_foreign_keys = connection.execute("PRAGMA foreign_keys = ON");
-    migration?;
-    restore_foreign_keys?;
-    Ok(())
+    let restore_sql = if previous_foreign_keys {
+        "PRAGMA foreign_keys = ON"
+    } else {
+        "PRAGMA foreign_keys = OFF"
+    };
+    let restore_foreign_keys = connection.execute(restore_sql);
+    match (migration, restore_foreign_keys) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(migration_error), Ok(())) => Err(migration_error),
+        (Ok(()), Err(restore_error)) => Err(format!(
+            "project migration succeeded but could not restore SQLite foreign-key setting: {restore_error}"
+        )),
+        (Err(migration_error), Err(restore_error)) => Err(format!(
+            "{migration_error}; additionally could not restore SQLite foreign-key setting: {restore_error}"
+        )),
+    }
 }
 
 #[derive(Debug)]
@@ -1096,7 +1113,7 @@ fn unix_time() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_changed_paths;
+    use super::{migrate_projects_to_v23, parse_changed_paths, sqlite};
 
     #[test]
     fn parses_porcelain_paths_without_treating_header_as_a_path() {
@@ -1105,5 +1122,81 @@ mod tests {
             parse_changed_paths(output),
             vec!["changed.txt", "moved.txt", "new.txt"]
         );
+    }
+
+    #[test]
+    fn project_migration_restores_the_existing_foreign_key_setting() {
+        let root = std::env::current_dir()
+            .expect("resolve repository root")
+            .join("target/manual-dev/codex/cx06-m50");
+        std::fs::create_dir_all(&root).expect("create isolated migration scratch folder");
+        let path = root.join(format!(
+            "foreign-keys-{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut connection = sqlite::Connection::open(&path).expect("open migration fixture");
+        connection
+            .execute(
+                "CREATE TABLE schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   applied_at INTEGER NOT NULL
+                 );
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (22, 1);
+                 CREATE TABLE logical_agent_roles (
+                   role_key TEXT PRIMARY KEY,
+                   role_kind TEXT NOT NULL,
+                   project_id INTEGER,
+                   memory_scope_key TEXT,
+                   receiver_scope_key TEXT,
+                   tool_profile_key TEXT,
+                   created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE projects (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   name TEXT NOT NULL,
+                   path TEXT NOT NULL,
+                   git_branch TEXT,
+                   git_head TEXT,
+                   git_dirty INTEGER NOT NULL DEFAULT 0,
+                   changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                   registered_at INTEGER NOT NULL,
+                   reconciled_at INTEGER NOT NULL,
+                   status TEXT NOT NULL DEFAULT 'active',
+                   priority INTEGER NOT NULL DEFAULT 0,
+                   revision INTEGER NOT NULL DEFAULT 1
+                 );
+                 INSERT INTO projects
+                   (name, path, changed_paths_json, registered_at, reconciled_at)
+                 VALUES ('Cathulu', '/fixture/cathulu', '[]', 1, 1);",
+            )
+            .expect("create minimal v22 migration fixture");
+        connection
+            .execute("PRAGMA foreign_keys = OFF")
+            .expect("disable foreign keys for state-preservation case");
+
+        migrate_projects_to_v23(&mut connection).expect("migrate minimal v22 project schema");
+
+        let foreign_keys: i64 = connection
+            .raw()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read restored foreign-key setting");
+        assert_eq!(
+            foreign_keys, 0,
+            "migration must restore the prior OFF setting"
+        );
+        let kind: String = connection
+            .raw()
+            .query_row(
+                "SELECT kind FROM projects WHERE name = 'Cathulu'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated project");
+        assert_eq!(kind, "repository");
+
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
     }
 }
