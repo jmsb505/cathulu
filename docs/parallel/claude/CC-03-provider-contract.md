@@ -133,6 +133,8 @@ RoutingDecision { chosen: Option<ProviderId>, outcome: Route | Queue{until: Opti
 ```
 Constraints: `Administrative` ⇒ `NoLlm`. Owner pin/exclude and disclosure denial are applied **before** priors. `Review{author}` excludes the author's provider only as a preference; if the preferred reviewer is unavailable, the decision is `Queue`/`Block`, never "waive review" (PLAN-020 M54). `Unknown` availability is not `Available`: the default is to attempt via preflight, not to assume. Unknown quota stays unknown.
 
+**Required review relationship (CC-05, 2026-10-25).** `required_review` applies to non-review work: such work runs only when a second provider could review it, so with exactly one eligible provider it waits on capacity or blocks. The Owner decided on 2026-10-25 that a review whose only reviewer is down blocks (CC-05 §5). A review whose author is unknown routes nowhere (CC-05 R22). A `Review{author}` request always needs a reviewer other than its author. This amends the sentence above: the author is excluded outright, not only as a preference, because a fallback to the author would waive independence. `required_review` does not change the outcome for review requests. Both flag values are covered by fixtures in the scratch crate's `routing_policy` suite (`required_review_*`, `review_requests_never_route_to_the_author_whatever_the_flag`).
+
 Availability observations are evidence with source and time; a stale observation (older than a policy-defined TTL) degrades to `Unknown`. `CapacityObserved` from an adapter is an `ErrorSignal` observation, not a permanent state.
 
 ---

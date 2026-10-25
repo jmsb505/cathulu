@@ -1,6 +1,7 @@
 pub mod agent_provider;
 pub mod app_server;
 pub mod checkpoints;
+pub mod claude_code;
 pub mod codex_adapter;
 pub mod codex_config;
 pub mod codex_config_files;
@@ -22,6 +23,7 @@ mod provider_credentials;
 pub mod provider_routing;
 pub mod provider_sessions;
 pub mod roles;
+pub mod routing_policy;
 mod sqlite;
 pub mod telemetry;
 pub mod terminal;
