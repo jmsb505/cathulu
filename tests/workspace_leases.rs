@@ -359,7 +359,7 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
             &fixture.worker_one,
             WorkspaceAccess::WorkspaceWrite,
             started,
-            3_600,
+            60,
         )
         .expect("claim lease for provider attempt fixture");
 
@@ -438,6 +438,14 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
         Some(lease.id)
     );
 
+    let renewal_time = started + 30;
+    let renewed = fixture
+        .store
+        .renew_workspace_lease(lease.id, "worker-session-one", renewal_time, 60)
+        .expect("a live provider attempt keeps its exact workspace lease renewable");
+    assert_eq!(renewed.status, WorkspaceLeaseStatus::Active);
+    assert!(renewed.lease_expires_at > lease.lease_expires_at);
+
     let codex_session = cathulu_core::agent_provider::ExternalSession {
         provider_id: ProviderId::codex(),
         session_id: cathulu_core::agent_provider::ExternalId::new(codex_session_id).unwrap(),
@@ -459,7 +467,7 @@ fn workspace_lease_recovery_quarantines_attempt_before_cross_provider_replacemen
             .expect("keep the Claude session active while its attempt is unresolved");
     assert_eq!(claude_status_before_reconciliation, "active");
 
-    let future = lease.lease_expires_at + 1;
+    let future = renewed.lease_expires_at + 1;
     assert_eq!(
         fixture.store.expire_stale_workspace_leases(future).unwrap(),
         1

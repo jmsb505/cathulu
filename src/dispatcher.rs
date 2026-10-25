@@ -5,7 +5,8 @@
 //! record is not evidence that a Codex turn started or completed.
 
 use crate::agent_provider::{
-    CredentialSource, PermissionManifest, ProviderCapabilities, ProviderStartAdmission,
+    AttemptKey, CredentialSource, ExternalId, ExternalSession, PermissionManifest,
+    ProviderCapabilities, ProviderId, ProviderStartAdmission,
 };
 use crate::app_server::{AppServerMessage, AppServerProcess};
 use crate::delegation::DelegationTaskPacket;
@@ -26,6 +27,9 @@ use uuid::Uuid;
 const MAX_BATCH_SIZE: usize = 32;
 const MAX_ERROR_BYTES: usize = 2_000;
 const MAX_EVENT_DETAILS_BYTES: usize = 8_192;
+const DISPATCHER_LEASE_SECONDS: i64 = 45;
+const ACTIVE_WORKSPACE_LEASE_SECONDS: i64 = 60;
+const LEASE_HEARTBEAT_SECONDS: u64 = 10;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -829,6 +833,26 @@ impl Store {
             .query_row(
                 "SELECT workspace_lease_id FROM role_thread_capabilities
                  WHERE binding_key = ?1 AND status = 'active'",
+                params![binding_key],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(sqlite_error)
+    }
+
+    /// Read the thread's durable lease binding even when its bearer capability was revoked.
+    /// Dispatch still requires the current lease to be active and issues a fresh capability.
+    pub fn persisted_role_thread_capability_workspace_lease_id(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<i64>, String> {
+        let connection = self.connection()?;
+        connection
+            .raw()
+            .query_row(
+                "SELECT workspace_lease_id FROM role_thread_capabilities
+                 WHERE binding_key = ?1",
                 params![binding_key],
                 |row| row.get::<_, Option<i64>>(0),
             )
@@ -2410,6 +2434,9 @@ struct ActiveTurn {
     inbox_id: Option<i64>,
     binding_key: String,
     turn_id: Option<String>,
+    attempt_key: AttemptKey,
+    workspace_lease_id: i64,
+    workspace_lease_owner_id: String,
 }
 
 struct CapabilityRevocationGuard<'a> {
@@ -2441,22 +2468,110 @@ impl Drop for CapabilityRevocationGuard<'_> {
     }
 }
 
+struct ProviderAttemptSubmissionGuard<'a> {
+    store: &'a Store,
+    attempt_key: AttemptKey,
+    block_before_submission: bool,
+}
+
+impl<'a> ProviderAttemptSubmissionGuard<'a> {
+    fn new(store: &'a Store, attempt_key: AttemptKey) -> Self {
+        Self {
+            store,
+            attempt_key,
+            block_before_submission: true,
+        }
+    }
+
+    fn preserve_for_provider_submission(mut self) {
+        self.block_before_submission = false;
+    }
+}
+
+impl Drop for ProviderAttemptSubmissionGuard<'_> {
+    fn drop(&mut self) {
+        if self.block_before_submission {
+            // No provider call was made. Close the durable attempt so a harmless refusal does
+            // not hold the lease for reconciliation. A failed update leaves it open fail-closed.
+            let _ = self
+                .store
+                .set_provider_attempt_state(&self.attempt_key, "blocked", None);
+        }
+    }
+}
+
+fn persist_codex_provider_attempt<'a>(
+    store: &'a Store,
+    binding_key: &str,
+    thread_id: &str,
+    capability_token: &str,
+    dispatch_id: Option<i64>,
+    inbox_id: Option<i64>,
+    delegation_id: i64,
+    workspace_lease_id: i64,
+    prompt: &str,
+) -> Result<(AttemptKey, ProviderAttemptSubmissionGuard<'a>), String> {
+    let session = ExternalSession {
+        provider_id: ProviderId::codex(),
+        session_id: ExternalId::new(thread_id.to_string())?,
+    };
+    store.record_provider_session(&session, binding_key, "active", None, None)?;
+    let attempt_key = AttemptKey::new(format!("codex-dispatch-{}", Uuid::new_v4().simple()))?;
+    store.begin_provider_attempt_under_workspace_lease(
+        &attempt_key,
+        &session,
+        dispatch_id,
+        inbox_id,
+        delegation_id,
+        &content_hash(prompt),
+        workspace_lease_id,
+    )?;
+    let attempt_guard = ProviderAttemptSubmissionGuard::new(store, attempt_key.clone());
+    store.bind_capability_to_provider_attempt(capability_token, &session, &attempt_key)?;
+    Ok((attempt_key, attempt_guard))
+}
+
+fn renew_active_workspace_leases(
+    store: &Store,
+    active_turns: &HashMap<String, ActiveTurn>,
+    now: i64,
+) -> Result<(), String> {
+    for turn in active_turns.values() {
+        store
+            .renew_workspace_lease(
+                turn.workspace_lease_id,
+                &turn.workspace_lease_owner_id,
+                now,
+                ACTIVE_WORKSPACE_LEASE_SECONDS,
+            )
+            .map_err(|error| {
+                format!(
+                    "workspace lease {} could not be renewed: {error}",
+                    turn.workspace_lease_id
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn dispatcher_loop(
     store: Store,
     admission_policy: RoleDispatchAdmissionPolicy,
     stop: Arc<AtomicBool>,
 ) {
     let owner_id = format!("{}:{}", std::process::id(), unix_time());
-    const LEASE_SECONDS: i64 = 45;
     let mut lease_held = false;
     let mut next_heartbeat = Instant::now();
+    let mut next_workspace_heartbeat =
+        Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS);
     let mut app_server: Option<AppServerProcess> = None;
     let mut active_turns: HashMap<String, ActiveTurn> = HashMap::new();
 
     while !stop.load(Ordering::Acquire) {
         let now = unix_time();
         if !lease_held {
-            match store.try_acquire_role_dispatcher_lease(&owner_id, now, LEASE_SECONDS) {
+            match store.try_acquire_role_dispatcher_lease(&owner_id, now, DISPATCHER_LEASE_SECONDS)
+            {
                 Ok(true) => {
                     lease_held = true;
                     next_heartbeat = Instant::now() + Duration::from_secs(10);
@@ -2480,11 +2595,25 @@ fn dispatcher_loop(
         }
 
         if Instant::now() >= next_heartbeat {
-            match store.renew_role_dispatcher_lease(&owner_id, unix_time(), LEASE_SECONDS) {
-                Ok(true) => next_heartbeat = Instant::now() + Duration::from_secs(10),
+            match store.renew_role_dispatcher_lease(
+                &owner_id,
+                unix_time(),
+                DISPATCHER_LEASE_SECONDS,
+            ) {
+                Ok(true) => {
+                    next_heartbeat = Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS)
+                }
                 _ => {
-                    mark_active_turns_for_reconciliation(&store, &active_turns);
-                    mark_active_inbox_for_reconciliation(&store, &active_turns);
+                    mark_active_turns_for_reconciliation(
+                        &store,
+                        &active_turns,
+                        "dispatcher lease was lost while a provider turn was live",
+                    );
+                    mark_active_inbox_for_reconciliation(
+                        &store,
+                        &active_turns,
+                        "dispatcher lease was lost while a provider turn was live",
+                    );
                     active_turns.clear();
                     app_server = None;
                     lease_held = false;
@@ -2493,15 +2622,52 @@ fn dispatcher_loop(
             }
         }
 
+        if Instant::now() >= next_workspace_heartbeat {
+            next_workspace_heartbeat =
+                Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS);
+            if !active_turns.is_empty()
+                && renew_active_workspace_leases(&store, &active_turns, unix_time()).is_err()
+            {
+                mark_active_turns_for_reconciliation(
+                    &store,
+                    &active_turns,
+                    "workspace lease renewal failed while a provider turn was live",
+                );
+                mark_active_inbox_for_reconciliation(
+                    &store,
+                    &active_turns,
+                    "workspace lease renewal failed while a provider turn was live",
+                );
+                active_turns.clear();
+                app_server = None;
+                continue;
+            }
+        }
+
         if let Some(server) = app_server.as_mut() {
             match server.next_event(Duration::from_millis(30)) {
                 Ok(Some(event)) => {
-                    handle_app_server_event(&store, server, &mut active_turns, event)
+                    let transport_closed = matches!(
+                        event,
+                        AppServerMessage::TransportError(_) | AppServerMessage::TransportClosed
+                    );
+                    handle_app_server_event(&store, server, &mut active_turns, event);
+                    if transport_closed {
+                        app_server = None;
+                    }
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    mark_active_turns_for_reconciliation(&store, &active_turns);
-                    mark_active_inbox_for_reconciliation(&store, &active_turns);
+                    mark_active_turns_for_reconciliation(
+                        &store,
+                        &active_turns,
+                        "dispatcher connection closed while a provider turn was live",
+                    );
+                    mark_active_inbox_for_reconciliation(
+                        &store,
+                        &active_turns,
+                        "dispatcher connection closed while a provider turn was live",
+                    );
                     active_turns.clear();
                     app_server = None;
                 }
@@ -2557,8 +2723,16 @@ fn dispatcher_loop(
         thread::sleep(Duration::from_millis(120));
     }
 
-    mark_active_turns_for_reconciliation(&store, &active_turns);
-    mark_active_inbox_for_reconciliation(&store, &active_turns);
+    mark_active_turns_for_reconciliation(
+        &store,
+        &active_turns,
+        "dispatcher stopped while a provider turn was live",
+    );
+    mark_active_inbox_for_reconciliation(
+        &store,
+        &active_turns,
+        "dispatcher stopped while a provider turn was live",
+    );
     drop(app_server);
     if lease_held {
         let _ = store.release_role_dispatcher_lease(&owner_id, unix_time());
@@ -2613,7 +2787,7 @@ fn dispatch_one(
         .map_err(|message| (item.id, "blocked", message))?;
     if existing_thread_id.is_some()
         && store
-            .active_role_thread_capability_workspace_lease_id(&binding_key)
+            .persisted_role_thread_capability_workspace_lease_id(&binding_key)
             .map_err(|message| (item.id, "blocked", message))?
             != Some(lease_id)
     {
@@ -2778,18 +2952,65 @@ fn dispatch_one(
     store
         .set_role_dispatch_status(item.id, "turn_starting", None)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
+    let lease_owner_id = preflight.record.owner_id.clone();
+    store
+        .renew_workspace_lease(
+            lease_id,
+            &lease_owner_id,
+            unix_time(),
+            ACTIVE_WORKSPACE_LEASE_SECONDS,
+        )
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
+    let (attempt_key, attempt_guard) = persist_codex_provider_attempt(
+        store,
+        &binding_key,
+        &thread_id,
+        &capability.token,
+        Some(item.id),
+        None,
+        item.delegation_id,
+        lease_id,
+        &prompt,
+    )
+    .map_err(|message| (item.id, "needs_reconcile", message))?;
+    store
+        .set_provider_attempt_state(&attempt_key, "submitted", None)
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
     store
         .mark_delegation_dispatched(item.delegation_id)
         .map_err(|message| (item.id, "blocked", message))?;
     capability_guard.preserve_for_turn_submission();
-    let acknowledgement = server
-        .start_turn(&thread_id, &prompt)
-        .map_err(|message| (item.id, "needs_reconcile", message))?;
+    attempt_guard.preserve_for_provider_submission();
+    let acknowledgement = match server.start_turn(&thread_id, &prompt) {
+        Ok(acknowledgement) => acknowledgement,
+        Err(message) => {
+            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            return Err((item.id, "needs_reconcile", message));
+        }
+    };
     let turn_id = acknowledgement
         .pointer("/turn/id")
         .or_else(|| acknowledgement.get("turnId"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let active_turn = ActiveTurn {
+        dispatch_id: Some(item.id),
+        inbox_id: None,
+        binding_key: binding_key.clone(),
+        turn_id: turn_id.clone(),
+        attempt_key: attempt_key.clone(),
+        workspace_lease_id: lease_id,
+        workspace_lease_owner_id: lease_owner_id,
+    };
+    active_turns.insert(thread_id.clone(), active_turn);
+    let external_turn_id = turn_id
+        .as_deref()
+        .map(ExternalId::new)
+        .transpose()
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
+    store
+        .set_provider_attempt_state(&attempt_key, "submitted", external_turn_id.as_ref())
+        .map_err(|message| (item.id, "needs_reconcile", message))?;
     store
         .bind_role_thread(
             &binding_key,
@@ -2804,15 +3025,6 @@ fn dispatch_one(
     store
         .set_role_dispatch_status(item.id, "dispatched", None)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
-    active_turns.insert(
-        thread_id,
-        ActiveTurn {
-            dispatch_id: Some(item.id),
-            inbox_id: None,
-            binding_key,
-            turn_id,
-        },
-    );
     Ok(())
 }
 
@@ -2910,7 +3122,7 @@ fn dispatch_role_inbox_message(
         .active_workspace_lease_id_for_delegation(manager_delegation_id, unix_time())
         .map_err(|error| (message.id, "blocked", error))?;
     if store
-        .active_role_thread_capability_workspace_lease_id(&message.target_binding_key)
+        .persisted_role_thread_capability_workspace_lease_id(&message.target_binding_key)
         .map_err(|error| (message.id, "blocked", error))?
         != Some(lease_id)
     {
@@ -2999,15 +3211,62 @@ fn dispatch_role_inbox_message(
     server
         .set_admission(admission)
         .map_err(|error| (message.id, "needs_reconcile", error))?;
-    capability_guard.preserve_for_turn_submission();
-    let acknowledgement = server
-        .start_turn(&binding.thread_id, &prompt)
+    let lease_owner_id = preflight.record.owner_id.clone();
+    store
+        .renew_workspace_lease(
+            lease_id,
+            &lease_owner_id,
+            unix_time(),
+            ACTIVE_WORKSPACE_LEASE_SECONDS,
+        )
         .map_err(|error| (message.id, "needs_reconcile", error))?;
+    let (attempt_key, attempt_guard) = persist_codex_provider_attempt(
+        store,
+        &message.target_binding_key,
+        &binding.thread_id,
+        &capability.token,
+        None,
+        Some(message.id),
+        manager_delegation_id,
+        lease_id,
+        &prompt,
+    )
+    .map_err(|error| (message.id, "needs_reconcile", error))?;
+    store
+        .set_provider_attempt_state(&attempt_key, "submitted", None)
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
+    capability_guard.preserve_for_turn_submission();
+    attempt_guard.preserve_for_provider_submission();
+    let acknowledgement = match server.start_turn(&binding.thread_id, &prompt) {
+        Ok(acknowledgement) => acknowledgement,
+        Err(error) => {
+            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            return Err((message.id, "needs_reconcile", error));
+        }
+    };
     let turn_id = acknowledgement
         .pointer("/turn/id")
         .or_else(|| acknowledgement.get("turnId"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let active_turn = ActiveTurn {
+        dispatch_id: None,
+        inbox_id: Some(message.id),
+        binding_key: message.target_binding_key.clone(),
+        turn_id: turn_id.clone(),
+        attempt_key: attempt_key.clone(),
+        workspace_lease_id: lease_id,
+        workspace_lease_owner_id: lease_owner_id,
+    };
+    active_turns.insert(binding.thread_id.clone(), active_turn);
+    let external_turn_id = turn_id
+        .as_deref()
+        .map(ExternalId::new)
+        .transpose()
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
+    store
+        .set_provider_attempt_state(&attempt_key, "submitted", external_turn_id.as_ref())
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
     store
         .bind_role_thread(
             &message.target_binding_key,
@@ -3022,15 +3281,6 @@ fn dispatch_role_inbox_message(
     store
         .set_role_inbox_status(message.id, "dispatched", None)
         .map_err(|error| (message.id, "needs_reconcile", error))?;
-    active_turns.insert(
-        binding.thread_id,
-        ActiveTurn {
-            dispatch_id: None,
-            inbox_id: Some(message.id),
-            binding_key: message.target_binding_key,
-            turn_id,
-        },
-    );
     Ok(())
 }
 
@@ -3137,8 +3387,14 @@ fn handle_app_server_event(
         AppServerMessage::Notification { method, params } => {
             if method == "turn/started" {
                 if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                    if let Some(active) = active_turns.get(thread_id) {
+                    if let Some(active) = active_turns.get(thread_id).cloned() {
                         if event_turn_id(&params).is_none_or(|id| Some(id) == active.turn_id) {
+                            update_active_provider_attempt(
+                                store,
+                                &active,
+                                "running",
+                                event_turn_id(&params),
+                            );
                             if let Some(dispatch_id) = active.dispatch_id {
                                 let _ =
                                     store.set_role_dispatch_status(dispatch_id, "running", None);
@@ -3160,6 +3416,12 @@ fn handle_app_server_event(
                                 .and_then(Value::as_str);
                             let turn_failed =
                                 matches!(outcome, Some("failed" | "interrupted" | "cancelled"));
+                            update_active_provider_attempt(
+                                store,
+                                &active,
+                                if turn_failed { "failed" } else { "completed" },
+                                event_turn_id(&params),
+                            );
                             if let Some(dispatch_id) = active.dispatch_id {
                                 let status = store
                                     .role_dispatches(200)
@@ -3230,8 +3492,16 @@ fn handle_app_server_event(
             }
         }
         AppServerMessage::TransportError(_) | AppServerMessage::TransportClosed => {
-            mark_active_turns_for_reconciliation(store, active_turns);
-            mark_active_inbox_for_reconciliation(store, active_turns);
+            mark_active_turns_for_reconciliation(
+                store,
+                active_turns,
+                "app-server transport closed while a provider turn was live",
+            );
+            mark_active_inbox_for_reconciliation(
+                store,
+                active_turns,
+                "app-server transport closed while a provider turn was live",
+            );
             active_turns.clear();
         }
     }
@@ -3245,39 +3515,59 @@ fn event_turn_id(params: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn mark_active_turns_for_reconciliation(store: &Store, active: &HashMap<String, ActiveTurn>) {
+fn update_active_provider_attempt(
+    store: &Store,
+    active: &ActiveTurn,
+    state: &str,
+    event_turn_id: Option<String>,
+) {
+    let turn_id = event_turn_id
+        .or_else(|| active.turn_id.clone())
+        .and_then(|id| ExternalId::new(id).ok());
+    let _ = store.set_provider_attempt_state(&active.attempt_key, state, turn_id.as_ref());
+}
+
+fn mark_active_turns_for_reconciliation(
+    store: &Store,
+    active: &HashMap<String, ActiveTurn>,
+    reason: &str,
+) {
     for turn in active.values() {
-        let Some(dispatch_id) = turn.dispatch_id else {
-            continue;
-        };
-        let current = store
-            .role_dispatches(200)
-            .ok()
-            .and_then(|items| items.into_iter().find(|item| item.id == dispatch_id))
-            .map(|item| item.status);
-        if current.is_some_and(|status| {
-            !matches!(
-                status.as_str(),
-                "blocked" | "completed" | "failed" | "cancelled" | "needs_reconcile"
-            )
-        }) {
-            let _ = store.set_role_dispatch_status(
-                dispatch_id,
-                "needs_reconcile",
-                Some("dispatcher connection closed; verify the Codex thread before retrying"),
-            );
+        let _ = store.set_provider_attempt_state(&turn.attempt_key, "needs_reconcile", None);
+        let _ = store.revoke_role_thread_capability(&turn.binding_key);
+        let _ = store.revoke_workspace_lease(
+            turn.workspace_lease_id,
+            &turn.workspace_lease_owner_id,
+            unix_time(),
+            reason,
+        );
+        if let Some(dispatch_id) = turn.dispatch_id {
+            let current = store
+                .role_dispatches(200)
+                .ok()
+                .and_then(|items| items.into_iter().find(|item| item.id == dispatch_id))
+                .map(|item| item.status);
+            if current.is_some_and(|status| {
+                !matches!(
+                    status.as_str(),
+                    "blocked" | "completed" | "failed" | "cancelled" | "needs_reconcile"
+                )
+            }) {
+                let _ =
+                    store.set_role_dispatch_status(dispatch_id, "needs_reconcile", Some(reason));
+            }
         }
     }
 }
 
-fn mark_active_inbox_for_reconciliation(store: &Store, active: &HashMap<String, ActiveTurn>) {
+fn mark_active_inbox_for_reconciliation(
+    store: &Store,
+    active: &HashMap<String, ActiveTurn>,
+    reason: &str,
+) {
     for turn in active.values() {
         if let Some(inbox_id) = turn.inbox_id {
-            let _ = store.set_role_inbox_status(
-                inbox_id,
-                "needs_reconcile",
-                Some("dispatcher connection closed; inspect the Codex thread before retrying"),
-            );
+            let _ = store.set_role_inbox_status(inbox_id, "needs_reconcile", Some(reason));
         }
     }
 }
@@ -3504,6 +3794,32 @@ mod dispatcher_admission_tests {
             lease_id
         }
 
+        fn add_dispatch_record(&self) -> i64 {
+            let now = unix_time();
+            let connection =
+                Connection::open(self.store.database_path()).expect("open fixture dispatch db");
+            let existing = connection
+                .query_row(
+                    "SELECT id FROM role_dispatch_outbox WHERE delegation_id = ?1",
+                    rusqlite::params![self.delegation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .expect("query existing fixture dispatch");
+            if let Some(id) = existing {
+                return id;
+            }
+            connection
+                .execute(
+                    "INSERT INTO role_dispatch_outbox
+                     (delegation_id, idempotency_key_hash, status, created_at, updated_at)
+                     VALUES (?1, ?2, 'queued', ?3, ?3)",
+                    rusqlite::params![self.delegation_id, "c".repeat(64), now],
+                )
+                .expect("insert fixture dispatch");
+            connection.last_insert_rowid()
+        }
+
         fn bind_thread(&self) {
             self.store
                 .bind_role_thread(
@@ -3670,6 +3986,190 @@ mod dispatcher_admission_tests {
             .store
             .resolve_role_thread_capability(&capability.token)
             .is_ok());
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn revoked_capability_keeps_its_thread_lease_binding_for_safe_reuse() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+
+        fixture
+            .store
+            .revoke_role_thread_capability(&fixture.binding_key)
+            .expect("revoke fixture capability");
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability.token)
+            .is_err());
+        assert_eq!(
+            fixture
+                .store
+                .active_role_thread_capability_workspace_lease_id(&fixture.binding_key)
+                .expect("read active capability binding"),
+            None
+        );
+        assert_eq!(
+            fixture
+                .store
+                .persisted_role_thread_capability_workspace_lease_id(&fixture.binding_key)
+                .expect("read persisted thread lease binding"),
+            Some(lease_id)
+        );
+
+        fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("rotate a fresh capability for the same active lease");
+        assert_eq!(
+            fixture
+                .store
+                .active_role_thread_capability_workspace_lease_id(&fixture.binding_key)
+                .expect("read newly active capability binding"),
+            Some(lease_id)
+        );
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn provider_attempt_is_durable_and_bound_before_submission() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+        let dispatch_id = fixture.add_dispatch_record();
+        let prompt = "deterministic fixture prompt; never persist this text";
+        let (attempt_key, attempt_guard) = persist_codex_provider_attempt(
+            &fixture.store,
+            &fixture.binding_key,
+            "fixture-thread",
+            &capability.token,
+            Some(dispatch_id),
+            None,
+            fixture.delegation_id,
+            lease_id,
+            prompt,
+        )
+        .expect("persist provider attempt before submit");
+        let (status, recorded_lease, request_hash): (String, i64, String) =
+            Connection::open(fixture.store.database_path())
+                .expect("open fixture attempt database")
+                .query_row(
+                    "SELECT status, workspace_lease_id, request_hash FROM provider_attempts
+                     WHERE attempt_key = ?1",
+                    rusqlite::params![attempt_key.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("read the durable provider attempt");
+        assert_eq!(status, "created");
+        assert_eq!(recorded_lease, lease_id);
+        assert_eq!(request_hash, content_hash(prompt));
+        assert_ne!(request_hash, prompt);
+        let binding = fixture
+            .store
+            .provider_execution_for_capability(&content_hash(&capability.token))
+            .expect("read provider capability binding")
+            .expect("capability is linked to the attempt");
+        assert_eq!(binding.attempt_key, attempt_key);
+        assert_eq!(binding.session.session_id.as_str(), "fixture-thread");
+
+        fixture
+            .store
+            .set_provider_attempt_state(&attempt_key, "submitted", None)
+            .expect("mark provider call submitted");
+        attempt_guard.preserve_for_provider_submission();
+        let active = ActiveTurn {
+            dispatch_id: Some(dispatch_id),
+            inbox_id: None,
+            binding_key: fixture.binding_key.clone(),
+            turn_id: None,
+            attempt_key: attempt_key.clone(),
+            workspace_lease_id: lease_id,
+            workspace_lease_owner_id: "dispatcher-admission-fixture".into(),
+        };
+        update_active_provider_attempt(
+            &fixture.store,
+            &active,
+            "running",
+            Some("fixture-turn".into()),
+        );
+        update_active_provider_attempt(&fixture.store, &active, "completed", None);
+        let final_status: String = Connection::open(fixture.store.database_path())
+            .expect("open fixture attempt database")
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read completed provider attempt");
+        assert_eq!(final_status, "completed");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn provider_attempt_guard_closes_pre_submit_refusals() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        fixture.bind_thread();
+        let capability = fixture
+            .store
+            .issue_role_thread_capability_for_workspace(
+                &fixture.binding_key,
+                "sub_overseer",
+                fixture.project_id,
+                fixture.delegation_id,
+                lease_id,
+            )
+            .expect("issue fixture capability");
+        let dispatch_id = fixture.add_dispatch_record();
+        let (attempt_key, attempt_guard) = persist_codex_provider_attempt(
+            &fixture.store,
+            &fixture.binding_key,
+            "fixture-thread",
+            &capability.token,
+            Some(dispatch_id),
+            None,
+            fixture.delegation_id,
+            lease_id,
+            "fixture prompt",
+        )
+        .expect("persist provider attempt before submit");
+        drop(attempt_guard);
+        let status: String = Connection::open(fixture.store.database_path())
+            .expect("open fixture attempt database")
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read closed provider attempt");
+        assert_eq!(status, "blocked");
         let _ = std::fs::remove_dir_all(fixture.data_dir);
     }
 
