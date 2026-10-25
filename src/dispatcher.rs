@@ -2554,6 +2554,24 @@ fn renew_active_workspace_leases(
     Ok(())
 }
 
+fn renew_active_workspace_leases_or_reconcile(
+    store: &Store,
+    active_turns: &mut HashMap<String, ActiveTurn>,
+    now: i64,
+) -> Result<(), String> {
+    match renew_active_workspace_leases(store, active_turns, now) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            mark_and_clear_active_turns_for_reconciliation(
+                store,
+                active_turns,
+                "workspace lease renewal failed while a provider turn was live",
+            );
+            Err(error)
+        }
+    }
+}
+
 fn dispatcher_loop(
     store: Store,
     admission_policy: RoleDispatchAdmissionPolicy,
@@ -2604,17 +2622,11 @@ fn dispatcher_loop(
                     next_heartbeat = Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS)
                 }
                 _ => {
-                    mark_active_turns_for_reconciliation(
+                    mark_and_clear_active_turns_for_reconciliation(
                         &store,
-                        &active_turns,
+                        &mut active_turns,
                         "dispatcher lease was lost while a provider turn was live",
                     );
-                    mark_active_inbox_for_reconciliation(
-                        &store,
-                        &active_turns,
-                        "dispatcher lease was lost while a provider turn was live",
-                    );
-                    active_turns.clear();
                     app_server = None;
                     lease_held = false;
                     continue;
@@ -2626,19 +2638,13 @@ fn dispatcher_loop(
             next_workspace_heartbeat =
                 Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS);
             if !active_turns.is_empty()
-                && renew_active_workspace_leases(&store, &active_turns, unix_time()).is_err()
+                && renew_active_workspace_leases_or_reconcile(
+                    &store,
+                    &mut active_turns,
+                    unix_time(),
+                )
+                .is_err()
             {
-                mark_active_turns_for_reconciliation(
-                    &store,
-                    &active_turns,
-                    "workspace lease renewal failed while a provider turn was live",
-                );
-                mark_active_inbox_for_reconciliation(
-                    &store,
-                    &active_turns,
-                    "workspace lease renewal failed while a provider turn was live",
-                );
-                active_turns.clear();
                 app_server = None;
                 continue;
             }
@@ -2658,17 +2664,11 @@ fn dispatcher_loop(
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    mark_active_turns_for_reconciliation(
+                    mark_and_clear_active_turns_for_reconciliation(
                         &store,
-                        &active_turns,
+                        &mut active_turns,
                         "dispatcher connection closed while a provider turn was live",
                     );
-                    mark_active_inbox_for_reconciliation(
-                        &store,
-                        &active_turns,
-                        "dispatcher connection closed while a provider turn was live",
-                    );
-                    active_turns.clear();
                     app_server = None;
                 }
             }
@@ -3492,17 +3492,7 @@ fn handle_app_server_event(
             }
         }
         AppServerMessage::TransportError(_) | AppServerMessage::TransportClosed => {
-            mark_active_turns_for_reconciliation(
-                store,
-                active_turns,
-                "app-server transport closed while a provider turn was live",
-            );
-            mark_active_inbox_for_reconciliation(
-                store,
-                active_turns,
-                "app-server transport closed while a provider turn was live",
-            );
-            active_turns.clear();
+            handle_app_server_transport_loss(store, active_turns);
         }
     }
 }
@@ -3570,6 +3560,24 @@ fn mark_active_inbox_for_reconciliation(
             let _ = store.set_role_inbox_status(inbox_id, "needs_reconcile", Some(reason));
         }
     }
+}
+
+fn mark_and_clear_active_turns_for_reconciliation(
+    store: &Store,
+    active: &mut HashMap<String, ActiveTurn>,
+    reason: &str,
+) {
+    mark_active_turns_for_reconciliation(store, active, reason);
+    mark_active_inbox_for_reconciliation(store, active, reason);
+    active.clear();
+}
+
+fn handle_app_server_transport_loss(store: &Store, active: &mut HashMap<String, ActiveTurn>) {
+    mark_and_clear_active_turns_for_reconciliation(
+        store,
+        active,
+        "app-server transport closed while a provider turn was live",
+    );
 }
 
 fn valid_transition(from: &str, to: &str) -> bool {
@@ -3832,6 +3840,84 @@ mod dispatcher_admission_tests {
                     None,
                 )
                 .expect("bind fixture Project Manager thread");
+        }
+
+        fn add_active_turn(&mut self) -> (HashMap<String, ActiveTurn>, String, AttemptKey) {
+            let lease_id = self.lease_id.expect("active turn fixture requires a lease");
+            self.bind_thread();
+            let capability = self
+                .store
+                .issue_role_thread_capability_for_workspace(
+                    &self.binding_key,
+                    "sub_overseer",
+                    self.project_id,
+                    self.delegation_id,
+                    lease_id,
+                )
+                .expect("issue active-turn capability");
+            let session = ExternalSession {
+                provider_id: ProviderId::codex(),
+                session_id: ExternalId::new("fixture-thread").expect("valid fixture thread id"),
+            };
+            self.store
+                .record_provider_session(&session, &self.binding_key, "active", None, None)
+                .expect("record active-turn provider session");
+            let dispatch_id = self.add_dispatch_record();
+            for status in [
+                "preflighting",
+                "thread_ready",
+                "turn_starting",
+                "dispatched",
+            ] {
+                self.store
+                    .set_role_dispatch_status(dispatch_id, status, None)
+                    .expect("advance fixture dispatch state");
+            }
+            let attempt_key =
+                AttemptKey::new(format!("dispatcher-live-{}", Uuid::new_v4().simple()))
+                    .expect("valid fixture attempt key");
+            self.store
+                .begin_provider_attempt_under_workspace_lease(
+                    &attempt_key,
+                    &session,
+                    Some(dispatch_id),
+                    None,
+                    self.delegation_id,
+                    &content_hash("fixture live turn"),
+                    lease_id,
+                )
+                .expect("persist active provider attempt");
+            self.store
+                .bind_capability_to_provider_attempt(&capability.token, &session, &attempt_key)
+                .expect("bind active-turn capability to attempt");
+            self.store
+                .set_provider_attempt_state(
+                    &attempt_key,
+                    "submitted",
+                    Some(&ExternalId::new("fixture-turn").expect("valid fixture turn id")),
+                )
+                .expect("mark active provider attempt submitted");
+            self.store
+                .set_provider_attempt_state(
+                    &attempt_key,
+                    "running",
+                    Some(&ExternalId::new("fixture-turn").expect("valid fixture turn id")),
+                )
+                .expect("mark active provider attempt running");
+            let active = ActiveTurn {
+                dispatch_id: Some(dispatch_id),
+                inbox_id: None,
+                binding_key: self.binding_key.clone(),
+                turn_id: Some("fixture-turn".into()),
+                attempt_key: attempt_key.clone(),
+                workspace_lease_id: lease_id,
+                workspace_lease_owner_id: "dispatcher-admission-fixture".into(),
+            };
+            (
+                HashMap::from([("fixture-thread".into(), active)]),
+                capability.token,
+                attempt_key,
+            )
         }
 
         fn issue_capability(&self, bound: bool) {
@@ -4170,6 +4256,106 @@ mod dispatcher_admission_tests {
             )
             .expect("read closed provider attempt");
         assert_eq!(status, "blocked");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn workspace_lease_renewal_failure_quarantines_live_turn_and_clears_tracking() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        let (mut active_turns, capability_token, attempt_key) = fixture.add_active_turn();
+        let now = unix_time();
+        Connection::open(fixture.store.database_path())
+            .expect("open isolated lease fixture")
+            .execute(
+                "UPDATE workspace_leases SET lease_expires_at = ?1 WHERE id = ?2",
+                rusqlite::params![now - 1, lease_id],
+            )
+            .expect("expire the fixture lease before renewal");
+
+        let error =
+            renew_active_workspace_leases_or_reconcile(&fixture.store, &mut active_turns, now)
+                .expect_err("expired live lease must fail renewal");
+        assert!(error.contains("expired workspace lease requires reconciliation"));
+        assert!(
+            active_turns.is_empty(),
+            "failed turns must leave live tracking"
+        );
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability_token)
+            .is_err());
+        let connection =
+            Connection::open(fixture.store.database_path()).expect("reopen isolated lease fixture");
+        let lease_status: String = connection
+            .query_row(
+                "SELECT status FROM workspace_leases WHERE id = ?1",
+                rusqlite::params![lease_id],
+                |row| row.get(0),
+            )
+            .expect("read quarantined lease");
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read reconciled provider attempt");
+        let dispatch_status: String = connection
+            .query_row(
+                "SELECT status FROM role_dispatch_outbox WHERE delegation_id = ?1",
+                rusqlite::params![fixture.delegation_id],
+                |row| row.get(0),
+            )
+            .expect("read reconciled dispatch");
+        assert_eq!(lease_status, "needs_reconcile");
+        assert_eq!(attempt_status, "needs_reconcile");
+        assert_eq!(dispatch_status, "needs_reconcile");
+        let _ = std::fs::remove_dir_all(fixture.data_dir);
+    }
+
+    #[test]
+    fn app_server_transport_loss_quarantines_live_turn_and_clears_tracking() {
+        let mut fixture = fixture();
+        let lease_id = fixture.add_active_lease();
+        let (mut active_turns, capability_token, attempt_key) = fixture.add_active_turn();
+
+        handle_app_server_transport_loss(&fixture.store, &mut active_turns);
+
+        assert!(
+            active_turns.is_empty(),
+            "lost transport must leave no live turn tracking"
+        );
+        assert!(fixture
+            .store
+            .resolve_role_thread_capability(&capability_token)
+            .is_err());
+        let connection = Connection::open(fixture.store.database_path())
+            .expect("open isolated transport fixture");
+        let lease_status: String = connection
+            .query_row(
+                "SELECT status FROM workspace_leases WHERE id = ?1",
+                rusqlite::params![lease_id],
+                |row| row.get(0),
+            )
+            .expect("read quarantined lease");
+        let attempt_status: String = connection
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read reconciled provider attempt");
+        let dispatch_status: String = connection
+            .query_row(
+                "SELECT status FROM role_dispatch_outbox WHERE delegation_id = ?1",
+                rusqlite::params![fixture.delegation_id],
+                |row| row.get(0),
+            )
+            .expect("read reconciled dispatch");
+        assert_eq!(lease_status, "needs_reconcile");
+        assert_eq!(attempt_status, "needs_reconcile");
+        assert_eq!(dispatch_status, "needs_reconcile");
         let _ = std::fs::remove_dir_all(fixture.data_dir);
     }
 

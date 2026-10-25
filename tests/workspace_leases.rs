@@ -1,6 +1,6 @@
 use cathulu_core::agent_provider::{
-    fixtures::ScriptedProvider, AgentProvider, CredentialSource, PermissionManifest, ProviderId,
-    WorkspaceAccess,
+    fixtures::ScriptedProvider, AgentProvider, CredentialSource, ExternalId, ExternalSession,
+    PermissionManifest, ProviderId, WorkspaceAccess,
 };
 use cathulu_core::worktree::{WorkspaceAttemptResolution, WorkspaceLeaseStatus};
 use cathulu_core::Store;
@@ -8,6 +8,8 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -314,6 +316,169 @@ fn writer_leases_require_clean_linked_worktrees_and_serialize_project_writes() {
             60,
         )
         .expect("next writer can use a separate clean worktree after release");
+}
+
+#[test]
+fn simultaneous_writer_claims_for_one_project_admit_exactly_one_writer() {
+    let fixture = fixture();
+    let start = Arc::new(Barrier::new(3));
+    let first_store = fixture.store.clone();
+    let second_store = fixture.store.clone();
+    let first_start = Arc::clone(&start);
+    let second_start = Arc::clone(&start);
+    let first_path = fixture.worker_one.clone();
+    let second_path = fixture.worker_two.clone();
+    let first_id = fixture.worker_one_id;
+    let second_id = fixture.worker_two_id;
+    let first = thread::spawn(move || {
+        first_start.wait();
+        first_store.claim_delegation_workspace(
+            first_id,
+            "simultaneous-owner-one",
+            &first_path,
+            WorkspaceAccess::WorkspaceWrite,
+            200,
+            60,
+        )
+    });
+    let second = thread::spawn(move || {
+        second_start.wait();
+        second_store.claim_delegation_workspace(
+            second_id,
+            "simultaneous-owner-two",
+            &second_path,
+            WorkspaceAccess::WorkspaceWrite,
+            200,
+            60,
+        )
+    });
+
+    start.wait();
+    let first = first.join().expect("first claim thread must finish");
+    let second = second.join().expect("second claim thread must finish");
+    assert_ne!(
+        first.is_ok(),
+        second.is_ok(),
+        "exactly one writer claim must win"
+    );
+    let loser = first
+        .err()
+        .or_else(|| second.err())
+        .expect("one claim loses");
+    assert!(
+        loser.contains("already leased"),
+        "the losing writer must observe the project lease: {loser}"
+    );
+}
+
+#[test]
+fn revoking_lease_with_open_attempt_quarantines_attempt_and_keeps_writer_lock() {
+    let fixture = fixture();
+    let started = now();
+    let lease = fixture
+        .store
+        .claim_delegation_workspace(
+            fixture.worker_one_id,
+            "revoke-owner-one",
+            &fixture.worker_one,
+            WorkspaceAccess::WorkspaceWrite,
+            started,
+            60,
+        )
+        .expect("claim writer lease for revoke fixture");
+    let binding_key = format!("worker:{}", fixture.worker_one_id);
+    let dispatch_connection = Connection::open(fixture.store.database_path()).unwrap();
+    dispatch_connection
+        .execute(
+            "INSERT INTO role_dispatch_outbox
+             (delegation_id, idempotency_key_hash, status, created_at, updated_at)
+             VALUES (?1, ?2, 'dispatched', ?3, ?3)",
+            params![fixture.worker_one_id, "e".repeat(64), started],
+        )
+        .expect("insert dispatch record for the revoke attempt");
+    let dispatch_id = dispatch_connection.last_insert_rowid();
+    drop(dispatch_connection);
+    let session = ExternalSession {
+        provider_id: ProviderId::codex(),
+        session_id: ExternalId::new("revoke-fixture-session").unwrap(),
+    };
+    fixture
+        .store
+        .bind_role_thread(
+            &binding_key,
+            None,
+            Some(fixture.worker_one_id),
+            fixture.project_id,
+            session.session_id.as_str(),
+            "active",
+            None,
+        )
+        .expect("bind revoke fixture role thread");
+    fixture
+        .store
+        .record_provider_session(&session, &binding_key, "active", None, None)
+        .expect("record revoke fixture session");
+    let capability = fixture
+        .store
+        .issue_role_thread_capability_for_workspace(
+            &binding_key,
+            "worker",
+            fixture.project_id,
+            fixture.worker_one_id,
+            lease.id,
+        )
+        .expect("bind capability to revoke fixture lease");
+    let attempt_key = cathulu_core::agent_provider::AttemptKey::new("revoke-open-attempt").unwrap();
+    fixture
+        .store
+        .begin_provider_attempt_under_workspace_lease(
+            &attempt_key,
+            &session,
+            Some(dispatch_id),
+            None,
+            fixture.worker_one_id,
+            &"d".repeat(64),
+            lease.id,
+        )
+        .expect("persist attempt under the lease being revoked");
+    fixture
+        .store
+        .bind_capability_to_provider_attempt(&capability.token, &session, &attempt_key)
+        .expect("bind capability to the unresolved attempt");
+    fixture
+        .store
+        .set_provider_attempt_state(&attempt_key, "submitted", None)
+        .expect("mark provider attempt submitted");
+
+    let revoked = fixture
+        .store
+        .revoke_workspace_lease(lease.id, "revoke-owner-one", now(), "test revoke")
+        .expect("revoke should quarantine a lease with an open attempt");
+    assert_eq!(revoked.status, WorkspaceLeaseStatus::NeedsReconcile);
+    assert!(fixture
+        .store
+        .resolve_role_thread_capability(&capability.token)
+        .unwrap_err()
+        .contains("revoked"));
+    let attempt_status: String = Connection::open(fixture.store.database_path())
+        .unwrap()
+        .query_row(
+            "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+            params![attempt_key.as_str()],
+            |row| row.get(0),
+        )
+        .expect("read quarantined provider attempt");
+    assert_eq!(attempt_status, "needs_reconcile");
+
+    let competing_writer = fixture.store.claim_delegation_workspace(
+        fixture.worker_two_id,
+        "revoke-owner-two",
+        &fixture.worker_two,
+        WorkspaceAccess::WorkspaceWrite,
+        now() + 1,
+        60,
+    );
+    assert!(competing_writer.unwrap_err().contains("already leased"));
 }
 
 #[test]
