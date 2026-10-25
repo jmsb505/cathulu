@@ -1067,7 +1067,7 @@ impl Store {
             }
         }
 
-        let (lease, workspace_path, project_path) = self.workspace_lease_context(lease_id)?;
+        let (lease, _, _) = self.workspace_lease_context(lease_id)?;
         if lease.status == WorkspaceLeaseStatus::Released {
             let connection = self.connection()?;
             let details = connection
@@ -1146,13 +1146,22 @@ impl Store {
             .map_err(sqlite_error)?;
         let current = transaction
             .query_row(
-                "SELECT owner_id, status, updated_at FROM workspace_leases WHERE id = ?1",
+                "SELECT lease.owner_id, lease.status, lease.updated_at,
+                        lease.workspace_path, project.path,
+                        lease.workspace_path_hash, lease.common_dir_hash
+                 FROM workspace_leases lease JOIN projects project
+                   ON project.id = lease.project_id
+                 WHERE lease.id = ?1",
                 params![lease_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
@@ -1167,16 +1176,11 @@ impl Store {
         }
         // Revalidate the worktree while holding the same immediate transaction used to resolve
         // attempts and release the lease. This keeps concurrent lease changes from invalidating
-        // the audit claim that identity was checked as part of this reconciliation.
-        let verified = verify_project_workspace(
-            &project_path,
-            Path::new(&workspace_path),
-            lease.access,
-            false,
-        )?;
-        if verified.workspace_path_hash != lease.workspace_path_hash
-            || verified.common_dir_hash != lease.common_dir_hash
-        {
+        // the audit claim that identity was checked as part of this reconciliation. Paths and
+        // stored identity hashes also come from this transaction's database snapshot.
+        let verified =
+            verify_project_workspace(&current.4, Path::new(&current.3), lease.access, false)?;
+        if verified.workspace_path_hash != current.5 || verified.common_dir_hash != current.6 {
             return Err("workspace identity changed; the quarantined lease remains locked".into());
         }
 
