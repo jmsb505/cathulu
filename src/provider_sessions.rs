@@ -1215,9 +1215,11 @@ fn apply_event_to_attempts(
             if let Some(attempt_key) =
                 unique_active_attempt(transaction, &event.provider_id, &session.session_id)?
             {
+                // An approval denial can block the role work, but it does not prove the provider
+                // turn has stopped. Keep the attempt open until a terminal turn event or recovery.
                 transaction
                     .execute(
-                        "UPDATE provider_attempts SET status = 'blocked', updated_at = ?1
+                        "UPDATE provider_attempts SET status = 'needs_reconcile', updated_at = ?1
                          WHERE attempt_key = ?2",
                         params![now, attempt_key],
                     )
@@ -1688,6 +1690,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ambiguous_status, "created");
+        transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn approval_request_keeps_attempt_open_until_the_provider_turn_finishes() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE provider_attempts (
+                   attempt_key TEXT PRIMARY KEY,
+                   provider_id TEXT NOT NULL,
+                   session_id TEXT NOT NULL,
+                   turn_id TEXT,
+                   status TEXT NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO provider_attempts VALUES ('attempt', 'codex', 'session', 'turn', 'running', 1)",
+                [],
+            )
+            .unwrap();
+        let session = ExternalSession {
+            provider_id: ProviderId::codex(),
+            session_id: ExternalId::new("session").unwrap(),
+        };
+        let approval = ProviderEvent {
+            provider_id: ProviderId::codex(),
+            event_id: Some(ExternalId::new("approval-1").unwrap()),
+            sequence: None,
+            event: ProviderEventKind::ApprovalRequested {
+                session: session.clone(),
+                request_id: ExternalId::new("request-1").unwrap(),
+                request_kind: crate::agent_provider::ApprovalKind::Command,
+            },
+        };
+        let completed = ProviderEvent {
+            provider_id: ProviderId::codex(),
+            event_id: Some(ExternalId::new("completed-1").unwrap()),
+            sequence: None,
+            event: ProviderEventKind::TurnCompleted {
+                turn: crate::agent_provider::ExternalTurn {
+                    session,
+                    turn_id: ExternalId::new("turn").unwrap(),
+                },
+                outcome: crate::agent_provider::TurnOutcome::Interrupted,
+            },
+        };
+
+        let transaction = connection.transaction().unwrap();
+        apply_event_to_attempts(&transaction, &approval, 2).unwrap();
+        let after_approval: String = transaction
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = 'attempt'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_approval, "needs_reconcile");
+
+        apply_event_to_attempts(&transaction, &completed, 3).unwrap();
+        let after_completion: String = transaction
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = 'attempt'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_completion, "failed");
         transaction.commit().unwrap();
     }
 

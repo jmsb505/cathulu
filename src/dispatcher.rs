@@ -5,10 +5,12 @@
 //! record is not evidence that a Codex turn started or completed.
 
 use crate::agent_provider::{
-    AttemptKey, CredentialSource, ExternalId, ExternalSession, PermissionManifest,
-    ProviderCapabilities, ProviderId, ProviderStartAdmission,
+    AckState, AgentProvider, ApprovalDecision, AttemptKey, CredentialSource, ExternalId,
+    ExternalSession, McpToolConfig, PermissionManifest, ProviderCapabilities, ProviderError,
+    ProviderEvent, ProviderEventKind, ProviderId, ProviderStartAdmission, SessionConfig,
+    SubmitTurnRequest,
 };
-use crate::app_server::{AppServerMessage, AppServerProcess};
+use crate::codex_adapter::CodexAdapter;
 use crate::delegation::DelegationTaskPacket;
 use crate::events::append_event;
 use crate::hash::content_hash;
@@ -16,7 +18,7 @@ use crate::Store;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -2583,7 +2585,7 @@ fn dispatcher_loop(
     let mut next_heartbeat = Instant::now();
     let mut next_workspace_heartbeat =
         Instant::now() + Duration::from_secs(LEASE_HEARTBEAT_SECONDS);
-    let mut app_server: Option<AppServerProcess> = None;
+    let mut app_server: Option<CodexAdapter> = None;
     let mut active_turns: HashMap<String, ActiveTurn> = HashMap::new();
 
     while !stop.load(Ordering::Acquire) {
@@ -2654,21 +2656,32 @@ fn dispatcher_loop(
         if let Some(server) = app_server.as_mut() {
             match server.next_event(Duration::from_millis(30)) {
                 Ok(Some(event)) => {
-                    let transport_closed = matches!(
-                        event,
-                        AppServerMessage::TransportError(_) | AppServerMessage::TransportClosed
-                    );
-                    handle_app_server_event(&store, server, &mut active_turns, event);
-                    if transport_closed {
-                        app_server = None;
+                    match handle_provider_event(&store, server, &mut active_turns, &event) {
+                        Ok(true) => {
+                            mark_and_clear_active_turns_for_reconciliation(
+                                &store,
+                                &mut active_turns,
+                                "provider transport was lost while a turn was live",
+                            );
+                            app_server = None;
+                        }
+                        Ok(false) => {}
+                        Err(reason) => {
+                            mark_and_clear_active_turns_for_reconciliation(
+                                &store,
+                                &mut active_turns,
+                                &format!("provider event could not be recorded safely: {reason}"),
+                            );
+                            app_server = None;
+                        }
                     }
                 }
                 Ok(None) => {}
-                Err(_) => {
+                Err(error) => {
                     mark_and_clear_active_turns_for_reconciliation(
                         &store,
                         &mut active_turns,
-                        "dispatcher connection closed while a provider turn was live",
+                        &format!("provider event stream failed: {error}"),
                     );
                     app_server = None;
                 }
@@ -2744,7 +2757,7 @@ fn dispatch_one(
     store: &Store,
     admission_policy: &RoleDispatchAdmissionPolicy,
     provider_capabilities: &ProviderCapabilities,
-    app_server: &mut Option<AppServerProcess>,
+    app_server: &mut Option<CodexAdapter>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     owner_id: &str,
     item: RoleDispatchWorkItem,
@@ -2836,17 +2849,28 @@ fn dispatch_one(
     };
     if app_server.is_none() {
         *app_server = Some(
-            AppServerProcess::start(&admission).map_err(|message| (item.id, "blocked", message))?,
+            CodexAdapter::start(admission.clone())
+                .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?,
         );
     }
-    let server = app_server
+    let provider = app_server
         .as_mut()
-        .expect("admitted app-server was started");
-    let config = role_mcp_server_config(store, &capability)
-        .map_err(|message| (item.id, "blocked", message))?;
+        .expect("admitted Codex adapter was started");
+    let session_config = role_session_config(
+        store,
+        &capability,
+        &binding_key,
+        item.project_id,
+        permissions.clone(),
+        item.requested_model.clone(),
+        &item.role,
+    )
+    .map_err(|message| (item.id, "blocked", message))?;
     let new_thread = existing_thread_id.is_none();
-    let thread_id = match existing_thread_id {
+    let session = match existing_thread_id {
         Some(thread_id) => {
+            let session = codex_external_session(&thread_id)
+                .map_err(|message| (item.id, "needs_reconcile", message))?;
             let admission = store
                 .validate_role_provider_start(
                     &capability.token,
@@ -2856,13 +2880,12 @@ fn dispatch_one(
                     unix_time(),
                 )
                 .map_err(|message| (item.id, "blocked", message))?;
-            server
+            provider
                 .set_admission(admission)
-                .map_err(|message| (item.id, "blocked", message))?;
-            server
-                .resume_thread(&thread_id, config)
-                .map_err(|message| (item.id, "needs_reconcile", message))?;
-            thread_id
+                .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?;
+            provider
+                .resume_session(&session, session_config)
+                .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?
         }
         None => {
             let admission = store
@@ -2874,42 +2897,15 @@ fn dispatch_one(
                     unix_time(),
                 )
                 .map_err(|message| (item.id, "blocked", message))?;
-            server
+            provider
                 .set_admission(admission)
-                .map_err(|message| (item.id, "blocked", message))?;
-            let sandbox = match permissions.access {
-                crate::agent_provider::WorkspaceAccess::WorkspaceWrite => "workspace-write",
-                crate::agent_provider::WorkspaceAccess::ReadOnly => "read-only",
-            };
-            server
-                .start_thread(
-                    &permissions.workspace_root,
-                    item.requested_model.as_deref(),
-                    "on-request",
-                    sandbox,
-                    config,
-                )
-                .map_err(|message| (item.id, "failed", message))?
+                .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?;
+            provider
+                .open_session(session_config)
+                .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?
         }
     };
-
-    let required_tools = required_tools_for_role(&item.role);
-    server
-        .require_cathulu_tools(&thread_id, required_tools)
-        .map_err(|message| {
-            if new_thread {
-                let _ = store.bind_role_thread(
-                    &binding_key,
-                    (item.role == "sub_overseer").then_some(binding_key.as_str()),
-                    (item.role == "worker").then_some(item.delegation_id),
-                    item.project_id,
-                    &thread_id,
-                    "unknown",
-                    None,
-                );
-            }
-            (item.id, "blocked", message)
-        })?;
+    let thread_id = session.session_id.as_str().to_string();
 
     if new_thread {
         store
@@ -2947,9 +2943,9 @@ fn dispatch_one(
             unix_time(),
         )
         .map_err(|message| (item.id, "needs_reconcile", message))?;
-    server
+    provider
         .set_admission(admission)
-        .map_err(|message| (item.id, "needs_reconcile", message))?;
+        .map_err(|error| (item.id, provider_error_status(&error), error.to_string()))?;
     store
         .set_role_dispatch_status(item.id, "turn_starting", None)
         .map_err(|message| (item.id, "needs_reconcile", message))?;
@@ -2979,18 +2975,28 @@ fn dispatch_one(
         .map_err(|message| (item.id, "blocked", message))?;
     capability_guard.preserve_for_turn_submission();
     attempt_guard.preserve_for_provider_submission();
-    let acknowledgement = match server.start_turn(&thread_id, &prompt) {
+    let acknowledgement = match provider.submit_turn(SubmitTurnRequest {
+        session: session.clone(),
+        attempt_key: attempt_key.clone(),
+        text: prompt,
+    }) {
         Ok(acknowledgement) => acknowledgement,
-        Err(message) => {
-            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
-            return Err((item.id, "needs_reconcile", message));
+        Err(error) => {
+            let status = provider_error_status(&error);
+            if status == "needs_reconcile" {
+                let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            }
+            return Err((item.id, status, error.to_string()));
         }
     };
-    let turn_id = acknowledgement
-        .pointer("/turn/id")
-        .or_else(|| acknowledgement.get("turnId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let (external_turn_id, attempt_status) = acknowledged_turn(&session, &acknowledgement)
+        .map_err(|message| {
+            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            (item.id, "needs_reconcile", message)
+        })?;
+    let turn_id = external_turn_id
+        .as_ref()
+        .map(|turn| turn.turn_id.as_str().to_string());
     let active_turn = ActiveTurn {
         dispatch_id: Some(item.id),
         inbox_id: None,
@@ -3001,13 +3007,12 @@ fn dispatch_one(
         workspace_lease_owner_id: lease_owner_id,
     };
     active_turns.insert(thread_id.clone(), active_turn);
-    let external_turn_id = turn_id
-        .as_deref()
-        .map(ExternalId::new)
-        .transpose()
-        .map_err(|message| (item.id, "needs_reconcile", message))?;
     store
-        .set_provider_attempt_state(&attempt_key, "submitted", external_turn_id.as_ref())
+        .set_provider_attempt_state(
+            &attempt_key,
+            attempt_status,
+            external_turn_id.as_ref().map(|turn| &turn.turn_id),
+        )
         .map_err(|message| (item.id, "needs_reconcile", message))?;
     store
         .bind_role_thread(
@@ -3064,7 +3069,7 @@ fn dispatch_role_inbox_message(
     store: &Store,
     admission_policy: &RoleDispatchAdmissionPolicy,
     provider_capabilities: &ProviderCapabilities,
-    app_server: &mut Option<AppServerProcess>,
+    app_server: &mut Option<CodexAdapter>,
     active_turns: &mut HashMap<String, ActiveTurn>,
     message: RoleTurnInboxRecord,
 ) -> Result<(), (i64, &'static str, String)> {
@@ -3168,14 +3173,25 @@ fn dispatch_role_inbox_message(
     };
     if app_server.is_none() {
         *app_server = Some(
-            AppServerProcess::start(&admission).map_err(|error| (message.id, "blocked", error))?,
+            CodexAdapter::start(admission.clone())
+                .map_err(|error| (message.id, provider_error_status(&error), error.to_string()))?,
         );
     }
-    let server = app_server
+    let provider = app_server
         .as_mut()
-        .expect("admitted app-server was started");
-    let config = role_mcp_server_config(store, &capability)
-        .map_err(|error| (message.id, "blocked", error))?;
+        .expect("admitted Codex adapter was started");
+    let session_config = role_session_config(
+        store,
+        &capability,
+        &message.target_binding_key,
+        message.project_id,
+        permissions.clone(),
+        None,
+        "sub_overseer",
+    )
+    .map_err(|error| (message.id, "blocked", error))?;
+    let session = codex_external_session(&binding.thread_id)
+        .map_err(|error| (message.id, "needs_reconcile", error))?;
     let admission = store
         .validate_role_provider_start(
             &capability.token,
@@ -3185,17 +3201,12 @@ fn dispatch_role_inbox_message(
             unix_time(),
         )
         .map_err(|error| (message.id, "blocked", error))?;
-    server
+    provider
         .set_admission(admission)
-        .map_err(|error| (message.id, "blocked", error))?;
-    server
-        .resume_thread(&binding.thread_id, config)
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
-    if let Err(error) =
-        server.require_cathulu_tools(&binding.thread_id, required_tools_for_role("sub_overseer"))
-    {
-        return Err((message.id, "blocked", error));
-    }
+        .map_err(|error| (message.id, provider_error_status(&error), error.to_string()))?;
+    let session = provider
+        .resume_session(&session, session_config)
+        .map_err(|error| (message.id, provider_error_status(&error), error.to_string()))?;
     let prompt = role_event_prompt(&message);
     let admission = store
         .validate_role_provider_start(
@@ -3206,9 +3217,9 @@ fn dispatch_role_inbox_message(
             unix_time(),
         )
         .map_err(|error| (message.id, "needs_reconcile", error))?;
-    server
+    provider
         .set_admission(admission)
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
+        .map_err(|error| (message.id, provider_error_status(&error), error.to_string()))?;
     let lease_owner_id = preflight.record.owner_id.clone();
     store
         .renew_workspace_lease(
@@ -3232,18 +3243,28 @@ fn dispatch_role_inbox_message(
     .map_err(|error| (message.id, "needs_reconcile", error))?;
     capability_guard.preserve_for_turn_submission();
     attempt_guard.preserve_for_provider_submission();
-    let acknowledgement = match server.start_turn(&binding.thread_id, &prompt) {
+    let acknowledgement = match provider.submit_turn(SubmitTurnRequest {
+        session: session.clone(),
+        attempt_key: attempt_key.clone(),
+        text: prompt,
+    }) {
         Ok(acknowledgement) => acknowledgement,
         Err(error) => {
-            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
-            return Err((message.id, "needs_reconcile", error));
+            let status = provider_error_status(&error);
+            if status == "needs_reconcile" {
+                let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            }
+            return Err((message.id, status, error.to_string()));
         }
     };
-    let turn_id = acknowledgement
-        .pointer("/turn/id")
-        .or_else(|| acknowledgement.get("turnId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let (external_turn_id, attempt_status) = acknowledged_turn(&session, &acknowledgement)
+        .map_err(|error| {
+            let _ = store.set_provider_attempt_state(&attempt_key, "needs_reconcile", None);
+            (message.id, "needs_reconcile", error)
+        })?;
+    let turn_id = external_turn_id
+        .as_ref()
+        .map(|turn| turn.turn_id.as_str().to_string());
     let active_turn = ActiveTurn {
         dispatch_id: None,
         inbox_id: Some(message.id),
@@ -3254,13 +3275,12 @@ fn dispatch_role_inbox_message(
         workspace_lease_owner_id: lease_owner_id,
     };
     active_turns.insert(binding.thread_id.clone(), active_turn);
-    let external_turn_id = turn_id
-        .as_deref()
-        .map(ExternalId::new)
-        .transpose()
-        .map_err(|error| (message.id, "needs_reconcile", error))?;
     store
-        .set_provider_attempt_state(&attempt_key, "submitted", external_turn_id.as_ref())
+        .set_provider_attempt_state(
+            &attempt_key,
+            attempt_status,
+            external_turn_id.as_ref().map(|turn| &turn.turn_id),
+        )
         .map_err(|error| (message.id, "needs_reconcile", error))?;
     store
         .bind_role_thread(
@@ -3319,29 +3339,96 @@ fn role_event_prompt(message: &RoleTurnInboxRecord) -> String {
     )
 }
 
-fn role_mcp_server_config(store: &Store, capability: &RoleCapability) -> Result<Value, String> {
+fn role_session_config(
+    store: &Store,
+    capability: &RoleCapability,
+    logical_role_key: &str,
+    project_id: i64,
+    permissions: PermissionManifest,
+    model: Option<String>,
+    role: &str,
+) -> Result<SessionConfig, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("cannot locate this Cathulu MCP executable: {error}"))?;
     let data_dir = store
         .database_path()
         .parent()
         .ok_or_else(|| "Cathulu database has no data directory".to_string())?;
-    Ok(json!({
-        "mcp_servers": {
-            "cathulu": {
-                "command": executable,
-                "args": [],
-                "env": {
-                    "CATHULU_DATA_DIR": data_dir,
-                    "CATHULU_ROLE_CAPABILITY": capability.token,
-                    "CATHULU_ROLE_DISPATCHER_ENABLED": "0",
-                    "CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED": "1"
-                },
-                "enabled": true,
-                "startup_timeout_ms": 20000
-            }
+    let env = BTreeMap::from([
+        (
+            "CATHULU_DATA_DIR".to_string(),
+            data_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            "CATHULU_ROLE_CAPABILITY".to_string(),
+            capability.token.clone(),
+        ),
+        (
+            "CATHULU_ROLE_DISPATCHER_ENABLED".to_string(),
+            "0".to_string(),
+        ),
+        (
+            "CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED".to_string(),
+            "1".to_string(),
+        ),
+    ]);
+    let tools = McpToolConfig {
+        server_name: "cathulu".to_string(),
+        command: executable,
+        args: Vec::new(),
+        env,
+        required_tools: required_tools_for_role(role)
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect(),
+    };
+    let config = SessionConfig {
+        logical_role_key: logical_role_key.to_string(),
+        project_id: Some(project_id),
+        permissions,
+        tools,
+        model,
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+fn codex_external_session(thread_id: &str) -> Result<ExternalSession, String> {
+    Ok(ExternalSession {
+        provider_id: ProviderId::codex(),
+        session_id: ExternalId::new(thread_id.to_string())?,
+    })
+}
+
+fn acknowledged_turn(
+    session: &ExternalSession,
+    acknowledgement: &crate::agent_provider::SubmissionAck,
+) -> Result<(Option<crate::agent_provider::ExternalTurn>, &'static str), String> {
+    match (acknowledgement.acknowledgement, &acknowledgement.turn) {
+        (AckState::Acked, Some(turn)) if &turn.session == session => {
+            Ok((Some(turn.clone()), "submitted"))
         }
-    }))
+        (AckState::AckUnknown, None) => Ok((None, "ack_unknown")),
+        (AckState::Acked, Some(_)) => {
+            Err("provider turn acknowledgement belongs to a different session".into())
+        }
+        (AckState::Acked, None) => {
+            Err("provider acknowledged a submission without a turn identity".into())
+        }
+        (AckState::AckUnknown, Some(_)) => {
+            Err("provider returned a turn identity with an uncertain acknowledgement".into())
+        }
+    }
+}
+
+fn provider_error_status(error: &ProviderError) -> &'static str {
+    match error {
+        ProviderError::Uncertain { .. } | ProviderError::SessionGone { .. } => "needs_reconcile",
+        ProviderError::Unavailable { .. }
+        | ProviderError::Rejected { .. }
+        | ProviderError::Unsupported { .. }
+        | ProviderError::Internal { .. } => "blocked",
+    }
 }
 
 fn role_turn_prompt(item: &RoleDispatchWorkItem) -> String {
@@ -3372,144 +3459,131 @@ fn role_turn_prompt(item: &RoleDispatchWorkItem) -> String {
     )
 }
 
-fn handle_app_server_event(
+fn handle_provider_event(
     store: &Store,
-    server: &mut AppServerProcess,
+    provider: &mut impl AgentProvider,
     active_turns: &mut HashMap<String, ActiveTurn>,
-    event: AppServerMessage,
-) {
-    match event {
-        AppServerMessage::Notification { method, params } => {
-            if method == "turn/started" {
-                if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                    if let Some(active) = active_turns.get(thread_id).cloned() {
-                        if event_turn_id(&params).is_none_or(|id| Some(id) == active.turn_id) {
-                            update_active_provider_attempt(
-                                store,
-                                &active,
-                                "running",
-                                event_turn_id(&params),
-                            );
-                            if let Some(dispatch_id) = active.dispatch_id {
-                                let _ =
-                                    store.set_role_dispatch_status(dispatch_id, "running", None);
-                            }
-                            if let Some(inbox_id) = active.inbox_id {
-                                let _ = store.set_role_inbox_status(inbox_id, "running", None);
-                            }
-                        }
+    event: &ProviderEvent,
+) -> Result<bool, String> {
+    event.validate()?;
+    if event.provider_id != ProviderId::codex() {
+        return Err("Codex dispatcher received an event from another provider".into());
+    }
+    let event_key = event.external_event_key()?;
+    let mutating = matches!(
+        event.event,
+        ProviderEventKind::TurnStarted { .. }
+            | ProviderEventKind::TurnCompleted { .. }
+            | ProviderEventKind::ApprovalRequested { .. }
+            | ProviderEventKind::TransportLost { .. }
+    );
+    if mutating && event_key.is_none() {
+        return Err("state-mutating provider event has no stable identity".into());
+    }
+    let recorded = store.record_provider_event(event)?;
+
+    match &event.event {
+        ProviderEventKind::TurnStarted { turn } => {
+            let session_id = turn.session.session_id.as_str();
+            if let Some(active) = active_turns.get_mut(session_id) {
+                if active
+                    .turn_id
+                    .as_deref()
+                    .is_none_or(|expected| expected == turn.turn_id.as_str())
+                {
+                    active.turn_id = Some(turn.turn_id.as_str().to_string());
+                    if let Some(dispatch_id) = active.dispatch_id {
+                        let _ = store.set_role_dispatch_status(dispatch_id, "running", None);
+                    }
+                    if let Some(inbox_id) = active.inbox_id {
+                        let _ = store.set_role_inbox_status(inbox_id, "running", None);
                     }
                 }
-            } else if method == "turn/completed" {
-                if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                    if let Some(active) = active_turns.get(thread_id).cloned() {
-                        if event_turn_id(&params).is_none_or(|id| Some(id) == active.turn_id) {
-                            active_turns.remove(thread_id);
-                            let outcome = params
-                                .pointer("/turn/status")
-                                .or_else(|| params.get("status"))
-                                .and_then(Value::as_str);
-                            let turn_failed =
-                                matches!(outcome, Some("failed" | "interrupted" | "cancelled"));
-                            update_active_provider_attempt(
-                                store,
-                                &active,
-                                if turn_failed { "failed" } else { "completed" },
-                                event_turn_id(&params),
+            }
+        }
+        ProviderEventKind::TurnCompleted { turn, outcome } => {
+            let session_id = turn.session.session_id.as_str();
+            if let Some(active) = active_turns.get(session_id).cloned() {
+                if active
+                    .turn_id
+                    .as_deref()
+                    .is_none_or(|expected| expected == turn.turn_id.as_str())
+                {
+                    active_turns.remove(session_id);
+                    let turn_failed =
+                        !matches!(outcome, crate::agent_provider::TurnOutcome::Completed);
+                    if let Some(dispatch_id) = active.dispatch_id {
+                        let status = store
+                            .role_dispatches(200)
+                            .ok()
+                            .and_then(|items| items.into_iter().find(|item| item.id == dispatch_id))
+                            .map(|item| item.status)
+                            .unwrap_or_default();
+                        if status != "blocked" {
+                            let final_status = if turn_failed { "failed" } else { "completed" };
+                            let _ = store.set_role_dispatch_status(dispatch_id, final_status, None);
+                        }
+                    }
+                    if let Some(inbox_id) = active.inbox_id {
+                        if turn_failed {
+                            let _ = store.set_role_inbox_status(
+                                inbox_id,
+                                "blocked",
+                                Some("the routed role turn ended without completing"),
                             );
-                            if let Some(dispatch_id) = active.dispatch_id {
-                                let status = store
-                                    .role_dispatches(200)
-                                    .ok()
-                                    .and_then(|items| {
-                                        items.into_iter().find(|item| item.id == dispatch_id)
-                                    })
-                                    .map(|item| item.status)
-                                    .unwrap_or_default();
-                                if status != "blocked" {
-                                    let final_status =
-                                        if turn_failed { "failed" } else { "completed" };
-                                    let _ = store.set_role_dispatch_status(
-                                        dispatch_id,
-                                        final_status,
-                                        None,
-                                    );
-                                }
-                            }
-                            if let Some(inbox_id) = active.inbox_id {
-                                if turn_failed {
-                                    let _ = store.set_role_inbox_status(
-                                        inbox_id,
-                                        "blocked",
-                                        Some("the routed role turn ended without completing"),
-                                    );
-                                } else {
-                                    let _ =
-                                        store.set_role_inbox_status(inbox_id, "completed", None);
-                                }
-                            }
+                        } else {
+                            let _ = store.set_role_inbox_status(inbox_id, "completed", None);
                         }
                     }
                 }
             }
         }
-        AppServerMessage::Request { id, method, params } => {
-            // Read only thread identity; approval payloads can contain commands and file paths.
-            let thread_id = params.get("threadId").and_then(Value::as_str);
-            let active = thread_id.and_then(|thread_id| active_turns.get(thread_id));
-            if let Some(active) = active {
+        ProviderEventKind::ApprovalRequested {
+            session,
+            request_id,
+            ..
+        } => {
+            if let Some(active) = active_turns.get(session.session_id.as_str()) {
                 if let Some(dispatch_id) = active.dispatch_id {
                     let _ = store.set_role_dispatch_status(
                         dispatch_id,
                         "blocked",
-                        Some("Owner approval or interactive input is required; Cathulu did not approve it."),
+                        Some("provider requested approval or interactive input; Cathulu did not approve it."),
                     );
                 }
                 if let Some(inbox_id) = active.inbox_id {
                     let _ = store.set_role_inbox_status(
                         inbox_id,
                         "blocked",
-                        Some("Owner approval or interactive input is required; Cathulu did not approve it."),
+                        Some("provider requested approval or interactive input; Cathulu did not approve it."),
                     );
                 }
             }
-            if matches!(
-                method.as_str(),
-                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-            ) {
-                let _ = server.respond(id, json!({ "decision": "decline" }));
-            } else {
-                let _ = server.reject_request(
-                    id,
-                    -32000,
-                    "Cathulu cannot route this interactive request yet; no approval was granted.",
-                );
+            if recorded {
+                provider
+                    .answer_request(session, request_id, ApprovalDecision::Decline)
+                    .map_err(|error| error.to_string())?;
             }
         }
-        AppServerMessage::TransportError(_) | AppServerMessage::TransportClosed => {
-            handle_app_server_transport_loss(store, active_turns);
+        ProviderEventKind::TransportLost { session } => {
+            let reason = "provider reported transport loss while a turn was live";
+            if let Some(session) = session {
+                let session_id = session.session_id.as_str();
+                if let Some(active) = active_turns.remove(session_id) {
+                    let affected = HashMap::from([(session_id.to_string(), active)]);
+                    mark_active_turns_for_reconciliation(store, &affected, reason);
+                    mark_active_inbox_for_reconciliation(store, &affected, reason);
+                }
+            } else {
+                mark_and_clear_active_turns_for_reconciliation(store, active_turns, reason);
+                return Ok(true);
+            }
         }
+        ProviderEventKind::UsageObserved { .. }
+        | ProviderEventKind::CapacityObserved { .. }
+        | ProviderEventKind::Unrecognized { .. } => {}
     }
-}
-
-fn event_turn_id(params: &Value) -> Option<String> {
-    params
-        .pointer("/turn/id")
-        .or_else(|| params.get("turnId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn update_active_provider_attempt(
-    store: &Store,
-    active: &ActiveTurn,
-    state: &str,
-    event_turn_id: Option<String>,
-) {
-    let turn_id = event_turn_id
-        .or_else(|| active.turn_id.clone())
-        .and_then(|id| ExternalId::new(id).ok());
-    let _ = store.set_provider_attempt_state(&active.attempt_key, state, turn_id.as_ref());
+    Ok(false)
 }
 
 fn mark_active_turns_for_reconciliation(
@@ -3565,14 +3639,6 @@ fn mark_and_clear_active_turns_for_reconciliation(
     mark_active_turns_for_reconciliation(store, active, reason);
     mark_active_inbox_for_reconciliation(store, active, reason);
     active.clear();
-}
-
-fn handle_app_server_transport_loss(store: &Store, active: &mut HashMap<String, ActiveTurn>) {
-    mark_and_clear_active_turns_for_reconciliation(
-        store,
-        active,
-        "app-server transport closed while a provider turn was live",
-    );
 }
 
 fn valid_transition(from: &str, to: &str) -> bool {
@@ -4013,7 +4079,7 @@ mod dispatcher_admission_tests {
 
     fn assert_refused_without_spawn(
         result: Result<(), (i64, &'static str, String)>,
-        app_server: &Option<AppServerProcess>,
+        app_server: &Option<CodexAdapter>,
         expected_status: &str,
         expected_reason: &str,
     ) {
@@ -4194,13 +4260,46 @@ mod dispatcher_admission_tests {
             workspace_lease_id: lease_id,
             workspace_lease_owner_id: "dispatcher-admission-fixture".into(),
         };
-        update_active_provider_attempt(
-            &fixture.store,
-            &active,
-            "running",
-            Some("fixture-turn".into()),
-        );
-        update_active_provider_attempt(&fixture.store, &active, "completed", None);
+        let mut active_turns = HashMap::from([("fixture-thread".to_string(), active)]);
+        let mut provider =
+            crate::agent_provider::fixtures::ScriptedProvider::new(ProviderId::codex());
+        let turn = crate::agent_provider::ExternalTurn {
+            session: ExternalSession {
+                provider_id: ProviderId::codex(),
+                session_id: ExternalId::new("fixture-thread").expect("valid fixture session"),
+            },
+            turn_id: ExternalId::new("fixture-turn").expect("valid fixture turn"),
+        };
+        let started = ProviderEvent {
+            provider_id: ProviderId::codex(),
+            event_id: Some(ExternalId::new("fixture-started").expect("valid event id")),
+            sequence: None,
+            event: ProviderEventKind::TurnStarted { turn: turn.clone() },
+        };
+        handle_provider_event(&fixture.store, &mut provider, &mut active_turns, &started)
+            .expect("record the provider start event");
+        let running_status: String = Connection::open(fixture.store.database_path())
+            .expect("open fixture attempt database")
+            .query_row(
+                "SELECT status FROM provider_attempts WHERE attempt_key = ?1",
+                rusqlite::params![attempt_key.as_str()],
+                |row| row.get(0),
+            )
+            .expect("read running provider attempt");
+        assert_eq!(running_status, "running");
+
+        let completed = ProviderEvent {
+            provider_id: ProviderId::codex(),
+            event_id: Some(ExternalId::new("fixture-completed").expect("valid event id")),
+            sequence: None,
+            event: ProviderEventKind::TurnCompleted {
+                turn,
+                outcome: crate::agent_provider::TurnOutcome::Completed,
+            },
+        };
+        handle_provider_event(&fixture.store, &mut provider, &mut active_turns, &completed)
+            .expect("record the provider completion event");
+        assert!(active_turns.is_empty());
         let final_status: String = Connection::open(fixture.store.database_path())
             .expect("open fixture attempt database")
             .query_row(
@@ -4310,12 +4409,25 @@ mod dispatcher_admission_tests {
     }
 
     #[test]
-    fn app_server_transport_loss_quarantines_live_turn_and_clears_tracking() {
+    fn provider_transport_loss_quarantines_live_turn_and_clears_tracking() {
         let mut fixture = fixture();
         let lease_id = fixture.add_active_lease();
         let (mut active_turns, capability_token, attempt_key) = fixture.add_active_turn();
-
-        handle_app_server_transport_loss(&fixture.store, &mut active_turns);
+        let mut provider =
+            crate::agent_provider::fixtures::ScriptedProvider::new(ProviderId::codex());
+        let event = ProviderEvent {
+            provider_id: ProviderId::codex(),
+            event_id: Some(ExternalId::new("fixture-transport-lost").expect("valid event id")),
+            sequence: None,
+            event: ProviderEventKind::TransportLost {
+                session: Some(ExternalSession {
+                    provider_id: ProviderId::codex(),
+                    session_id: ExternalId::new("fixture-thread").expect("valid fixture session"),
+                }),
+            },
+        };
+        handle_provider_event(&fixture.store, &mut provider, &mut active_turns, &event)
+            .expect("record and reconcile provider transport loss");
 
         assert!(
             active_turns.is_empty(),

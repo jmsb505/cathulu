@@ -57,6 +57,23 @@ impl CodexAdapter {
         Self::from_transport(Box::new(process), admission)
     }
 
+    /// Replace the per-turn admission proof before operating on another role session.
+    /// The process is reused, but every provider operation remains bound to the exact
+    /// workspace and permission envelope validated for its current assignment.
+    pub(crate) fn set_admission(
+        &mut self,
+        admission: ProviderStartAdmission,
+    ) -> Result<(), ProviderError> {
+        admission
+            .ensure_valid(crate::unix_time())
+            .map_err(|message| ProviderError::Rejected { message })?;
+        self.process
+            .set_admission(admission.clone())
+            .map_err(|message| ProviderError::Rejected { message })?;
+        self.admission = admission;
+        Ok(())
+    }
+
     fn from_transport(
         process: Box<dyn AppServerTransport>,
         admission: ProviderStartAdmission,
@@ -244,6 +261,16 @@ impl CodexAdapter {
                     return Ok(Some(unrecognized("oversized_request_method", &params)));
                 }
                 let session = external_session(thread_id.to_string())?;
+                if !self.sessions.contains(&session) {
+                    self.process
+                        .reject_request(
+                            id,
+                            -32000,
+                            "Cathulu cannot handle this request for an unknown provider session; no approval was granted.",
+                        )
+                        .map_err(|message| ProviderError::Uncertain { message })?;
+                    return Ok(Some(unrecognized("request_for_unknown_session", &params)));
+                }
                 let request_id = approval_id(&session, &id)?;
                 let request_kind = match method.as_str() {
                     "item/commandExecution/requestApproval" => ApprovalKind::Command,
@@ -326,6 +353,7 @@ impl CodexAdapter {
 }
 
 trait AppServerTransport: Send {
+    fn set_admission(&mut self, admission: ProviderStartAdmission) -> Result<(), String>;
     fn start_thread(
         &mut self,
         cwd: &Path,
@@ -348,6 +376,10 @@ trait AppServerTransport: Send {
 }
 
 impl AppServerTransport for AppServerProcess {
+    fn set_admission(&mut self, admission: ProviderStartAdmission) -> Result<(), String> {
+        AppServerProcess::set_admission(self, admission)
+    }
+
     fn start_thread(
         &mut self,
         cwd: &Path,
@@ -880,6 +912,10 @@ mod tests {
     struct FakeTransport(Arc<Mutex<FakeState>>);
 
     impl AppServerTransport for FakeTransport {
+        fn set_admission(&mut self, admission: ProviderStartAdmission) -> Result<(), String> {
+            admission.ensure_valid(crate::unix_time())
+        }
+
         fn start_thread(
             &mut self,
             _cwd: &Path,
@@ -955,6 +991,25 @@ mod tests {
         let adapter =
             CodexAdapter::from_transport(Box::new(FakeTransport(Arc::clone(&state))), admission);
         (adapter, state)
+    }
+
+    #[test]
+    fn admission_refresh_rejects_unvalidated_proofs_and_accepts_a_current_proof() {
+        let (mut adapter, _) = fake_adapter();
+        assert!(matches!(
+            adapter.set_admission(ProviderStartAdmission::default()),
+            Err(ProviderError::Rejected { .. })
+        ));
+        let current = ProviderStartAdmission::from_validated_workspace(
+            2,
+            std::path::PathBuf::from("C:\\workspace-next"),
+            "c".repeat(64),
+            "d".repeat(64),
+            CredentialSource::Subscription,
+            i64::MAX,
+        )
+        .unwrap();
+        adapter.set_admission(current).unwrap();
     }
 
     fn open_fake_session(adapter: &mut CodexAdapter) -> ExternalSession {
@@ -1068,5 +1123,33 @@ mod tests {
             ProviderEventKind::Unrecognized { .. }
         ));
         assert_eq!(state.lock().unwrap().rejections.len(), 1);
+    }
+
+    #[test]
+    fn requests_for_unknown_sessions_are_rejected_without_creating_approval_events() {
+        let (mut adapter, state) = fake_adapter();
+        open_fake_session(&mut adapter);
+        state
+            .lock()
+            .unwrap()
+            .next_events
+            .push_back(Ok(Some(AppServerMessage::Request {
+                id: json!(41),
+                method: "item/commandExecution/requestApproval".into(),
+                params: json!({ "threadId": "another-thread" }),
+            })));
+        let event = adapter
+            .next_provider_event(Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event.event,
+            ProviderEventKind::Unrecognized { ref event_kind, .. }
+                if event_kind == "request_for_unknown_session"
+        ));
+        let state = state.lock().unwrap();
+        assert!(state.responses.is_empty());
+        assert_eq!(state.rejections.len(), 1);
+        assert!(state.rejections[0].2.contains("unknown provider session"));
     }
 }
