@@ -1528,3 +1528,244 @@ BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are sealed'); END;
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (20, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_21: &str = r#"
+CREATE TABLE provider_sessions (
+  provider_id TEXT NOT NULL CHECK(length(provider_id) BETWEEN 1 AND 64),
+  session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 256),
+  binding_key TEXT NOT NULL REFERENCES role_thread_bindings(binding_key) ON DELETE RESTRICT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
+  role_key TEXT REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'inactive', 'unknown')),
+  last_turn_id TEXT CHECK(last_turn_id IS NULL OR length(last_turn_id) BETWEEN 1 AND 256),
+  permission_hash TEXT CHECK(permission_hash IS NULL OR
+    (length(permission_hash) = 64 AND permission_hash NOT GLOB '*[^0-9a-fA-F]*')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, session_id),
+  CHECK(role_key IS NOT NULL OR delegation_id IS NOT NULL),
+  CHECK(length(binding_key) BETWEEN 1 AND 256)
+);
+CREATE UNIQUE INDEX provider_sessions_active_binding_idx
+  ON provider_sessions(provider_id, binding_key) WHERE status = 'active';
+CREATE INDEX provider_sessions_binding_history_idx
+  ON provider_sessions(binding_key, updated_at DESC, provider_id);
+CREATE TRIGGER provider_sessions_scope_valid BEFORE INSERT ON provider_sessions
+WHEN NOT EXISTS (
+  SELECT 1 FROM role_thread_bindings binding
+  WHERE binding.binding_key = NEW.binding_key
+    AND binding.project_id IS NEW.project_id
+    AND binding.role_key IS NEW.role_key
+    AND binding.delegation_id IS NEW.delegation_id
+    AND (NEW.provider_id <> 'codex'
+      OR (binding.thread_id = NEW.session_id AND binding.status = NEW.status))
+)
+BEGIN SELECT RAISE(ABORT, 'provider session must match its logical role scope and Codex compatibility binding'); END;
+CREATE TRIGGER provider_sessions_identity_guard BEFORE UPDATE ON provider_sessions
+WHEN NEW.provider_id IS NOT OLD.provider_id OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.binding_key IS NOT OLD.binding_key OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.role_key IS NOT OLD.role_key OR NEW.delegation_id IS NOT OLD.delegation_id
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+  OR (OLD.permission_hash IS NOT NULL AND NEW.permission_hash IS NOT OLD.permission_hash)
+BEGIN SELECT RAISE(ABORT, 'provider session identity is immutable'); END;
+CREATE TRIGGER provider_sessions_no_delete BEFORE DELETE ON provider_sessions
+BEGIN SELECT RAISE(ABORT, 'provider sessions are retained for audit'); END;
+
+INSERT INTO provider_sessions
+  (provider_id, session_id, binding_key, project_id, role_key, delegation_id,
+   status, last_turn_id, permission_hash, created_at, updated_at)
+SELECT 'codex', thread_id, binding_key, project_id, role_key, delegation_id,
+       status, last_turn_id, NULL, created_at, updated_at
+FROM role_thread_bindings;
+
+CREATE TABLE provider_attempts (
+  attempt_key TEXT PRIMARY KEY CHECK(length(attempt_key) BETWEEN 1 AND 200),
+  provider_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  binding_key TEXT NOT NULL REFERENCES role_thread_bindings(binding_key) ON DELETE RESTRICT,
+  dispatch_id INTEGER REFERENCES role_dispatch_outbox(id) ON DELETE RESTRICT,
+  inbox_id INTEGER REFERENCES role_turn_inbox(id) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  request_hash TEXT NOT NULL CHECK(
+    length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-fA-F]*'
+  ),
+  status TEXT NOT NULL CHECK(status IN (
+    'created', 'submitted', 'ack_unknown', 'running', 'completed', 'failed', 'blocked', 'needs_reconcile'
+  )),
+  turn_id TEXT CHECK(turn_id IS NULL OR length(turn_id) BETWEEN 1 AND 256),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(provider_id, session_id)
+    REFERENCES provider_sessions(provider_id, session_id) ON DELETE RESTRICT,
+  CHECK((dispatch_id IS NOT NULL) <> (inbox_id IS NOT NULL))
+);
+CREATE INDEX provider_attempts_session_idx
+  ON provider_attempts(provider_id, session_id, created_at DESC);
+CREATE INDEX provider_attempts_turn_idx
+  ON provider_attempts(provider_id, session_id, turn_id);
+CREATE UNIQUE INDEX provider_attempts_turn_identity_idx
+  ON provider_attempts(provider_id, session_id, turn_id) WHERE turn_id IS NOT NULL;
+CREATE UNIQUE INDEX provider_attempts_dispatch_active_idx
+  ON provider_attempts(dispatch_id)
+  WHERE dispatch_id IS NOT NULL AND status IN ('created','submitted','ack_unknown','running','needs_reconcile');
+CREATE UNIQUE INDEX provider_attempts_inbox_active_idx
+  ON provider_attempts(inbox_id)
+  WHERE inbox_id IS NOT NULL AND status IN ('created','submitted','ack_unknown','running','needs_reconcile');
+CREATE TRIGGER provider_attempts_scope_valid BEFORE INSERT ON provider_attempts
+WHEN NOT EXISTS (
+  SELECT 1 FROM provider_sessions session
+  WHERE session.provider_id = NEW.provider_id AND session.session_id = NEW.session_id
+    AND session.binding_key = NEW.binding_key AND session.status = 'active'
+)
+  OR (NEW.dispatch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM role_dispatch_outbox outbox
+    JOIN delegations target ON target.id = outbox.delegation_id
+    JOIN provider_sessions session ON session.provider_id = NEW.provider_id
+      AND session.session_id = NEW.session_id AND session.binding_key = NEW.binding_key
+    WHERE outbox.id = NEW.dispatch_id AND outbox.delegation_id = NEW.delegation_id
+      AND session.project_id = target.project_id
+      AND (
+        session.delegation_id = target.id
+        OR (session.role_key = 'project-manager:' || target.project_id
+          AND target.role = 'sub_overseer' AND target.parent_delegation_id IS NULL)
+      )
+  ))
+  OR (NEW.inbox_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM role_turn_inbox inbox
+    JOIN provider_sessions session ON session.provider_id = NEW.provider_id
+      AND session.session_id = NEW.session_id AND session.binding_key = NEW.binding_key
+    WHERE inbox.id = NEW.inbox_id AND inbox.target_binding_key = NEW.binding_key
+      AND inbox.target_delegation_id IS NEW.delegation_id
+      AND (
+        (inbox.target_binding_key = 'main-overseer'
+          AND session.role_key = 'main-overseer' AND session.project_id IS NULL)
+        OR (inbox.target_binding_key <> 'main-overseer'
+          AND session.project_id = inbox.project_id)
+      )
+  ))
+BEGIN SELECT RAISE(ABORT, 'provider attempt must match its role session and queued record'); END;
+CREATE TRIGGER provider_attempts_identity_guard BEFORE UPDATE ON provider_attempts
+WHEN NEW.attempt_key IS NOT OLD.attempt_key OR NEW.provider_id IS NOT OLD.provider_id
+  OR NEW.session_id IS NOT OLD.session_id OR NEW.binding_key IS NOT OLD.binding_key
+  OR NEW.dispatch_id IS NOT OLD.dispatch_id OR NEW.inbox_id IS NOT OLD.inbox_id
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.request_hash IS NOT OLD.request_hash
+  OR (OLD.turn_id IS NOT NULL AND NEW.turn_id IS NOT OLD.turn_id)
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+BEGIN SELECT RAISE(ABORT, 'provider attempt identity is immutable'); END;
+CREATE TRIGGER provider_attempts_state_guard BEFORE UPDATE OF status ON provider_attempts
+WHEN NEW.status IS NOT OLD.status AND NOT (
+  (OLD.status = 'created' AND NEW.status IN ('submitted','ack_unknown','running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'submitted' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'ack_unknown' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'running' AND NEW.status IN ('completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'needs_reconcile' AND NEW.status IN ('completed','failed','blocked'))
+)
+BEGIN SELECT RAISE(ABORT, 'invalid provider attempt state transition'); END;
+CREATE TRIGGER provider_attempts_no_delete BEFORE DELETE ON provider_attempts
+BEGIN SELECT RAISE(ABORT, 'provider attempts are retained for reconciliation'); END;
+
+CREATE TABLE provider_context_receipts (
+  provider_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  attempt_key TEXT NOT NULL REFERENCES provider_attempts(attempt_key) ON DELETE RESTRICT,
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+  content_hash TEXT NOT NULL CHECK(
+    length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-fA-F]*'
+  ),
+  delivery TEXT NOT NULL CHECK(delivery IN ('full', 'delta', 'reference')),
+  state TEXT NOT NULL CHECK(state IN ('selected', 'submitted', 'agent_reported_read')),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, session_id, attempt_key, memory_id),
+  FOREIGN KEY(provider_id, session_id)
+    REFERENCES provider_sessions(provider_id, session_id) ON DELETE RESTRICT
+);
+CREATE INDEX provider_context_receipts_attempt_idx
+  ON provider_context_receipts(attempt_key, memory_id);
+CREATE TRIGGER provider_context_receipts_scope_valid BEFORE INSERT ON provider_context_receipts
+WHEN NOT EXISTS (
+  SELECT 1 FROM provider_attempts attempt
+  WHERE attempt.attempt_key = NEW.attempt_key
+    AND attempt.provider_id = NEW.provider_id AND attempt.session_id = NEW.session_id
+)
+BEGIN SELECT RAISE(ABORT, 'provider context receipt must match its attempt session'); END;
+CREATE TRIGGER provider_context_receipts_identity_guard BEFORE UPDATE ON provider_context_receipts
+WHEN NEW.provider_id IS NOT OLD.provider_id OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.attempt_key IS NOT OLD.attempt_key OR NEW.memory_id IS NOT OLD.memory_id
+  OR NEW.content_hash IS NOT OLD.content_hash OR NEW.delivery IS NOT OLD.delivery
+  OR NEW.observed_at < OLD.observed_at
+  OR NOT (
+    NEW.state IS OLD.state
+    OR (OLD.state = 'selected' AND NEW.state = 'submitted')
+    OR (OLD.state = 'submitted' AND NEW.state = 'agent_reported_read')
+  )
+BEGIN SELECT RAISE(ABORT, 'provider context receipt identity or state is invalid'); END;
+CREATE TRIGGER provider_context_receipts_no_delete BEFORE DELETE ON provider_context_receipts
+BEGIN SELECT RAISE(ABORT, 'provider context receipts are retained for audit'); END;
+
+ALTER TABLE role_thread_capabilities ADD COLUMN provider_id TEXT;
+ALTER TABLE role_thread_capabilities ADD COLUMN provider_session_id TEXT;
+ALTER TABLE role_thread_capabilities ADD COLUMN attempt_key TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN provider_id TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN provider_session_id TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN attempt_key TEXT;
+CREATE TRIGGER role_capability_provider_attempt_insert_valid
+BEFORE INSERT ON role_thread_capabilities
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = NEW.binding_key
+      AND attempt.delegation_id = NEW.delegation_id
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability must match an active provider attempt'); END;
+CREATE TRIGGER main_capability_provider_attempt_insert_valid
+BEFORE INSERT ON main_overseer_capability
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = 'main-overseer'
+      AND attempt.inbox_id IS NOT NULL
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'Main capability must match its active provider inbox attempt'); END;
+CREATE TRIGGER role_capability_provider_attempt_valid
+BEFORE UPDATE OF provider_id, provider_session_id, attempt_key ON role_thread_capabilities
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = NEW.binding_key
+      AND attempt.delegation_id = NEW.delegation_id
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability must match an active provider attempt'); END;
+CREATE TRIGGER main_capability_provider_attempt_valid
+BEFORE UPDATE OF provider_id, provider_session_id, attempt_key ON main_overseer_capability
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = 'main-overseer'
+      AND attempt.inbox_id IS NOT NULL
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'Main capability must match its active provider inbox attempt'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (21, CAST(strftime('%s','now') AS INTEGER));
+"#;

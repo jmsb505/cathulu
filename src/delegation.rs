@@ -3919,7 +3919,7 @@ fn unresolved_owner_approval_count(
         .map_err(sqlite_error)
 }
 
-fn validate_packet_references(
+pub(crate) fn validate_packet_references(
     transaction: &Transaction<'_>,
     project_id: i64,
     objective_id: i64,

@@ -1,6 +1,7 @@
 use cathulu_core::delegation::DelegationTaskPacket;
-use cathulu_core::dispatcher::{role_allowed_tools, RoleCapabilityScope};
+use cathulu_core::dispatcher::role_allowed_tools;
 use cathulu_core::Store;
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,6 +16,8 @@ fn temporary_data_dir() -> PathBuf {
     std::env::current_dir()
         .expect("resolve repository root")
         .join("target")
+        .join("manual-dev")
+        .join("codex")
         .join(format!(
             "cathulu-role-capability-{}-{stamp}",
             std::process::id()
@@ -237,14 +240,20 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
     let manager_scope = store
         .resolve_role_thread_capability(&manager_capability.token)
         .expect("resolve Project Manager capability");
-    assert_eq!(
-        manager_scope,
-        RoleCapabilityScope {
-            role_kind: "sub_overseer".to_string(),
-            project_id: Some(project_id),
-            delegation_id: Some(manager.id),
-        }
-    );
+    assert_eq!(manager_scope.role_kind, "sub_overseer");
+    assert_eq!(manager_scope.project_id, Some(project_id));
+    assert_eq!(manager_scope.delegation_id, Some(manager.id));
+    assert_eq!(manager_scope.capability_hash.len(), 64);
+    let stored_capability_hash = Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open capability hash database")
+        .query_row(
+            "SELECT capability_hash FROM role_thread_capabilities WHERE binding_key = ?1",
+            [&manager_binding],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read stored capability hash");
+    assert_eq!(manager_scope.capability_hash, stored_capability_hash);
+    assert_ne!(manager_scope.capability_hash, manager_capability.token);
 
     store
         .authorize_role_tool_call(

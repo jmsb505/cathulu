@@ -1,6 +1,7 @@
 pub mod agent_provider;
 pub mod app_server;
 pub mod checkpoints;
+pub mod codex_adapter;
 pub mod codex_config;
 pub mod codex_config_files;
 pub mod context_extraction;
@@ -19,6 +20,7 @@ pub mod optimization;
 pub mod provider_adapters;
 mod provider_credentials;
 pub mod provider_routing;
+pub mod provider_sessions;
 pub mod roles;
 mod sqlite;
 pub mod telemetry;
@@ -536,7 +538,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 20 {
+        if version > 21 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -711,6 +713,14 @@ impl Store {
         if version < 20 {
             connection.execute("BEGIN IMMEDIATE")?;
             if let Err(error) = connection.execute(migrations::VERSION_20) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 21 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_21) {
                 let _ = connection.execute("ROLLBACK");
                 return Err(error);
             }

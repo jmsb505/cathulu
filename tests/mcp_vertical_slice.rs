@@ -15,6 +15,8 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     std::env::current_dir()
         .expect("resolve repository root")
         .join("target")
+        .join("manual-dev")
+        .join("codex")
         .join(format!("cathulu-{label}-{}-{stamp}", std::process::id()))
 }
 
@@ -926,7 +928,7 @@ fn m1_project_rows_survive_additive_migrations_and_restart() {
             row.get(0)
         })
         .expect("read migrated schema version");
-    assert_eq!(schema_version, 20);
+    assert_eq!(schema_version, 21);
     migrated_database
         .prepare("SELECT external_event_id FROM events LIMIT 0")
         .expect("version-three external event identity column");

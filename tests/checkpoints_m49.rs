@@ -58,10 +58,24 @@ fn plan(title: &str) -> TaskPlanInput {
 }
 
 fn remove_v20_for_populated_upgrade(database_path: &Path) {
-    let database = Connection::open(database_path).expect("open populated v20 fixture");
+    let database = Connection::open(database_path).expect("open populated v21 fixture");
     database
         .execute_batch(
-            "DROP TRIGGER project_checkpoint_artifacts_sealed;
+            "DROP TRIGGER role_capability_provider_attempt_insert_valid;
+             DROP TRIGGER main_capability_provider_attempt_insert_valid;
+             DROP TRIGGER role_capability_provider_attempt_valid;
+             DROP TRIGGER main_capability_provider_attempt_valid;
+             DROP TABLE provider_context_receipts;
+             DROP TABLE provider_attempts;
+             DROP TABLE provider_sessions;
+             ALTER TABLE role_thread_capabilities DROP COLUMN provider_id;
+             ALTER TABLE role_thread_capabilities DROP COLUMN provider_session_id;
+             ALTER TABLE role_thread_capabilities DROP COLUMN attempt_key;
+             ALTER TABLE main_overseer_capability DROP COLUMN provider_id;
+             ALTER TABLE main_overseer_capability DROP COLUMN provider_session_id;
+             ALTER TABLE main_overseer_capability DROP COLUMN attempt_key;
+             DELETE FROM schema_migrations WHERE version = 21;
+             DROP TRIGGER project_checkpoint_artifacts_sealed;
              DROP TRIGGER project_checkpoint_objectives_sealed;
              DROP TRIGGER project_checkpoint_tasks_sealed;
              DROP TRIGGER project_checkpoint_seals_no_update;
@@ -107,7 +121,7 @@ fn populated_v19_upgrade_preserves_tasks_and_checkpoint_revisions_are_immutable(
     drop(store);
 
     remove_v20_for_populated_upgrade(&data_dir.join("cathulu.sqlite3"));
-    let store = Store::open(&data_dir).expect("upgrade populated v19 to v20");
+    let store = Store::open(&data_dir).expect("upgrade populated v19 to v21");
     assert_eq!(
         Connection::open(data_dir.join("cathulu.sqlite3"))
             .unwrap()
@@ -116,7 +130,7 @@ fn populated_v19_upgrade_preserves_tasks_and_checkpoint_revisions_are_immutable(
                 0
             ))
             .unwrap(),
-        20
+        21
     );
     assert_eq!(
         store.get_task(first.id).unwrap().unwrap().title,

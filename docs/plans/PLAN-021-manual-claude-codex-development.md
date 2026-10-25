@@ -1,6 +1,6 @@
 # PLAN-021 — Manual Claude Code / Codex development in one directory
 
-Status: Active manual execution plan. CX-01/M48 and repair `d7dff34`, and CX-02/M49 `0e6718a`, have Claude accept reviews and passing independent core suites. CX-03/M51a exports the actual common contract and deterministic fixtures; its [F1 candidate](../parallel/codex/CX-03-F1-contract.md) is being validated for stable interface review. M51b/runtime parity and M50/M52-M55 remain open.
+Status: Active manual execution plan. CX-01/M48 and repair `d7dff34`, and CX-02/M49 `0e6718a`, have Claude accept reviews and passing independent core suites. CX-03/M51a committed the actual common contract at `09f192b`, accepted by Claude. CX-04/M51b has a tested, non-activating persistence/adapter foundation; the live dispatcher adapter path remains incomplete pending M52 workspace and credential gates. CX-05/M52 safety work is next; M50 and M53-M55 remain open.
 Created / updated: 2026-10-25
 Historical source inspection: `main` at `d2422fbd061aec9dadf876951d0f3e77bb4b6d47` after PR #33. Writing this plan then left canonical-document edits and new planning files uncommitted; that tree is not a launch baseline.
 Launch prerequisite: satisfied before CX-01 writes. CX-00 records branch `codex/manual-dual-m48`, committed HEAD `72815dc21e3a12bd55539b68191054e3ac0b48fa`, tracked planning files, and an empty `git status --porcelain=v1 --untracked-files=all`. That committed HEAD, not the historical hash above, is the launch baseline. Later packets inspect status/diff and preserve disjoint work; waves 0-3 do not repeat a clean-tree launch gate before independent implementation or read-only review.
@@ -285,6 +285,9 @@ Migration rollback continues to require consistent SQLite backups and compatible
 Final product integration retains PLAN-020's two proofs: provider-free tasks/checkpoint/restart/resume, and authorized typed work through provider/workspace/QA/review/reconciliation. Add the manual-workflow proof that every shared Git/acceptance operation used a stable tree and no agent's unfinished work was overwritten. No automatic release or learned-policy promotion follows.
 
 ## Progress and evidence
+
+- 2026-10-25 CX-04/M51b partial checkpoint: schema v21 provider sessions/attempts/context receipts and capability attempt bindings are registered; CodexAdapter and provider-session APIs are registered; fresh-session context receipts, deduplicated event handling, and capability rotation are covered. `cargo test --offline` passed 126 tests with product dispatch disabled; formatting, diff checks, and the v1-to-v21 migration probe passed. This is not M51 completion: the live dispatcher still uses `AppServerProcess` and does not route protocol events through `CodexAdapter`.
+- Automatic approval review rejected replacing the live dispatcher's direct `AppServerProcess` path with `CodexAdapter`, because that could activate provider execution before M52 workspace and credential-source gates. The rejected wiring was not retried through another route. CX-05 proceeds with non-live M52 safety controls before reconsidering M51b integration.
 
 - [x] Reused PLAN-020 and the existing first-slice definition; preserved capability/activation gates.
 - [x] Corrected the baseline: `d2422fb` was the original inspection, followed by uncommitted planning changes; launch requires the revised documents committed and a newly observed clean HEAD.

@@ -1442,15 +1442,25 @@ impl CathuluServer {
         description = "Read current accepted memory for a scope, optionally including history or COLD records."
     )]
     fn read_memories(&self, Parameters(a): Parameters<ReadMemoriesArgs>) -> CallToolResult {
-        self.store
-            .list_memories(
-                &a.scope_type,
-                a.scope_id.as_deref(),
-                a.include_history,
-                a.include_cold,
-            )
-            .map(success)
-            .unwrap_or_else(tool_error)
+        match self.store.list_memories(
+            &a.scope_type,
+            a.scope_id.as_deref(),
+            a.include_history,
+            a.include_cold,
+        ) {
+            Ok(memories) => {
+                if let Some(capability) = &self.role_capability {
+                    if let Err(error) = self
+                        .store
+                        .record_session_context_read(&capability.capability_hash, &memories)
+                    {
+                        return tool_error(error);
+                    }
+                }
+                success(memories)
+            }
+            Err(error) => tool_error(error),
+        }
     }
 
     #[tool(

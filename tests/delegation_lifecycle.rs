@@ -139,7 +139,15 @@ fn rollback_schema_twelve(database: &rusqlite::Connection) {
     // partially downgraded fixture for an already current database.
     database
         .execute_batch(
-            "DROP TRIGGER IF EXISTS project_checkpoint_artifacts_sealed;
+            "DROP TRIGGER IF EXISTS role_capability_provider_attempt_insert_valid;
+             DROP TRIGGER IF EXISTS main_capability_provider_attempt_insert_valid;
+             DROP TRIGGER IF EXISTS role_capability_provider_attempt_valid;
+             DROP TRIGGER IF EXISTS main_capability_provider_attempt_valid;
+             DROP TABLE IF EXISTS provider_context_receipts;
+             DROP TABLE IF EXISTS provider_attempts;
+             DROP TABLE IF EXISTS provider_sessions;
+             DELETE FROM schema_migrations WHERE version = 21;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_sealed;
              DROP TRIGGER IF EXISTS project_checkpoint_objectives_sealed;
              DROP TRIGGER IF EXISTS project_checkpoint_tasks_sealed;
              DROP TRIGGER IF EXISTS project_checkpoint_seals_no_update;
@@ -3331,7 +3339,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -3435,7 +3443,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     let assignment_status: String = database
         .query_row(
             "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
@@ -3585,7 +3593,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

@@ -117,6 +117,21 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
                id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, task_id INTEGER,
                status TEXT NOT NULL
              );
+             CREATE TABLE logical_agent_roles (role_key TEXT PRIMARY KEY);
+             CREATE TABLE delegations (
+               id INTEGER PRIMARY KEY, project_id INTEGER, role TEXT, parent_delegation_id INTEGER
+             );
+             CREATE TABLE role_thread_bindings (
+               binding_key TEXT PRIMARY KEY, role_key TEXT, delegation_id INTEGER, project_id INTEGER,
+               thread_id TEXT, status TEXT, last_turn_id TEXT, created_at INTEGER, updated_at INTEGER
+             );
+             CREATE TABLE role_dispatch_outbox (id INTEGER PRIMARY KEY, delegation_id INTEGER);
+             CREATE TABLE role_turn_inbox (
+               id INTEGER PRIMARY KEY, target_binding_key TEXT, target_delegation_id INTEGER, project_id INTEGER
+             );
+             CREATE TABLE role_thread_capabilities (binding_key TEXT PRIMARY KEY, delegation_id INTEGER);
+             CREATE TABLE main_overseer_capability (singleton INTEGER PRIMARY KEY);
+             CREATE TABLE memories (id INTEGER PRIMARY KEY);
              INSERT INTO projects(id, name, path, registered_at, reconciled_at)
                VALUES (41, 'legacy project', 'C:/fixture/legacy', 10, 20);
              INSERT INTO objectives(id, project_id, title, created_at, updated_at)
@@ -183,7 +198,7 @@ fn populated_v18_migration_preserves_ids_and_marks_legacy_unknowns() {
             row.get(0)
         })
         .expect("read upgraded migration version");
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
 }
 
 #[test]
@@ -705,6 +720,7 @@ fn task_portfolio_enforces_revisions_scope_blockers_order_and_completion_guards(
         role_kind: "worker".to_string(),
         project_id: Some(project_id),
         delegation_id: Some(1),
+        capability_hash: "0".repeat(64),
     };
     assert!(role_allowed_tools("worker").iter().all(|tool| {
         !matches!(

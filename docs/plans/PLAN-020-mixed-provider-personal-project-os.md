@@ -1,6 +1,6 @@
 # PLAN-020 — Mixed-provider personal project OS
 
-Status: M47 is delivered. M48 and its repair `d7dff34` have Claude accept review and 104 core tests. M49 `0e6718a` has Claude accept review and 107 core tests. M51a's [actual common-contract candidate](../parallel/codex/CX-03-F1-contract.md) is locally implemented; M51b parity and M50/M52-M55 remain open. Local source/test evidence does not establish runtime or remote integration.
+Status: M47 is delivered. M48 and its repair `d7dff34` have Claude accept review and 104 core tests. M49 `0e6718a` has Claude accept review and 107 core tests. M51a's actual common contract is committed at `09f192b` and accepted by Claude. CX-04 added a tested, non-activating provider-session/Codex adapter foundation; M51b remains open because live dispatcher protocol/event integration is not complete. M50/M52-M55 remain open. Local source/test evidence does not establish runtime or remote integration.
 Created: 2026-10-25
 Last updated: 2026-10-25
 Direction: [ADR-0022](../decisions/ADR-0022-mixed-provider-personal-project-os.md)

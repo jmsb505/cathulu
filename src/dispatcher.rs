@@ -94,6 +94,7 @@ pub struct RoleCapabilityScope {
     pub role_kind: String,
     pub project_id: Option<i64>,
     pub delegation_id: Option<i64>,
+    pub capability_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -670,8 +671,17 @@ impl Store {
                   created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)
                  ON CONFLICT(binding_key) DO UPDATE SET delegation_id = excluded.delegation_id,
-                   capability_hash = excluded.capability_hash, status = 'active', updated_at = excluded.updated_at",
-                params![binding_key, role_kind, project_id, delegation_id, token_hash, now],
+                   capability_hash = excluded.capability_hash, status = 'active',
+                   provider_id = NULL, provider_session_id = NULL, attempt_key = NULL,
+                   updated_at = excluded.updated_at",
+                params![
+                    binding_key,
+                    role_kind,
+                    project_id,
+                    delegation_id,
+                    token_hash,
+                    now
+                ],
             )
             .map_err(sqlite_error)?;
         Ok(RoleCapability {
@@ -694,7 +704,8 @@ impl Store {
                  (singleton, role_key, capability_hash, status, created_at, updated_at)
                  VALUES (1, 'main-overseer', ?1, 'active', ?2, ?2)
                  ON CONFLICT(singleton) DO UPDATE SET capability_hash = excluded.capability_hash,
-                   status = 'active', updated_at = excluded.updated_at",
+                   status = 'active', provider_id = NULL, provider_session_id = NULL,
+                   attempt_key = NULL, updated_at = excluded.updated_at",
                 params![token_hash, now],
             )
             .map_err(sqlite_error)?;
@@ -754,6 +765,7 @@ impl Store {
                 role_kind,
                 project_id: None,
                 delegation_id: None,
+                capability_hash: token_hash,
             });
         }
         let capability = connection
@@ -768,6 +780,7 @@ impl Store {
                         role_kind: row.get(0)?,
                         project_id: Some(row.get(1)?),
                         delegation_id: Some(row.get(2)?),
+                        capability_hash: token_hash.clone(),
                     })
                 },
             )
