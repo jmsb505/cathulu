@@ -1,5 +1,7 @@
 use crate::delegation::{ActivationMemoryReference, DelegationTaskPacket, WorkerReport};
-use crate::dispatcher::{role_allowed_tools, RoleCapabilityScope, RoleDispatcherService};
+use crate::dispatcher::{
+    role_allowed_tools, RoleCapabilityScope, RoleDispatchAdmissionPolicy, RoleDispatcherService,
+};
 use crate::gardener::{MemoryPolicyEvaluationInput, MemoryPolicyInput};
 use crate::memory::{FreshnessBasis, MemoryCreateInput, MemorySource};
 use crate::optimization::{
@@ -8,7 +10,8 @@ use crate::optimization::{
 };
 use crate::provider_adapters::{JevProvider, ScaleDownContextProvider};
 use crate::telemetry::CodexHookEvent;
-use crate::workflow::EventRecord;
+use crate::workflow::{EventRecord, TaskPlanInput};
+use crate::worktree::WorkspaceAttemptResolution;
 use crate::{default_data_dir, Store};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -27,9 +30,10 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
-// The deterministic role scopes and event routes are validated. Live Codex provider/UI parity
-// remains a runtime check; dispatch is now available by default and can be explicitly disabled.
-const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = true;
+// Product dispatch stays off until the admission boundary is reviewed and the Owner explicitly
+// approves enablement. Review is a prerequisite, not an activation decision. This gate also
+// changes the default: an unset CATHULU_ROLE_DISPATCHER_ENABLED previously enabled dispatch.
+const ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED: bool = false;
 
 const SERVER_NAME: &str = "cathulu";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,6 +49,12 @@ struct CathuluServer {
 struct RegisterProjectArgs {
     /// Absolute or relative path to a local Git repository.
     path: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CreateNonCodeProjectArgs {
+    /// Local project name. This does not create a personal-memory record.
+    name: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -90,6 +100,113 @@ struct CreateTaskArgs {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    parent_task_id: Option<i64>,
+    #[serde(default)]
+    priority: i64,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    effort_minutes: Option<i64>,
+    #[serde(default)]
+    next_action: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct UpdateProjectPlanningArgs {
+    project_id: i64,
+    expected_revision: i64,
+    status: String,
+    priority: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct UpdateTaskPlanArgs {
+    task_id: i64,
+    expected_revision: i64,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    parent_task_id: Option<i64>,
+    priority: i64,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    effort_minutes: Option<i64>,
+    #[serde(default)]
+    next_action: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskStatusRevisionArgs {
+    task_id: i64,
+    expected_revision: i64,
+    status: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskRevisionReasonArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskDependencyArgs {
+    task_id: i64,
+    prerequisite_task_id: i64,
+    expected_revision: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AddTaskBlockerArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason_code: String,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ResolveTaskBlockerArgs {
+    blocker_id: i64,
+    expected_task_revision: i64,
+    resolution: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CompleteTaskArgs {
+    task_id: i64,
+    expected_revision: i64,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct AcceptTaskRunArgs {
+    task_id: i64,
+    run_id: i64,
+    expected_revision: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TaskQueryArgs {
+    #[serde(default)]
+    project_id: Option<i64>,
+    #[serde(default)]
+    eligible_only: bool,
+    #[serde(default = "default_task_query_limit")]
+    limit: usize,
+}
+
+fn default_task_query_limit() -> usize {
+    100
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CreateProjectCheckpointArgs {
+    project_id: i64,
+    expected_source_event_id: i64,
+    summary_text: String,
+    #[serde(default)]
+    artifact_ids: Vec<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ResumeProjectArgs {
+    project_id: i64,
+    #[serde(default = "default_resume_limit")]
+    limit: usize,
+}
+fn default_resume_limit() -> usize {
+    10
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct RecordDecisionArgs {
@@ -258,6 +375,29 @@ struct ReconcileDelegationWorktreeArgs {
     delegation_id: i64,
     /// Absolute or relative path to an already-existing Git worktree belonging to the registered project.
     worktree_path: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListWorkspaceRecoveryCasesArgs {
+    /// Maximum quarantined leases to return (1–100; defaults to 50).
+    #[serde(default)]
+    limit: Option<usize>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceAttemptResolutionArgs {
+    attempt_key: String,
+    terminal_state: String,
+    reason: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReconcileWorkspaceLeaseArgs {
+    lease_id: i64,
+    attempt_resolutions: Vec<WorkspaceAttemptResolutionArgs>,
+    resolution: String,
+    /// Must be true only after confirming the provider execution has stopped.
+    provider_stopped_confirmed: bool,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -479,6 +619,19 @@ fn default_promotion_support() -> i64 {
 #[tool_router]
 impl CathuluServer {
     #[tool(
+        description = "Create a private non-code project for provider-free objectives, tasks, and checkpoints. This stores no repository path, does not inspect Git, and does not create a personal-memory record or enable provider disclosure."
+    )]
+    fn create_non_code_project(
+        &self,
+        Parameters(arguments): Parameters<CreateNonCodeProjectArgs>,
+    ) -> CallToolResult {
+        self.store
+            .create_non_code_project(&arguments.name)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
         description = "Register a local Git repository and save its current branch, HEAD, and changed paths."
     )]
     fn register_project(
@@ -503,6 +656,13 @@ impl CathuluServer {
     ) -> CallToolResult {
         match self.store.reconcile_project(arguments.project_id) {
             Ok(project) => success(project),
+            Err(error) if error == "not_applicable:project_has_no_repository" => {
+                success(serde_json::json!({
+                    "status": "not_applicable",
+                    "projectId": arguments.project_id,
+                    "reason": "project_has_no_repository"
+                }))
+            }
             Err(error) => tool_error(error),
         }
     }
@@ -548,7 +708,9 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
-    #[tool(description = "Change an objective status to active, blocked, completed, or cancelled.")]
+    #[tool(
+        description = "Change an objective status to active, blocked, completed, cancelled, or archived."
+    )]
     fn set_objective_status(&self, Parameters(a): Parameters<SetStatusArgs>) -> CallToolResult {
         self.store
             .set_objective_status(a.id, &a.status)
@@ -556,20 +718,198 @@ impl CathuluServer {
             .unwrap_or_else(tool_error)
     }
 
+    #[tool(
+        description = "Set a project's planning status and priority using its expected revision."
+    )]
+    fn update_project_planning(
+        &self,
+        Parameters(a): Parameters<UpdateProjectPlanningArgs>,
+    ) -> CallToolResult {
+        self.store
+            .update_project_planning(a.project_id, a.expected_revision, &a.status, a.priority)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
     #[tool(description = "Create a task inside an objective.")]
     fn create_task(&self, Parameters(a): Parameters<CreateTaskArgs>) -> CallToolResult {
         self.store
-            .create_task(a.objective_id, &a.title, &a.description)
+            .create_task_with_plan(
+                a.objective_id,
+                &TaskPlanInput {
+                    title: a.title,
+                    description: a.description,
+                    parent_task_id: a.parent_task_id,
+                    priority: a.priority,
+                    due_date: a.due_date,
+                    effort_minutes: a.effort_minutes,
+                    next_action: a.next_action,
+                },
+            )
             .map(success)
             .unwrap_or_else(tool_error)
     }
 
     #[tool(
-        description = "Change a task status to pending, active, blocked, completed, or cancelled."
+        description = "Change a task to queued, active, or failed with an expected revision. Use cancel_task for a reasoned cancellation, structured blockers for blocked, and completion commands for completed."
     )]
-    fn set_task_status(&self, Parameters(a): Parameters<SetStatusArgs>) -> CallToolResult {
+    fn set_task_status(&self, Parameters(a): Parameters<TaskStatusRevisionArgs>) -> CallToolResult {
         self.store
-            .set_task_status(a.id, &a.status)
+            .transition_task_status(a.task_id, a.expected_revision, &a.status)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Cancel a task with an explicit reason and expected revision; parents require every child completed or explicitly waived."
+    )]
+    fn cancel_task(&self, Parameters(a): Parameters<TaskRevisionReasonArgs>) -> CallToolResult {
+        self.store
+            .cancel_task(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Reopen a failed or cancelled task with an audit reason and expected revision."
+    )]
+    fn reopen_task(&self, Parameters(a): Parameters<TaskRevisionReasonArgs>) -> CallToolResult {
+        self.store
+            .reopen_task(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Replace a task's planning fields with an optimistic revision check.")]
+    fn update_task_plan(&self, Parameters(a): Parameters<UpdateTaskPlanArgs>) -> CallToolResult {
+        self.store
+            .update_task_plan(
+                a.task_id,
+                a.expected_revision,
+                &TaskPlanInput {
+                    title: a.title,
+                    description: a.description,
+                    parent_task_id: a.parent_task_id,
+                    priority: a.priority,
+                    due_date: a.due_date,
+                    effort_minutes: a.effort_minutes,
+                    next_action: a.next_action,
+                },
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Add a same-project prerequisite edge. Cycles and stale task revisions are rejected."
+    )]
+    fn add_task_dependency(&self, Parameters(a): Parameters<TaskDependencyArgs>) -> CallToolResult {
+        self.store
+            .add_task_dependency(a.task_id, a.prerequisite_task_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Remove a same-project prerequisite edge with a task revision check.")]
+    fn remove_task_dependency(
+        &self,
+        Parameters(a): Parameters<TaskDependencyArgs>,
+    ) -> CallToolResult {
+        self.store
+            .remove_task_dependency(a.task_id, a.prerequisite_task_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Record a structured open blocker and move the task into blocked status.")]
+    fn add_task_blocker(&self, Parameters(a): Parameters<AddTaskBlockerArgs>) -> CallToolResult {
+        self.store
+            .add_task_blocker(a.task_id, a.expected_revision, &a.reason_code, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Resolve one blocker with an audit reason; the task returns to queued after its final manual blocker is resolved."
+    )]
+    fn resolve_task_blocker(
+        &self,
+        Parameters(a): Parameters<ResolveTaskBlockerArgs>,
+    ) -> CallToolResult {
+        self.store
+            .resolve_task_blocker(a.blocker_id, a.expected_task_revision, &a.resolution)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Complete an ordinary task administratively with a reason, only when dependency, blocker, run, and child constraints pass."
+    )]
+    fn complete_task_administratively(
+        &self,
+        Parameters(a): Parameters<CompleteTaskArgs>,
+    ) -> CallToolResult {
+        self.store
+            .complete_task_administratively(a.task_id, a.expected_revision, &a.reason)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Accept a linked run as task completion only after finish_run recorded verified_success and task constraints still pass."
+    )]
+    fn accept_task_run(&self, Parameters(a): Parameters<AcceptTaskRunArgs>) -> CallToolResult {
+        self.store
+            .accept_task_run(a.task_id, a.run_id, a.expected_revision)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "List bounded project tasks with deterministic eligibility reasons and stable priority/due-date ordering. Unknown effort and due dates remain null."
+    )]
+    fn list_tasks(&self, Parameters(a): Parameters<TaskQueryArgs>) -> CallToolResult {
+        self.store
+            .list_tasks(a.project_id, a.eligible_only, a.limit)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Create an immutable project checkpoint from the current task/objective state. Supply the source event revision from resume_project; artifact IDs must refer to runs in this project."
+    )]
+    fn create_project_checkpoint(
+        &self,
+        Parameters(a): Parameters<CreateProjectCheckpointArgs>,
+    ) -> CallToolResult {
+        self.store
+            .create_project_checkpoint(
+                a.project_id,
+                a.expected_source_event_id,
+                &a.summary_text,
+                &a.artifact_ids,
+            )
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Read a bounded, source-backed project resume packet without refreshing Git or invoking a provider."
+    )]
+    fn resume_project(&self, Parameters(a): Parameters<ResumeProjectArgs>) -> CallToolResult {
+        self.store
+            .resume_project(a.project_id, a.limit)
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(description = "Read the latest immutable checkpoint revision for one project.")]
+    fn latest_project_checkpoint(
+        &self,
+        Parameters(a): Parameters<ReconcileProjectArgs>,
+    ) -> CallToolResult {
+        self.store
+            .latest_project_checkpoint(a.project_id)
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -810,7 +1150,7 @@ impl CathuluServer {
     }
 
     #[tool(
-        description = "Queue up to 32 prepared PM or Worker assignments for Cathulu's local asynchronous Codex dispatcher. Returns after durable queue acceptance; it never waits for a model turn. The local dispatcher starts with the normal MCP server by default; set CATHULU_ROLE_DISPATCHER_ENABLED=0 to disable it. Planning, memory, scope, and QA gates still apply. A queued item is not success; inspect cathulu://dashboard for queued, running, blocked, or reconciliation-required state."
+        description = "Queue up to 32 prepared PM or Worker assignments for Cathulu's local asynchronous Codex dispatcher. Returns after durable queue acceptance; it never waits for a model turn. Currently unavailable: M52 workspace-lease, exact-path, permission, and credential-source admission is not integrated, so environment flags cannot activate dispatch. Planning, memory, scope, and QA gates still apply. A queued item is not success; inspect cathulu://dashboard for queued, running, blocked, or reconciliation-required state."
     )]
     fn dispatch_prepared_delegations(
         &self,
@@ -818,7 +1158,7 @@ impl CathuluServer {
     ) -> CallToolResult {
         if !self.dispatcher_enabled {
             return tool_error(
-                "local role dispatch is unavailable: its environment flag is not enabled or required role-identity/event-routing safeguards have not been validated; no delegation was queued or started"
+                "local role dispatch is unavailable: M52 workspace-lease, exact-path, permission, and credential-source admission is incomplete; no delegation was queued or started"
                     .to_string(),
             );
         }
@@ -965,6 +1305,57 @@ impl CathuluServer {
         }
         self.store
             .reconcile_delegation_worktree(a.delegation_id, Path::new(&a.worktree_path))
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "List quarantined workspace leases and their unresolved provider attempts for local operator review. Returns path hashes, never canonical workspace paths or prompt text. This unscoped local MCP does not authenticate an Owner and must not be remotely exposed; scoped role agents cannot call this tool."
+    )]
+    fn list_workspace_recovery_cases(
+        &self,
+        Parameters(a): Parameters<ListWorkspaceRecoveryCasesArgs>,
+    ) -> CallToolResult {
+        if self.role_capability.is_some() {
+            return tool_error(
+                "workspace recovery is available only through the unscoped local MCP".into(),
+            );
+        }
+        self.store
+            .list_workspace_recovery_cases(a.limit.unwrap_or(50))
+            .map(success)
+            .unwrap_or_else(tool_error)
+    }
+
+    #[tool(
+        description = "Manually reconcile one quarantined workspace lease through the unscoped local MCP. Before calling, independently confirm the provider execution has stopped and review its result. Supply every unresolved attempt for the exact lease, a terminal state (completed, failed, or blocked) and a reason for each, plus an overall reason. Cathulu revalidates the linked-worktree identity and atomically records the attempt dispositions and lease resolution. It never deletes, moves, or cleans a worktree and never starts or retries a provider. This endpoint does not authenticate an Owner, must not be remotely exposed, and is denied to scoped role agents."
+    )]
+    fn reconcile_workspace_lease(
+        &self,
+        Parameters(a): Parameters<ReconcileWorkspaceLeaseArgs>,
+    ) -> CallToolResult {
+        if self.role_capability.is_some() {
+            return tool_error(
+                "workspace recovery is available only through the unscoped local MCP".into(),
+            );
+        }
+        let attempt_resolutions = a
+            .attempt_resolutions
+            .into_iter()
+            .map(|item| WorkspaceAttemptResolution {
+                attempt_key: item.attempt_key,
+                terminal_state: item.terminal_state,
+                reason: item.reason,
+            })
+            .collect::<Vec<_>>();
+        self.store
+            .reconcile_workspace_lease_with_attempts(
+                a.lease_id,
+                &attempt_resolutions,
+                crate::worktree::unix_time(),
+                &a.resolution,
+                a.provider_stopped_confirmed,
+            )
             .map(success)
             .unwrap_or_else(tool_error)
     }
@@ -1155,15 +1546,25 @@ impl CathuluServer {
         description = "Read current accepted memory for a scope, optionally including history or COLD records."
     )]
     fn read_memories(&self, Parameters(a): Parameters<ReadMemoriesArgs>) -> CallToolResult {
-        self.store
-            .list_memories(
-                &a.scope_type,
-                a.scope_id.as_deref(),
-                a.include_history,
-                a.include_cold,
-            )
-            .map(success)
-            .unwrap_or_else(tool_error)
+        match self.store.list_memories(
+            &a.scope_type,
+            a.scope_id.as_deref(),
+            a.include_history,
+            a.include_cold,
+        ) {
+            Ok(memories) => {
+                if let Some(capability) = &self.role_capability {
+                    if let Err(error) = self
+                        .store
+                        .record_session_context_read(&capability.capability_hash, &memories)
+                    {
+                        return tool_error(error);
+                    }
+                }
+                success(memories)
+            }
+            Err(error) => tool_error(error),
+        }
     }
 
     #[tool(
@@ -1392,6 +1793,9 @@ impl ServerHandler for CathuluServer {
             Resource::new("cathulu://projects", "Cathulu projects")
                 .with_description("Registered repositories and their latest Git snapshots.")
                 .with_mime_type("application/json"),
+            Resource::new("cathulu://portfolio/tasks", "Cathulu task portfolio")
+                .with_description("The first 100 current tasks with deterministic eligibility and blocker reasons.")
+                .with_mime_type("application/json"),
             Resource::new("cathulu://roles", "Cathulu logical agent roles")
                 .with_description(
                     "Persistent Main Overseer and per-project Project Manager identities, memory scopes, and versioned tool profiles. Task assignments and Codex chats are separate.",
@@ -1407,9 +1811,14 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
         ];
         if self.role_capability.is_some() {
-            result
-                .resources
-                .retain(|resource| resource.uri == "cathulu://projects");
+            result.resources.retain(|resource| {
+                resource.uri == "cathulu://projects"
+                    || (self
+                        .role_capability
+                        .as_ref()
+                        .is_some_and(|capability| capability.role_kind == "main_overseer")
+                        && resource.uri == "cathulu://portfolio/tasks")
+            });
         }
         Ok(result)
     }
@@ -1426,6 +1835,21 @@ impl ServerHandler for CathuluServer {
                 .with_mime_type("application/json"),
             ResourceTemplate::new("cathulu://projects/{id}", "Cathulu project")
                 .with_description("One registered repository and its latest Git snapshot.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/planning", "Cathulu project planning")
+                .with_description("One project's planning status, priority, and optimistic revision.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/tasks", "Cathulu project tasks")
+                .with_description("The first 100 tasks for one project with eligibility and blocker reasons.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/checkpoints/latest", "Cathulu latest project checkpoint")
+                .with_description("The latest immutable checkpoint revision for one project, or null when none exists.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://projects/{id}/resume", "Cathulu project resume")
+                .with_description("A bounded, source-backed current-state packet with checkpoint deltas and stored repository freshness.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("cathulu://portfolio/tasks", "Cathulu task portfolio")
+                .with_description("The first 100 tasks across projects with eligibility and blocker reasons.")
                 .with_mime_type("application/json"),
             ResourceTemplate::new(
                 "cathulu://projects/{id}/graphify-snapshot",
@@ -1482,6 +1906,11 @@ impl ServerHandler for CathuluServer {
                     matches!(
                         template.uri_template.as_str(),
                         "cathulu://projects/{id}"
+                            | "cathulu://projects/{id}/planning"
+                            | "cathulu://projects/{id}/tasks"
+                            | "cathulu://projects/{id}/checkpoints/latest"
+                            | "cathulu://projects/{id}/resume"
+                            | "cathulu://portfolio/tasks"
                             | "cathulu://delegations/{id}"
                             | "cathulu://work-plans/{id}"
                             | "cathulu://owner-approvals/{id}"
@@ -1491,7 +1920,12 @@ impl ServerHandler for CathuluServer {
                 } else {
                     matches!(
                         template.uri_template.as_str(),
-                        "cathulu://projects/{id}" | "cathulu://delegations/{id}"
+                        "cathulu://projects/{id}"
+                            | "cathulu://projects/{id}/planning"
+                            | "cathulu://projects/{id}/tasks"
+                            | "cathulu://projects/{id}/checkpoints/latest"
+                            | "cathulu://projects/{id}/resume"
+                            | "cathulu://delegations/{id}"
                     )
                 }
             });
@@ -1505,6 +1939,18 @@ impl ServerHandler for CathuluServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         if let Some(capability) = &self.role_capability {
+            if let Some(project_id) = capability.project_id {
+                if self
+                    .store
+                    .project_is_private(project_id)
+                    .map_err(internal_error)?
+                {
+                    return Err(McpError::invalid_params(
+                        "role capability cannot read a private project",
+                        None,
+                    ));
+                }
+            }
             let allowed = if capability.role_kind == "main_overseer" {
                 matches!(
                     request.uri.as_str(),
@@ -1512,13 +1958,20 @@ impl ServerHandler for CathuluServer {
                         | "cathulu://roles"
                         | "cathulu://dashboard"
                         | "cathulu://dispatches"
-                ) || request.uri.starts_with("cathulu://projects/")
+                ) || request.uri == "cathulu://portfolio/tasks"
+                    || request.uri.starts_with("cathulu://projects/")
                     || request.uri.starts_with("cathulu://delegations/")
                     || request.uri.starts_with("cathulu://work-plans/")
                     || request.uri.starts_with("cathulu://owner-approvals/")
                     || request.uri.starts_with("cathulu://runs/")
                     || request.uri.starts_with("cathulu://events/run/")
             } else if request.uri == "cathulu://projects" {
+                true
+            } else if role_can_read_task_resource(
+                &capability.role_kind,
+                capability.project_id,
+                &request.uri,
+            ) {
                 true
             } else if let Some(project_id) = request.uri.strip_prefix("cathulu://projects/") {
                 project_id.parse::<i64>().ok() == capability.project_id
@@ -1537,24 +1990,97 @@ impl ServerHandler for CathuluServer {
                     None,
                 ));
             }
+            if capability.role_kind == "main_overseer" {
+                if request.uri == "cathulu://dashboard"
+                    && self.store.has_private_projects().map_err(internal_error)?
+                {
+                    return Err(McpError::invalid_params(
+                        "Main dashboard is withheld while private projects exist",
+                        None,
+                    ));
+                }
+                if let Some(project_id) = resource_project_id(&self.store, &request.uri)? {
+                    if self
+                        .store
+                        .project_is_private(project_id)
+                        .map_err(internal_error)?
+                    {
+                        return Err(McpError::invalid_params(
+                            "Main cannot read a private project resource",
+                            None,
+                        ));
+                    }
+                }
+            }
         }
         let data = if request.uri == "cathulu://projects" {
             let mut projects = self.store.list_projects().map_err(internal_error)?;
             if let Some(capability) = &self.role_capability {
-                if let Some(project_id) = capability.project_id {
+                if capability.role_kind == "main_overseer" {
+                    projects
+                        .retain(|project| project.visibility == crate::ProjectVisibility::Shared);
+                } else if let Some(project_id) = capability.project_id {
                     projects.retain(|project| project.id == project_id);
                 }
             }
             serde_json::to_string(&projects).map_err(internal_error)?
+        } else if request.uri == "cathulu://portfolio/tasks" {
+            let tasks = self
+                .store
+                .list_tasks(None, false, 100)
+                .map_err(internal_error)?;
+            let tasks = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                tasks
+                    .into_iter()
+                    .filter(|task| shared_projects.contains(&task.project_id))
+                    .collect::<Vec<_>>()
+            } else {
+                tasks
+            };
+            serde_json::to_string(&tasks).map_err(internal_error)?
         } else if request.uri == "cathulu://roles" {
-            serde_json::to_string(&self.store.logical_agent_roles().map_err(internal_error)?)
-                .map_err(internal_error)?
+            let roles = self.store.logical_agent_roles().map_err(internal_error)?;
+            let roles = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                roles
+                    .into_iter()
+                    .filter(|role| {
+                        role.project_id
+                            .is_none_or(|project_id| shared_projects.contains(&project_id))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                roles
+            };
+            serde_json::to_string(&roles).map_err(internal_error)?
         } else if request.uri == "cathulu://dashboard" {
             serde_json::to_string(&self.store.dashboard_snapshot().map_err(internal_error)?)
                 .map_err(internal_error)?
         } else if request.uri == "cathulu://dispatches" {
-            serde_json::to_string(&self.store.role_dispatches(100).map_err(internal_error)?)
-                .map_err(internal_error)?
+            let dispatches = self.store.role_dispatches(100).map_err(internal_error)?;
+            let dispatches = if self
+                .role_capability
+                .as_ref()
+                .is_some_and(|capability| capability.role_kind == "main_overseer")
+            {
+                let shared_projects = self.store.shared_project_ids().map_err(internal_error)?;
+                dispatches
+                    .into_iter()
+                    .filter(|dispatch| shared_projects.contains(&dispatch.project_id))
+                    .collect::<Vec<_>>()
+            } else {
+                dispatches
+            };
+            serde_json::to_string(&dispatches).map_err(internal_error)?
         } else if let Some(delegation_id) = request.uri.strip_prefix("cathulu://delegations/") {
             let delegation_id = parse_resource_id(delegation_id, &request.uri)?;
             let delegation = self
@@ -1708,6 +2234,62 @@ impl ServerHandler for CathuluServer {
         } else if let Some(project_id) = request
             .uri
             .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/planning"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            let project = self
+                .store
+                .get_project_planning(project_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    McpError::resource_not_found(
+                        "project_not_found",
+                        Some(serde_json::json!({ "uri": request.uri })),
+                    )
+                })?;
+            serde_json::to_string(&project).map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/tasks"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .list_tasks(Some(project_id), false, 100)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/checkpoints/latest"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .latest_project_checkpoint(project_id)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
+            .and_then(|path| path.strip_suffix("/resume"))
+        {
+            let project_id = parse_resource_id(project_id, &request.uri)?;
+            serde_json::to_string(
+                &self
+                    .store
+                    .resume_project(project_id, 10)
+                    .map_err(internal_error)?,
+            )
+            .map_err(internal_error)?
+        } else if let Some(project_id) = request
+            .uri
+            .strip_prefix("cathulu://projects/")
             .and_then(|path| path.strip_suffix("/graphify-snapshot"))
         {
             let project_id = parse_resource_id(project_id, &request.uri)?;
@@ -1757,25 +2339,24 @@ pub async fn run_stdio() -> Result<(), String> {
             return Err("Cathulu role capability environment is not valid Unicode".to_string())
         }
     };
-    let dispatcher_requested =
-        std::env::var("CATHULU_ROLE_DISPATCHER_ENABLED").map_or(true, |value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        });
+    let dispatcher_requested = role_dispatcher_requested(
+        std::env::var("CATHULU_ROLE_DISPATCHER_ENABLED")
+            .ok()
+            .as_deref(),
+    );
     let dispatcher_client_requested = std::env::var("CATHULU_ROLE_DISPATCHER_CLIENT_ENABLED")
         .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
-    let dispatcher_enabled = (dispatcher_requested || dispatcher_client_requested)
-        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED;
-    let dispatcher = if dispatcher_requested
-        && role_capability.is_none()
-        && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
-    {
-        Some(RoleDispatcherService::start(store.clone())?)
-    } else {
-        None
-    };
+    let dispatcher_enabled =
+        role_dispatcher_runtime_enabled(dispatcher_requested, dispatcher_client_requested);
+    let dispatcher =
+        if role_dispatcher_service_enabled(dispatcher_requested, role_capability.is_some()) {
+            Some(RoleDispatcherService::start(
+                store.clone(),
+                RoleDispatchAdmissionPolicy::from_environment()?,
+            )?)
+        } else {
+            None
+        };
     let service = CathuluServer {
         store,
         dispatcher_enabled,
@@ -1790,6 +2371,75 @@ pub async fn run_stdio() -> Result<(), String> {
         .map_err(|error| format!("MCP stdio service stopped unexpectedly: {error}"))?;
     drop(dispatcher);
     Ok(())
+}
+
+fn role_dispatcher_runtime_enabled(dispatcher_requested: bool, client_requested: bool) -> bool {
+    (dispatcher_requested || client_requested) && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
+}
+
+fn role_dispatcher_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
+}
+
+fn role_dispatcher_service_enabled(dispatcher_requested: bool, has_role_capability: bool) -> bool {
+    dispatcher_requested && !has_role_capability && ROLE_DISPATCHER_RUNTIME_GATES_VALIDATED
+}
+
+fn role_can_read_task_resource(role_kind: &str, project_id: Option<i64>, uri: &str) -> bool {
+    if role_kind != "sub_overseer" {
+        return false;
+    }
+    uri.strip_prefix("cathulu://projects/")
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|(resource_project_id, resource)| {
+            resource_project_id.parse::<i64>().ok() == project_id
+                && matches!(
+                    resource,
+                    "planning" | "tasks" | "checkpoints/latest" | "resume"
+                )
+        })
+}
+
+fn resource_project_id(store: &Store, uri: &str) -> Result<Option<i64>, McpError> {
+    let resource_id = |prefix: &str| {
+        uri.strip_prefix(prefix)
+            .and_then(|value| value.split('/').next())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(id) = resource_id("cathulu://projects/") {
+        return Ok(Some(parse_resource_id(id, uri)?));
+    }
+    if let Some(id) = resource_id("cathulu://delegations/") {
+        return store
+            .get_delegation(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    if let Some(id) = resource_id("cathulu://work-plans/") {
+        return store
+            .get_role_work_plan(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    if let Some(id) = resource_id("cathulu://owner-approvals/") {
+        return store
+            .get_owner_approval_request(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    let run_id = resource_id("cathulu://runs/").or_else(|| resource_id("cathulu://events/run/"));
+    if let Some(id) = run_id {
+        return store
+            .get_run(parse_resource_id(id, uri)?)
+            .map(|value| value.map(|record| record.project_id))
+            .map_err(internal_error);
+    }
+    Ok(None)
 }
 
 fn parse_resource_id(id: &str, uri: &str) -> Result<i64, McpError> {
@@ -1818,7 +2468,26 @@ fn internal_error(error: impl std::fmt::Display) -> McpError {
 
 #[cfg(test)]
 mod schema_tests {
-    use super::CathuluServer;
+    use super::{
+        role_can_read_task_resource, role_dispatcher_requested, role_dispatcher_runtime_enabled,
+        role_dispatcher_service_enabled, CathuluServer,
+    };
+
+    #[test]
+    fn m52_admission_gate_keeps_product_dispatch_off_even_when_requested() {
+        assert!(!role_dispatcher_requested(None));
+        assert!(!role_dispatcher_requested(Some("")));
+        assert!(!role_dispatcher_requested(Some("invalid")));
+        assert!(role_dispatcher_requested(Some("true")));
+        assert!(role_dispatcher_requested(Some("1")));
+        assert!(!role_dispatcher_runtime_enabled(true, false));
+        assert!(!role_dispatcher_runtime_enabled(false, true));
+        assert!(!role_dispatcher_runtime_enabled(true, true));
+        assert!(!role_dispatcher_runtime_enabled(false, false));
+        assert!(!role_dispatcher_service_enabled(true, false));
+        assert!(!role_dispatcher_service_enabled(true, true));
+        assert!(!role_dispatcher_service_enabled(false, false));
+    }
 
     #[test]
     fn structured_json_tool_inputs_have_explicit_object_schemas() {
@@ -1843,5 +2512,73 @@ mod schema_tests {
                 .get("properties")
                 .is_some_and(serde_json::Value::is_object));
         }
+    }
+
+    #[test]
+    fn workspace_recovery_tools_are_registered_with_explicit_operator_confirmation() {
+        let tools = CathuluServer::tool_router().list_all();
+        let list_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "list_workspace_recovery_cases")
+            .expect("quarantined lease inspection tool is registered");
+        let reconcile_tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == "reconcile_workspace_lease")
+            .expect("manual reconciliation tool is registered");
+        let schema = serde_json::to_value(&reconcile_tool.input_schema).unwrap();
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("reconciliation tool has an object input schema");
+        for field in [
+            "lease_id",
+            "attempt_resolutions",
+            "resolution",
+            "provider_stopped_confirmed",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "missing required field {field}"
+            );
+        }
+        assert!(list_tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("must not be remotely exposed"));
+        assert!(reconcile_tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("independently confirm the provider execution has stopped"));
+    }
+
+    #[test]
+    fn task_resources_are_visible_only_to_main_or_the_matching_project_manager() {
+        assert!(role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/tasks"
+        ));
+        assert!(role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/planning"
+        ));
+        assert!(!role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/8/tasks"
+        ));
+        assert!(!role_can_read_task_resource(
+            "worker",
+            Some(7),
+            "cathulu://projects/7/tasks"
+        ));
+        assert!(!role_can_read_task_resource(
+            "sub_overseer",
+            Some(7),
+            "cathulu://projects/7/tasks/other"
+        ));
     }
 }

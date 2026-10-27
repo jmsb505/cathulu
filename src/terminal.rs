@@ -194,7 +194,7 @@ fn render_at(snapshot: &DashboardSnapshot, width: usize, now: i64) -> String {
 mod tests {
     use super::*;
     use crate::delegation::DashboardDelegationSummary;
-    use crate::{dashboard::MemoryHealthSummary, ProjectSnapshot};
+    use crate::{dashboard::MemoryHealthSummary, ProjectKind, ProjectSnapshot, ProjectVisibility};
 
     #[test]
     fn render_projects_and_memory_without_claiming_unobserved_work() {
@@ -203,7 +203,9 @@ mod tests {
             projects: vec![ProjectSnapshot {
                 id: 1,
                 name: "PULSO".into(),
-                path: "C:/pulso".into(),
+                path: Some("C:/pulso".into()),
+                kind: ProjectKind::Repository,
+                visibility: ProjectVisibility::Shared,
                 branch: None,
                 head: None,
                 dirty: false,

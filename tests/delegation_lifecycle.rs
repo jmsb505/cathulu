@@ -139,6 +139,82 @@ fn rollback_schema_twelve(database: &rusqlite::Connection) {
     // partially downgraded fixture for an already current database.
     database
         .execute_batch(
+            "DROP TRIGGER IF EXISTS role_capability_workspace_lease_valid;
+             DROP TRIGGER IF EXISTS role_capability_workspace_lease_immutable;
+             DROP TRIGGER IF EXISTS role_capability_workspace_attempt_valid;
+             DROP TRIGGER IF EXISTS provider_attempts_lease_insert_valid;
+             DROP TRIGGER IF EXISTS provider_attempts_lease_update_valid;
+             DROP INDEX IF EXISTS provider_attempts_workspace_lease_once_idx;
+             DROP TABLE IF EXISTS workspace_lease_events;
+             DROP TABLE IF EXISTS workspace_leases;
+             ALTER TABLE provider_attempts DROP COLUMN workspace_lease_id;
+             ALTER TABLE role_thread_capabilities DROP COLUMN workspace_lease_id;
+             DELETE FROM schema_migrations WHERE version = 23;
+             DELETE FROM schema_migrations WHERE version = 22;
+             DROP TRIGGER IF EXISTS role_capability_provider_attempt_insert_valid;
+             DROP TRIGGER IF EXISTS main_capability_provider_attempt_insert_valid;
+             DROP TRIGGER IF EXISTS role_capability_provider_attempt_valid;
+             DROP TRIGGER IF EXISTS main_capability_provider_attempt_valid;
+             DROP TABLE IF EXISTS provider_context_receipts;
+             DROP TABLE IF EXISTS provider_attempts;
+             DROP TABLE IF EXISTS provider_sessions;
+             DELETE FROM schema_migrations WHERE version = 21;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_sealed;
+             DROP TRIGGER IF EXISTS project_checkpoint_seals_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_seals_no_delete;
+             DROP TABLE IF EXISTS project_checkpoint_seals;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_artifacts_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_objectives_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoint_tasks_no_delete;
+             DROP TRIGGER IF EXISTS project_checkpoints_no_update;
+             DROP TRIGGER IF EXISTS project_checkpoints_no_delete;
+             DROP TABLE IF EXISTS project_checkpoint_artifacts;
+             DROP TABLE IF EXISTS project_checkpoint_objectives;
+             DROP TABLE IF EXISTS project_checkpoint_tasks;
+             DROP TABLE IF EXISTS project_checkpoints;
+             DELETE FROM schema_migrations WHERE version = 20;
+             DROP TRIGGER IF EXISTS task_dependency_scope_insert;
+             DROP TRIGGER IF EXISTS task_dependency_acyclic_insert;
+             DROP TRIGGER IF EXISTS task_parent_scope_insert;
+             DROP TRIGGER IF EXISTS task_parent_scope_update;
+             DROP TRIGGER IF EXISTS task_parent_acyclic_insert;
+             DROP TRIGGER IF EXISTS task_parent_acyclic_update;
+             DROP TRIGGER IF EXISTS task_blocker_no_delete;
+             DROP TRIGGER IF EXISTS task_completion_metadata_insert;
+             DROP TRIGGER IF EXISTS task_completion_metadata_update;
+             DROP TRIGGER IF EXISTS task_completion_run_scope_update;
+             DROP TRIGGER IF EXISTS task_cancellation_metadata_insert;
+             DROP TRIGGER IF EXISTS task_cancellation_metadata_update;
+             DROP TABLE IF EXISTS task_blockers;
+             DROP TABLE IF EXISTS task_dependencies;
+             DELETE FROM schema_migrations WHERE version = 19;",
+        )
+        .expect("remove schema-nineteen planning triggers and tables");
+    database
+        .execute_batch(
+            "ALTER TABLE tasks DROP COLUMN cancellation_reason;
+             ALTER TABLE tasks DROP COLUMN cancelled_at;
+             ALTER TABLE tasks DROP COLUMN completion_run_id;
+             ALTER TABLE tasks DROP COLUMN completion_kind;
+             ALTER TABLE tasks DROP COLUMN completed_at;
+             ALTER TABLE tasks DROP COLUMN revision;
+             ALTER TABLE tasks DROP COLUMN next_action;
+             ALTER TABLE tasks DROP COLUMN effort_minutes;
+             ALTER TABLE tasks DROP COLUMN due_date;
+             ALTER TABLE tasks DROP COLUMN priority;
+             ALTER TABLE tasks DROP COLUMN parent_task_id;
+             ALTER TABLE projects DROP COLUMN revision;
+             ALTER TABLE projects DROP COLUMN priority;
+             ALTER TABLE projects DROP COLUMN status;",
+        )
+        .expect("restore project/task rows to the schema-eighteen shape");
+    database
+        .execute_batch(
             "DROP TABLE IF EXISTS owner_approval_relays;
              DROP TABLE IF EXISTS main_overseer_capability;
              DROP TABLE IF EXISTS role_turn_inbox_events;
@@ -3275,7 +3351,7 @@ fn version_eleven_migration_preserves_existing_version_five_delegations() {
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("count preserved v5 delegations");
-    assert_eq!(version, 18);
+    assert_eq!(version, 23);
     assert_eq!(delegation_count, 1);
     let assigned_count: i64 = database
         .query_row(
@@ -3379,7 +3455,7 @@ fn version_eleven_migration_preserves_existing_hierarchy_links() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 18);
+    assert_eq!(version, 23);
     let assignment_status: String = database
         .query_row(
             "SELECT status FROM project_manager_assignments WHERE manager_delegation_id = ?1",
@@ -3529,7 +3605,7 @@ fn version_five_through_eleven_migrations_preserve_version_four_project_run_and_
     let delegation_count: i64 = database
         .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
         .expect("query the additive delegation schema");
-    assert_eq!(version, 18);
+    assert_eq!(version, 23);
     assert_eq!(delegation_count, 0);
     drop(database);
     fs::remove_dir_all(root).expect("remove migration fixture");

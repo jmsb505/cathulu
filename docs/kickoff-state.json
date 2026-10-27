@@ -554,12 +554,12 @@
     },
     {
       "id": "P-Q1",
-      "text": "Which installed Claude version, subscription authentication mode and supported Windows configuration/permission controls satisfy safe adapter execution?",
+      "text": "Claude Code 2.1.302 is installed. Does its Owner-authenticated subscription mode and supported Windows configuration/permission controls satisfy safe adapter execution?",
       "status": "OPEN_DEPENDENT",
       "blocking": true,
       "dependent_scope": "Claude adapter activation, not M48-M49",
       "owner": "Cathulu development; Owner only for essential account/data/product authority",
-      "next_action": "Prepare explicit preflight; no automatic install, auth change or API fallback."
+      "next_action": "Owner login remains manual, in a fresh PowerShell session with ANTHROPIC_BASE_URL unset; then verify auth mode, permissions and isolation. The empty Cathulu config and unauthenticated claude doctor check are preliminary only. No API fallback."
     },
     {
       "id": "P-Q2",
@@ -568,7 +568,7 @@
       "blocking": true,
       "dependent_scope": "Personal collection and disclosure in M50 or later",
       "owner": "Cathulu development; Owner only for essential account/data/product authority",
-      "next_action": "Define categories, retention/correction and disclosure controls before collecting facts."
+      "next_action": "No personal categories are approved now. Revisit at M50 start; define categories, retention/correction and provider disclosure grants before collecting or disclosing facts."
     },
     {
       "id": "P-Q3",

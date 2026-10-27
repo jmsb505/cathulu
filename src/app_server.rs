@@ -3,6 +3,7 @@
 //! The client only starts/resumes persistent threads and submits bounded turns. It does not
 //! keep a model generation alive while Cathulu waits for project work.
 
+use crate::agent_provider::ProviderStartAdmission;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -54,10 +55,92 @@ pub struct AppServerProcess {
     next_request_id: u64,
     deferred_responses: HashMap<u64, Result<Value, String>>,
     events: Vec<AppServerMessage>,
+    admission: ProviderStartAdmission,
+    // On Windows this handle owns the kill-on-close job that contains the app-server tree.
+    _containment: ProcessContainment,
+}
+
+/// Contain an app-server process tree so closing the dispatcher also closes its provider child
+/// processes. Windows uses a kill-on-close Job Object; other platforms currently have no
+/// equivalent crash containment here.
+#[cfg(windows)]
+struct ProcessContainment(std::os::windows::io::OwnedHandle);
+
+#[cfg(windows)]
+impl ProcessContainment {
+    fn new() -> Result<Self, String> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        // SAFETY: null security attributes and a null name request a new unnamed Job Object.
+        let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw_job.is_null() {
+            return Err(format!(
+                "cannot create app-server Job Object: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: CreateJobObjectW returned a new owned handle, which is wrapped exactly once.
+        let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `limits` has the required C layout and remains alive for the call.
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(format!(
+                "cannot configure app-server Job Object: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self(job))
+    }
+
+    fn assign(&self, child: &Child) -> Result<(), String> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        // SAFETY: both handles remain valid for the duration of this call. The job handle is
+        // owned by `self`; `Child` owns its process handle.
+        let assigned =
+            unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), child.as_raw_handle()) };
+        if assigned == 0 {
+            return Err(format!(
+                "cannot contain Codex app-server in its Job Object: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+struct ProcessContainment;
+
+#[cfg(not(windows))]
+impl ProcessContainment {
+    fn new() -> Result<Self, String> {
+        Ok(Self)
+    }
+
+    fn assign(&self, _child: &Child) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl AppServerProcess {
-    pub fn start() -> Result<Self, String> {
+    pub fn start(admission: &ProviderStartAdmission) -> Result<Self, String> {
+        admission.ensure_valid(crate::unix_time())?;
+        let containment = ProcessContainment::new()?;
         let mut command = app_server_command()?;
         command
             .stdin(Stdio::piped())
@@ -69,6 +152,11 @@ impl AppServerProcess {
         let mut child = command
             .spawn()
             .map_err(|error| format!("cannot start the local Codex app-server: {error}"))?;
+        if let Err(error) = containment.assign(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -92,6 +180,8 @@ impl AppServerProcess {
             next_request_id: 1,
             deferred_responses: HashMap::new(),
             events: Vec::new(),
+            admission: admission.clone(),
+            _containment: containment,
         };
         process.request(
             "initialize",
@@ -108,6 +198,15 @@ impl AppServerProcess {
         Ok(process)
     }
 
+    pub(crate) fn set_admission(
+        &mut self,
+        admission: ProviderStartAdmission,
+    ) -> Result<(), String> {
+        admission.ensure_valid(crate::unix_time())?;
+        self.admission = admission;
+        Ok(())
+    }
+
     pub fn start_thread(
         &mut self,
         cwd: &Path,
@@ -116,6 +215,7 @@ impl AppServerProcess {
         sandbox: &str,
         config: Value,
     ) -> Result<String, String> {
+        self.admission.ensure_workspace_root(cwd)?;
         let mut params = json!({
             "cwd": cwd,
             "approvalPolicy": approval_policy,
@@ -135,6 +235,7 @@ impl AppServerProcess {
     }
 
     pub fn resume_thread(&mut self, thread_id: &str, config: Value) -> Result<(), String> {
+        self.admission.ensure_valid(crate::unix_time())?;
         if thread_id.is_empty() || thread_id.len() > 256 {
             return Err("stored Codex thread ID is invalid".to_string());
         }
@@ -172,6 +273,7 @@ impl AppServerProcess {
 
     /// Submit one turn and return on the app-server acknowledgement, never on turn completion.
     pub fn start_turn(&mut self, thread_id: &str, prompt: &str) -> Result<Value, String> {
+        self.admission.ensure_valid(crate::unix_time())?;
         if thread_id.is_empty() || thread_id.len() > 256 {
             return Err("stored Codex thread ID is invalid".to_string());
         }
@@ -280,8 +382,9 @@ impl AppServerProcess {
 
 impl Drop for AppServerProcess {
     fn drop(&mut self) {
-        // Closing stdin is the graceful shutdown signal. A short-lived kill is the fallback so
-        // an MCP shutdown can never leave a hidden app-server process behind.
+        // Closing stdin is the graceful shutdown signal. A short-lived kill is the direct-child
+        // fallback. After this method returns, the Windows Job Object handle closes and also
+        // terminates any app-server descendants that did not exit with it.
         drop(self.stdin.take());
         for _ in 0..20 {
             if self.child.try_wait().ok().flatten().is_some() {
@@ -516,7 +619,52 @@ mod tests {
         mcp_server_disable_overrides, parse_incoming, validate_cathulu_tools, AppServerMessage,
         IncomingMessage,
     };
+    use crate::agent_provider::ProviderStartAdmission;
     use serde_json::json;
+
+    #[test]
+    fn app_server_spawn_rejects_default_denied_admission_before_startup() {
+        let error = match super::AppServerProcess::start(&ProviderStartAdmission::default()) {
+            Ok(_) => panic!("default admission must not spawn a provider"),
+            Err(error) => error,
+        };
+        assert!(error.contains("no validated workspace admission"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn app_server_job_object_terminates_its_child_when_the_owner_closes() {
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::Duration;
+
+        let containment = super::ProcessContainment::new().expect("create kill-on-close job");
+        let mut command = Command::new("ping.exe");
+        command
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("start a local loopback test child");
+        containment
+            .assign(&child)
+            .expect("assign the child to the kill-on-close job");
+
+        drop(containment);
+        for _ in 0..100 {
+            if child
+                .try_wait()
+                .expect("check the contained child")
+                .is_some()
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("closing the Job Object did not terminate its child");
+    }
 
     #[test]
     fn parses_app_server_notifications_and_approval_requests_separately() {

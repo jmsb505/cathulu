@@ -1280,3 +1280,696 @@ BEGIN SELECT RAISE(ABORT, 'Owner decision relays are retained for audit'); END;
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (18, CAST(strftime('%s','now') AS INTEGER));
 "#;
+
+pub(crate) const VERSION_19: &str = r#"
+ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
+  CHECK(status IN ('active', 'paused', 'completed', 'archived'));
+ALTER TABLE projects ADD COLUMN priority INTEGER NOT NULL DEFAULT 0
+  CHECK(priority BETWEEN -100 AND 100);
+ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 1
+  CHECK(revision > 0);
+
+ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER REFERENCES tasks(id) ON DELETE RESTRICT;
+ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0
+  CHECK(priority BETWEEN -100 AND 100);
+ALTER TABLE tasks ADD COLUMN due_date TEXT;
+ALTER TABLE tasks ADD COLUMN effort_minutes INTEGER CHECK(effort_minutes IS NULL OR effort_minutes >= 0);
+ALTER TABLE tasks ADD COLUMN next_action TEXT;
+ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1
+  CHECK(revision > 0);
+ALTER TABLE tasks ADD COLUMN completed_at INTEGER;
+ALTER TABLE tasks ADD COLUMN completion_kind TEXT
+  CHECK(completion_kind IS NULL OR completion_kind IN ('administrative', 'verified_run', 'legacy_unknown'));
+ALTER TABLE tasks ADD COLUMN completion_run_id INTEGER REFERENCES runs(id) ON DELETE RESTRICT;
+ALTER TABLE tasks ADD COLUMN cancelled_at INTEGER;
+ALTER TABLE tasks ADD COLUMN cancellation_reason TEXT
+  CHECK(cancellation_reason IS NULL OR length(trim(cancellation_reason)) BETWEEN 1 AND 1000);
+
+-- Old direct status writes did not preserve the source of completion/blocking.
+-- Carry that uncertainty forward explicitly instead of inventing provenance.
+UPDATE tasks
+SET completion_kind = 'legacy_unknown', completed_at = updated_at
+WHERE status = 'completed';
+UPDATE tasks
+SET cancellation_reason = 'legacy_unknown', cancelled_at = updated_at
+WHERE status = 'cancelled';
+
+CREATE TABLE task_dependencies (
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  prerequisite_task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(task_id, prerequisite_task_id),
+  CHECK(task_id <> prerequisite_task_id)
+);
+CREATE INDEX task_dependencies_prerequisite_idx
+  ON task_dependencies(prerequisite_task_id, task_id);
+
+CREATE TRIGGER task_dependency_scope_insert BEFORE INSERT ON task_dependencies
+WHEN NOT EXISTS (
+  SELECT 1 FROM tasks dependent
+  JOIN objectives dependent_objective ON dependent_objective.id = dependent.objective_id
+  JOIN tasks prerequisite ON prerequisite.id = NEW.prerequisite_task_id
+  JOIN objectives prerequisite_objective ON prerequisite_objective.id = prerequisite.objective_id
+  WHERE dependent.id = NEW.task_id
+    AND dependent_objective.project_id = prerequisite_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'task prerequisites must belong to the same project'); END;
+
+CREATE TRIGGER task_dependency_acyclic_insert BEFORE INSERT ON task_dependencies
+WHEN EXISTS (
+  WITH RECURSIVE prerequisites(task_id) AS (
+    SELECT NEW.prerequisite_task_id
+    UNION
+    SELECT dependency.prerequisite_task_id
+    FROM task_dependencies dependency
+    JOIN prerequisites chain ON dependency.task_id = chain.task_id
+  )
+  SELECT 1 FROM prerequisites WHERE task_id = NEW.task_id
+)
+BEGIN SELECT RAISE(ABORT, 'task prerequisite cycle is not allowed'); END;
+
+CREATE TRIGGER task_parent_scope_insert BEFORE INSERT ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM tasks parent
+  JOIN objectives parent_objective ON parent_objective.id = parent.objective_id
+  JOIN objectives child_objective ON child_objective.id = NEW.objective_id
+  WHERE parent.id = NEW.parent_task_id
+    AND parent_objective.project_id = child_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'parent task must belong to the same project'); END;
+
+CREATE TRIGGER task_parent_scope_update BEFORE UPDATE OF parent_task_id, objective_id ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM tasks parent
+  JOIN objectives parent_objective ON parent_objective.id = parent.objective_id
+  JOIN objectives child_objective ON child_objective.id = NEW.objective_id
+  WHERE parent.id = NEW.parent_task_id
+    AND parent_objective.project_id = child_objective.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'parent task must belong to the same project'); END;
+
+CREATE TRIGGER task_parent_acyclic_insert BEFORE INSERT ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND EXISTS (
+  WITH RECURSIVE parents(task_id) AS (
+    SELECT NEW.parent_task_id
+    UNION
+    SELECT task.parent_task_id FROM tasks task
+    JOIN parents chain ON task.id = chain.task_id
+    WHERE task.parent_task_id IS NOT NULL
+  )
+  SELECT 1 FROM parents WHERE task_id = NEW.id
+)
+BEGIN SELECT RAISE(ABORT, 'task parent cycle is not allowed'); END;
+
+CREATE TRIGGER task_parent_acyclic_update BEFORE UPDATE OF parent_task_id ON tasks
+WHEN NEW.parent_task_id IS NOT NULL AND EXISTS (
+  WITH RECURSIVE parents(task_id) AS (
+    SELECT NEW.parent_task_id
+    UNION
+    SELECT task.parent_task_id FROM tasks task
+    JOIN parents chain ON task.id = chain.task_id
+    WHERE task.parent_task_id IS NOT NULL
+  )
+  SELECT 1 FROM parents WHERE task_id = NEW.id
+)
+BEGIN SELECT RAISE(ABORT, 'task parent cycle is not allowed'); END;
+
+CREATE TABLE task_blockers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+  reason_code TEXT NOT NULL CHECK(reason_code IN ('waiting', 'decision', 'external', 'resource', 'other', 'legacy_unknown')),
+  reason TEXT NOT NULL CHECK(length(trim(reason)) BETWEEN 1 AND 1000),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+  resolution TEXT,
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  CHECK((status = 'open' AND resolution IS NULL AND resolved_at IS NULL)
+     OR (status = 'resolved' AND resolution IS NOT NULL AND resolved_at IS NOT NULL))
+);
+CREATE INDEX task_blockers_open_idx ON task_blockers(task_id, created_at, id) WHERE status = 'open';
+CREATE TRIGGER task_blocker_no_delete BEFORE DELETE ON task_blockers
+BEGIN SELECT RAISE(ABORT, 'task blockers are retained for audit'); END;
+
+CREATE TRIGGER task_completion_metadata_insert BEFORE INSERT ON tasks
+WHEN NEW.status = 'completed' AND (
+  NEW.completion_kind IS NULL OR NEW.completed_at IS NULL
+  OR (NEW.completion_kind = 'verified_run' AND NEW.completion_run_id IS NULL)
+)
+BEGIN SELECT RAISE(ABORT, 'completed tasks require explicit completion provenance'); END;
+CREATE TRIGGER task_completion_metadata_update BEFORE UPDATE OF status, completion_kind, completed_at, completion_run_id ON tasks
+WHEN NEW.status = 'completed' AND (
+  NEW.completion_kind IS NULL OR NEW.completed_at IS NULL
+  OR (NEW.completion_kind = 'verified_run' AND NEW.completion_run_id IS NULL)
+)
+BEGIN SELECT RAISE(ABORT, 'completed tasks require explicit completion provenance'); END;
+CREATE TRIGGER task_completion_run_scope_update BEFORE UPDATE OF status, completion_kind, completion_run_id ON tasks
+WHEN NEW.status = 'completed' AND NEW.completion_kind = 'verified_run' AND NOT EXISTS (
+  SELECT 1 FROM runs run
+  JOIN objectives task_objective ON task_objective.id = (SELECT objective_id FROM tasks WHERE id = NEW.id)
+  WHERE run.id = NEW.completion_run_id AND run.task_id = NEW.id
+    AND run.project_id = task_objective.project_id AND run.status = 'verified_success'
+)
+BEGIN SELECT RAISE(ABORT, 'verified task completion must reference its successful linked run'); END;
+
+CREATE TRIGGER task_cancellation_metadata_insert BEFORE INSERT ON tasks
+WHEN NEW.status = 'cancelled' AND (NEW.cancellation_reason IS NULL OR NEW.cancelled_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'cancelled tasks require an explicit reason and timestamp'); END;
+CREATE TRIGGER task_cancellation_metadata_update BEFORE UPDATE OF status, cancellation_reason, cancelled_at ON tasks
+WHEN NEW.status = 'cancelled' AND (NEW.cancellation_reason IS NULL OR NEW.cancelled_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'cancelled tasks require an explicit reason and timestamp'); END;
+
+INSERT INTO task_blockers(task_id, reason_code, reason, status, created_at)
+SELECT id, 'legacy_unknown', 'Legacy task was marked blocked before structured blocker reasons were available.',
+       'open', updated_at
+FROM tasks WHERE status = 'blocked';
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (19, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_20: &str = r#"
+CREATE TABLE project_checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  summary_text TEXT NOT NULL CHECK(length(trim(summary_text)) BETWEEN 1 AND 2000),
+  summary_source TEXT NOT NULL CHECK(summary_source = 'unscoped_local_client'),
+  source_event_id INTEGER NOT NULL CHECK(source_event_id >= 0),
+  project_revision INTEGER NOT NULL CHECK(project_revision > 0),
+  repository_head TEXT,
+  repository_dirty INTEGER NOT NULL CHECK(repository_dirty IN (0, 1)),
+  repository_observed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE(project_id, revision)
+);
+CREATE INDEX project_checkpoints_latest_idx
+  ON project_checkpoints(project_id, revision DESC);
+CREATE TRIGGER project_checkpoints_no_update BEFORE UPDATE ON project_checkpoints
+BEGIN SELECT RAISE(ABORT, 'project checkpoints are immutable'); END;
+CREATE TRIGGER project_checkpoints_no_delete BEFORE DELETE ON project_checkpoints
+BEGIN SELECT RAISE(ABORT, 'project checkpoints are immutable'); END;
+
+CREATE TABLE project_checkpoint_tasks (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  task_id INTEGER NOT NULL,
+  objective_id INTEGER NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  status TEXT NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY(checkpoint_id, task_id)
+);
+CREATE TRIGGER project_checkpoint_tasks_no_update BEFORE UPDATE ON project_checkpoint_tasks
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are immutable'); END;
+CREATE TRIGGER project_checkpoint_tasks_no_delete BEFORE DELETE ON project_checkpoint_tasks
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are immutable'); END;
+
+CREATE TABLE project_checkpoint_objectives (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  objective_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  PRIMARY KEY(checkpoint_id, objective_id)
+);
+CREATE TRIGGER project_checkpoint_objectives_no_update BEFORE UPDATE ON project_checkpoint_objectives
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are immutable'); END;
+CREATE TRIGGER project_checkpoint_objectives_no_delete BEFORE DELETE ON project_checkpoint_objectives
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are immutable'); END;
+
+CREATE TABLE project_checkpoint_artifacts (
+  checkpoint_id INTEGER NOT NULL REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  artifact_id INTEGER NOT NULL REFERENCES evidence_artifacts(id) ON DELETE RESTRICT,
+  uri TEXT NOT NULL,
+  content_hash TEXT,
+  PRIMARY KEY(checkpoint_id, artifact_id)
+);
+CREATE TRIGGER project_checkpoint_artifacts_no_update BEFORE UPDATE ON project_checkpoint_artifacts
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are immutable'); END;
+CREATE TRIGGER project_checkpoint_artifacts_no_delete BEFORE DELETE ON project_checkpoint_artifacts
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are immutable'); END;
+
+CREATE TABLE project_checkpoint_seals (
+  checkpoint_id INTEGER PRIMARY KEY REFERENCES project_checkpoints(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER project_checkpoint_seals_no_update BEFORE UPDATE ON project_checkpoint_seals
+BEGIN SELECT RAISE(ABORT, 'checkpoint seals are immutable'); END;
+CREATE TRIGGER project_checkpoint_seals_no_delete BEFORE DELETE ON project_checkpoint_seals
+BEGIN SELECT RAISE(ABORT, 'checkpoint seals are immutable'); END;
+CREATE TRIGGER project_checkpoint_tasks_sealed BEFORE INSERT ON project_checkpoint_tasks
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint task snapshots are sealed'); END;
+CREATE TRIGGER project_checkpoint_objectives_sealed BEFORE INSERT ON project_checkpoint_objectives
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint objective snapshots are sealed'); END;
+CREATE TRIGGER project_checkpoint_artifacts_sealed BEFORE INSERT ON project_checkpoint_artifacts
+WHEN EXISTS (SELECT 1 FROM project_checkpoint_seals WHERE checkpoint_id = NEW.checkpoint_id)
+BEGIN SELECT RAISE(ABORT, 'checkpoint artifact references are sealed'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (20, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_21: &str = r#"
+CREATE TABLE provider_sessions (
+  provider_id TEXT NOT NULL CHECK(length(provider_id) BETWEEN 1 AND 64),
+  session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 256),
+  binding_key TEXT NOT NULL REFERENCES role_thread_bindings(binding_key) ON DELETE RESTRICT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
+  role_key TEXT REFERENCES logical_agent_roles(role_key) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'inactive', 'unknown')),
+  last_turn_id TEXT CHECK(last_turn_id IS NULL OR length(last_turn_id) BETWEEN 1 AND 256),
+  permission_hash TEXT CHECK(permission_hash IS NULL OR
+    (length(permission_hash) = 64 AND permission_hash NOT GLOB '*[^0-9a-fA-F]*')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, session_id),
+  CHECK(role_key IS NOT NULL OR delegation_id IS NOT NULL),
+  CHECK(length(binding_key) BETWEEN 1 AND 256)
+);
+CREATE UNIQUE INDEX provider_sessions_active_binding_idx
+  ON provider_sessions(provider_id, binding_key) WHERE status = 'active';
+CREATE INDEX provider_sessions_binding_history_idx
+  ON provider_sessions(binding_key, updated_at DESC, provider_id);
+CREATE TRIGGER provider_sessions_scope_valid BEFORE INSERT ON provider_sessions
+WHEN NOT EXISTS (
+  SELECT 1 FROM role_thread_bindings binding
+  WHERE binding.binding_key = NEW.binding_key
+    AND binding.project_id IS NEW.project_id
+    AND binding.role_key IS NEW.role_key
+    AND binding.delegation_id IS NEW.delegation_id
+    AND (NEW.provider_id <> 'codex'
+      OR (binding.thread_id = NEW.session_id AND binding.status = NEW.status))
+)
+BEGIN SELECT RAISE(ABORT, 'provider session must match its logical role scope and Codex compatibility binding'); END;
+CREATE TRIGGER provider_sessions_identity_guard BEFORE UPDATE ON provider_sessions
+WHEN NEW.provider_id IS NOT OLD.provider_id OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.binding_key IS NOT OLD.binding_key OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.role_key IS NOT OLD.role_key OR NEW.delegation_id IS NOT OLD.delegation_id
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+  OR (OLD.permission_hash IS NOT NULL AND NEW.permission_hash IS NOT OLD.permission_hash)
+BEGIN SELECT RAISE(ABORT, 'provider session identity is immutable'); END;
+CREATE TRIGGER provider_sessions_no_delete BEFORE DELETE ON provider_sessions
+BEGIN SELECT RAISE(ABORT, 'provider sessions are retained for audit'); END;
+
+INSERT INTO provider_sessions
+  (provider_id, session_id, binding_key, project_id, role_key, delegation_id,
+   status, last_turn_id, permission_hash, created_at, updated_at)
+SELECT 'codex', thread_id, binding_key, project_id, role_key, delegation_id,
+       status, last_turn_id, NULL, created_at, updated_at
+FROM role_thread_bindings;
+
+CREATE TABLE provider_attempts (
+  attempt_key TEXT PRIMARY KEY CHECK(length(attempt_key) BETWEEN 1 AND 200),
+  provider_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  binding_key TEXT NOT NULL REFERENCES role_thread_bindings(binding_key) ON DELETE RESTRICT,
+  dispatch_id INTEGER REFERENCES role_dispatch_outbox(id) ON DELETE RESTRICT,
+  inbox_id INTEGER REFERENCES role_turn_inbox(id) ON DELETE RESTRICT,
+  delegation_id INTEGER REFERENCES delegations(id) ON DELETE RESTRICT,
+  request_hash TEXT NOT NULL CHECK(
+    length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-fA-F]*'
+  ),
+  status TEXT NOT NULL CHECK(status IN (
+    'created', 'submitted', 'ack_unknown', 'running', 'completed', 'failed', 'blocked', 'needs_reconcile'
+  )),
+  turn_id TEXT CHECK(turn_id IS NULL OR length(turn_id) BETWEEN 1 AND 256),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(provider_id, session_id)
+    REFERENCES provider_sessions(provider_id, session_id) ON DELETE RESTRICT,
+  CHECK((dispatch_id IS NOT NULL) <> (inbox_id IS NOT NULL))
+);
+CREATE INDEX provider_attempts_session_idx
+  ON provider_attempts(provider_id, session_id, created_at DESC);
+CREATE INDEX provider_attempts_turn_idx
+  ON provider_attempts(provider_id, session_id, turn_id);
+CREATE UNIQUE INDEX provider_attempts_turn_identity_idx
+  ON provider_attempts(provider_id, session_id, turn_id) WHERE turn_id IS NOT NULL;
+CREATE UNIQUE INDEX provider_attempts_dispatch_active_idx
+  ON provider_attempts(dispatch_id)
+  WHERE dispatch_id IS NOT NULL AND status IN ('created','submitted','ack_unknown','running','needs_reconcile');
+CREATE UNIQUE INDEX provider_attempts_inbox_active_idx
+  ON provider_attempts(inbox_id)
+  WHERE inbox_id IS NOT NULL AND status IN ('created','submitted','ack_unknown','running','needs_reconcile');
+CREATE TRIGGER provider_attempts_scope_valid BEFORE INSERT ON provider_attempts
+WHEN NOT EXISTS (
+  SELECT 1 FROM provider_sessions session
+  WHERE session.provider_id = NEW.provider_id AND session.session_id = NEW.session_id
+    AND session.binding_key = NEW.binding_key AND session.status = 'active'
+)
+  OR (NEW.dispatch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM role_dispatch_outbox outbox
+    JOIN delegations target ON target.id = outbox.delegation_id
+    JOIN provider_sessions session ON session.provider_id = NEW.provider_id
+      AND session.session_id = NEW.session_id AND session.binding_key = NEW.binding_key
+    WHERE outbox.id = NEW.dispatch_id AND outbox.delegation_id = NEW.delegation_id
+      AND session.project_id = target.project_id
+      AND (
+        session.delegation_id = target.id
+        OR (session.role_key = 'project-manager:' || target.project_id
+          AND target.role = 'sub_overseer' AND target.parent_delegation_id IS NULL)
+      )
+  ))
+  OR (NEW.inbox_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM role_turn_inbox inbox
+    JOIN provider_sessions session ON session.provider_id = NEW.provider_id
+      AND session.session_id = NEW.session_id AND session.binding_key = NEW.binding_key
+    WHERE inbox.id = NEW.inbox_id AND inbox.target_binding_key = NEW.binding_key
+      AND inbox.target_delegation_id IS NEW.delegation_id
+      AND (
+        (inbox.target_binding_key = 'main-overseer'
+          AND session.role_key = 'main-overseer' AND session.project_id IS NULL)
+        OR (inbox.target_binding_key <> 'main-overseer'
+          AND session.project_id = inbox.project_id)
+      )
+  ))
+BEGIN SELECT RAISE(ABORT, 'provider attempt must match its role session and queued record'); END;
+CREATE TRIGGER provider_attempts_identity_guard BEFORE UPDATE ON provider_attempts
+WHEN NEW.attempt_key IS NOT OLD.attempt_key OR NEW.provider_id IS NOT OLD.provider_id
+  OR NEW.session_id IS NOT OLD.session_id OR NEW.binding_key IS NOT OLD.binding_key
+  OR NEW.dispatch_id IS NOT OLD.dispatch_id OR NEW.inbox_id IS NOT OLD.inbox_id
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.request_hash IS NOT OLD.request_hash
+  OR (OLD.turn_id IS NOT NULL AND NEW.turn_id IS NOT OLD.turn_id)
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+BEGIN SELECT RAISE(ABORT, 'provider attempt identity is immutable'); END;
+CREATE TRIGGER provider_attempts_state_guard BEFORE UPDATE OF status ON provider_attempts
+WHEN NEW.status IS NOT OLD.status AND NOT (
+  (OLD.status = 'created' AND NEW.status IN ('submitted','ack_unknown','running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'submitted' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'ack_unknown' AND NEW.status IN ('running','completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'running' AND NEW.status IN ('completed','failed','blocked','needs_reconcile'))
+  OR (OLD.status = 'needs_reconcile' AND NEW.status IN ('completed','failed','blocked'))
+)
+BEGIN SELECT RAISE(ABORT, 'invalid provider attempt state transition'); END;
+CREATE TRIGGER provider_attempts_no_delete BEFORE DELETE ON provider_attempts
+BEGIN SELECT RAISE(ABORT, 'provider attempts are retained for reconciliation'); END;
+
+CREATE TABLE provider_context_receipts (
+  provider_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  attempt_key TEXT NOT NULL REFERENCES provider_attempts(attempt_key) ON DELETE RESTRICT,
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+  content_hash TEXT NOT NULL CHECK(
+    length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-fA-F]*'
+  ),
+  delivery TEXT NOT NULL CHECK(delivery IN ('full', 'delta', 'reference')),
+  state TEXT NOT NULL CHECK(state IN ('selected', 'submitted', 'agent_reported_read')),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, session_id, attempt_key, memory_id),
+  FOREIGN KEY(provider_id, session_id)
+    REFERENCES provider_sessions(provider_id, session_id) ON DELETE RESTRICT
+);
+CREATE INDEX provider_context_receipts_attempt_idx
+  ON provider_context_receipts(attempt_key, memory_id);
+CREATE TRIGGER provider_context_receipts_scope_valid BEFORE INSERT ON provider_context_receipts
+WHEN NOT EXISTS (
+  SELECT 1 FROM provider_attempts attempt
+  WHERE attempt.attempt_key = NEW.attempt_key
+    AND attempt.provider_id = NEW.provider_id AND attempt.session_id = NEW.session_id
+)
+BEGIN SELECT RAISE(ABORT, 'provider context receipt must match its attempt session'); END;
+CREATE TRIGGER provider_context_receipts_identity_guard BEFORE UPDATE ON provider_context_receipts
+WHEN NEW.provider_id IS NOT OLD.provider_id OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.attempt_key IS NOT OLD.attempt_key OR NEW.memory_id IS NOT OLD.memory_id
+  OR NEW.content_hash IS NOT OLD.content_hash OR NEW.delivery IS NOT OLD.delivery
+  OR NEW.observed_at < OLD.observed_at
+  OR NOT (
+    NEW.state IS OLD.state
+    OR (OLD.state = 'selected' AND NEW.state = 'submitted')
+    OR (OLD.state = 'submitted' AND NEW.state = 'agent_reported_read')
+  )
+BEGIN SELECT RAISE(ABORT, 'provider context receipt identity or state is invalid'); END;
+CREATE TRIGGER provider_context_receipts_no_delete BEFORE DELETE ON provider_context_receipts
+BEGIN SELECT RAISE(ABORT, 'provider context receipts are retained for audit'); END;
+
+ALTER TABLE role_thread_capabilities ADD COLUMN provider_id TEXT;
+ALTER TABLE role_thread_capabilities ADD COLUMN provider_session_id TEXT;
+ALTER TABLE role_thread_capabilities ADD COLUMN attempt_key TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN provider_id TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN provider_session_id TEXT;
+ALTER TABLE main_overseer_capability ADD COLUMN attempt_key TEXT;
+CREATE TRIGGER role_capability_provider_attempt_insert_valid
+BEFORE INSERT ON role_thread_capabilities
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = NEW.binding_key
+      AND attempt.delegation_id = NEW.delegation_id
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability must match an active provider attempt'); END;
+CREATE TRIGGER main_capability_provider_attempt_insert_valid
+BEFORE INSERT ON main_overseer_capability
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = 'main-overseer'
+      AND attempt.inbox_id IS NOT NULL
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'Main capability must match its active provider inbox attempt'); END;
+CREATE TRIGGER role_capability_provider_attempt_valid
+BEFORE UPDATE OF provider_id, provider_session_id, attempt_key ON role_thread_capabilities
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = NEW.binding_key
+      AND attempt.delegation_id = NEW.delegation_id
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability must match an active provider attempt'); END;
+CREATE TRIGGER main_capability_provider_attempt_valid
+BEFORE UPDATE OF provider_id, provider_session_id, attempt_key ON main_overseer_capability
+WHEN (NEW.provider_id IS NULL) <> (NEW.provider_session_id IS NULL)
+  OR (NEW.provider_id IS NULL) <> (NEW.attempt_key IS NULL)
+  OR (NEW.provider_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM provider_attempts attempt
+    WHERE attempt.provider_id = NEW.provider_id
+      AND attempt.session_id = NEW.provider_session_id
+      AND attempt.attempt_key = NEW.attempt_key
+      AND attempt.binding_key = 'main-overseer'
+      AND attempt.inbox_id IS NOT NULL
+      AND attempt.status IN ('created','submitted','ack_unknown','running','needs_reconcile')
+  ))
+BEGIN SELECT RAISE(ABORT, 'Main capability must match its active provider inbox attempt'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (21, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+pub(crate) const VERSION_22: &str = r#"
+-- A single logical role cannot have active sessions at two providers. When upgrading a v21
+-- database that already has a cross-provider collision, preserve both records but mark every
+-- conflicting session unknown so a later explicit session record can resolve the role safely.
+UPDATE provider_sessions
+SET status = 'unknown', updated_at = MAX(updated_at, CAST(strftime('%s','now') AS INTEGER))
+WHERE status = 'active' AND binding_key IN (
+  SELECT binding_key FROM provider_sessions
+  WHERE status = 'active'
+  GROUP BY binding_key HAVING COUNT(*) > 1
+);
+DROP INDEX provider_sessions_active_binding_idx;
+CREATE UNIQUE INDEX provider_sessions_active_binding_idx
+  ON provider_sessions(binding_key) WHERE status = 'active';
+
+CREATE TABLE workspace_leases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  delegation_id INTEGER NOT NULL REFERENCES delegations(id) ON DELETE RESTRICT,
+  role_kind TEXT NOT NULL CHECK(role_kind IN ('sub_overseer', 'worker')),
+  role_binding_key TEXT NOT NULL CHECK(length(role_binding_key) BETWEEN 1 AND 256),
+  access TEXT NOT NULL CHECK(access IN ('read_only', 'workspace_write')),
+  owner_id TEXT NOT NULL CHECK(length(trim(owner_id)) BETWEEN 1 AND 256),
+  workspace_path TEXT NOT NULL CHECK(length(workspace_path) BETWEEN 1 AND 4096),
+  workspace_path_hash TEXT NOT NULL CHECK(length(workspace_path_hash) = 64
+    AND workspace_path_hash NOT GLOB '*[^0-9a-fA-F]*'),
+  common_dir_hash TEXT NOT NULL CHECK(length(common_dir_hash) = 64
+    AND common_dir_hash NOT GLOB '*[^0-9a-fA-F]*'),
+  base_commit TEXT NOT NULL CHECK(length(base_commit) BETWEEN 7 AND 128),
+  status TEXT NOT NULL CHECK(status IN ('active', 'needs_reconcile', 'released', 'revoked', 'expired')),
+  lease_expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK((role_kind = 'sub_overseer' AND access = 'read_only'
+      AND role_binding_key = 'project-manager:' || project_id)
+    OR (role_kind = 'worker' AND role_binding_key = 'worker:' || delegation_id))
+);
+CREATE UNIQUE INDEX workspace_leases_active_path_idx
+  ON workspace_leases(workspace_path_hash)
+  WHERE status IN ('active', 'needs_reconcile');
+CREATE UNIQUE INDEX workspace_leases_active_role_idx
+  ON workspace_leases(role_binding_key)
+  WHERE status IN ('active', 'needs_reconcile');
+CREATE UNIQUE INDEX workspace_leases_one_writer_per_project_idx
+  ON workspace_leases(project_id)
+  WHERE access = 'workspace_write' AND status IN ('active', 'needs_reconcile');
+CREATE INDEX workspace_leases_delegation_history_idx
+  ON workspace_leases(delegation_id, created_at DESC, id DESC);
+CREATE TRIGGER workspace_leases_scope_valid BEFORE INSERT ON workspace_leases
+WHEN NOT EXISTS (
+  SELECT 1 FROM delegations delegation
+  WHERE delegation.id = NEW.delegation_id
+    AND delegation.project_id = NEW.project_id
+    AND delegation.role = NEW.role_kind
+    AND delegation.status IN ('prepared', 'dispatched')
+)
+BEGIN SELECT RAISE(ABORT, 'workspace lease must match an active project delegation'); END;
+CREATE TRIGGER workspace_leases_identity_immutable BEFORE UPDATE ON workspace_leases
+WHEN NEW.id IS NOT OLD.id OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.delegation_id IS NOT OLD.delegation_id OR NEW.role_kind IS NOT OLD.role_kind
+  OR NEW.role_binding_key IS NOT OLD.role_binding_key OR NEW.access IS NOT OLD.access
+  OR NEW.owner_id IS NOT OLD.owner_id OR NEW.workspace_path IS NOT OLD.workspace_path
+  OR NEW.workspace_path_hash IS NOT OLD.workspace_path_hash
+  OR NEW.common_dir_hash IS NOT OLD.common_dir_hash OR NEW.base_commit IS NOT OLD.base_commit
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.updated_at < OLD.updated_at
+  OR NOT (
+    NEW.status IS OLD.status
+    OR (OLD.status = 'active' AND NEW.status IN ('needs_reconcile','released','revoked','expired'))
+    OR (OLD.status = 'needs_reconcile' AND NEW.status IN ('released','revoked'))
+  )
+BEGIN SELECT RAISE(ABORT, 'workspace lease identity or state transition is invalid'); END;
+CREATE TRIGGER workspace_leases_no_delete BEFORE DELETE ON workspace_leases
+BEGIN SELECT RAISE(ABORT, 'workspace leases are retained for recovery and audit'); END;
+
+CREATE TABLE workspace_lease_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES workspace_leases(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL CHECK(event_type IN (
+    'claimed','renewed','released','revoked','expired','needs_reconcile','reconciled'
+  )),
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX workspace_lease_events_lease_idx ON workspace_lease_events(lease_id, id);
+CREATE TRIGGER workspace_lease_events_no_update BEFORE UPDATE ON workspace_lease_events
+BEGIN SELECT RAISE(ABORT, 'workspace lease events are append-only'); END;
+CREATE TRIGGER workspace_lease_events_no_delete BEFORE DELETE ON workspace_lease_events
+BEGIN SELECT RAISE(ABORT, 'workspace lease events are retained for audit'); END;
+
+ALTER TABLE provider_attempts ADD COLUMN workspace_lease_id INTEGER
+  REFERENCES workspace_leases(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX provider_attempts_workspace_lease_once_idx
+  ON provider_attempts(workspace_lease_id)
+  WHERE workspace_lease_id IS NOT NULL;
+CREATE TRIGGER provider_attempts_lease_insert_valid BEFORE INSERT ON provider_attempts
+WHEN NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM workspace_leases lease
+  WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+    AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+    AND lease.project_id = (SELECT project_id FROM delegations WHERE id = NEW.delegation_id)
+    AND lease.delegation_id = NEW.delegation_id
+)
+BEGIN SELECT RAISE(ABORT, 'provider attempt must match a current active workspace lease'); END;
+CREATE TRIGGER provider_attempts_lease_update_valid BEFORE UPDATE OF workspace_lease_id ON provider_attempts
+WHEN (OLD.workspace_lease_id IS NOT NULL AND NEW.workspace_lease_id IS NOT OLD.workspace_lease_id)
+  OR (NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM workspace_leases lease
+    WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+      AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+      AND lease.project_id = (SELECT project_id FROM delegations WHERE id = NEW.delegation_id)
+      AND lease.delegation_id = NEW.delegation_id
+  ))
+BEGIN SELECT RAISE(ABORT, 'provider attempt workspace lease is immutable or no longer active'); END;
+
+ALTER TABLE role_thread_capabilities ADD COLUMN workspace_lease_id INTEGER
+  REFERENCES workspace_leases(id) ON DELETE RESTRICT;
+CREATE TRIGGER role_capability_workspace_lease_valid BEFORE UPDATE OF workspace_lease_id
+ON role_thread_capabilities
+WHEN NEW.workspace_lease_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM workspace_leases lease
+  WHERE lease.id = NEW.workspace_lease_id AND lease.status = 'active'
+    AND lease.lease_expires_at > CAST(strftime('%s','now') AS INTEGER)
+    AND lease.project_id = NEW.project_id AND lease.delegation_id = NEW.delegation_id
+    AND lease.role_kind = NEW.role_kind
+)
+BEGIN SELECT RAISE(ABORT, 'role capability must match a current active workspace lease'); END;
+CREATE TRIGGER role_capability_workspace_lease_immutable BEFORE UPDATE OF workspace_lease_id
+ON role_thread_capabilities
+WHEN OLD.workspace_lease_id IS NOT NULL AND NEW.workspace_lease_id IS NOT OLD.workspace_lease_id
+  AND NOT (OLD.status = 'revoked' AND NEW.workspace_lease_id IS NULL AND EXISTS (
+    SELECT 1 FROM workspace_leases lease
+    WHERE lease.id = OLD.workspace_lease_id AND lease.status IN ('released','revoked','expired')
+  ))
+BEGIN SELECT RAISE(ABORT, 'role capability workspace lease cannot be replaced'); END;
+CREATE TRIGGER role_capability_workspace_attempt_valid
+BEFORE UPDATE OF workspace_lease_id, provider_id, provider_session_id, attempt_key
+ON role_thread_capabilities
+WHEN NEW.attempt_key IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM provider_attempts attempt
+  WHERE attempt.attempt_key = NEW.attempt_key
+    AND attempt.provider_id = NEW.provider_id
+    AND attempt.session_id = NEW.provider_session_id
+    AND attempt.binding_key = NEW.binding_key
+    AND attempt.delegation_id = NEW.delegation_id
+    AND attempt.workspace_lease_id IS NEW.workspace_lease_id
+)
+BEGIN SELECT RAISE(ABORT, 'role capability and provider attempt must share a workspace lease'); END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (22, CAST(strftime('%s','now') AS INTEGER));
+"#;
+
+// VERSION_23 is run with foreign-key enforcement temporarily disabled by Store::initialize
+// because projects is referenced by many retained tables. The migration creates a replacement
+// table, copies the stable project IDs and existing repository state, then swaps it into place.
+pub(crate) const VERSION_23: &str = r#"
+DROP TRIGGER IF EXISTS projects_create_logical_pm;
+
+CREATE TABLE projects_v23 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  path TEXT,
+  kind TEXT NOT NULL DEFAULT 'repository'
+    CHECK(kind IN ('repository', 'non_code')),
+  visibility TEXT NOT NULL DEFAULT 'shared'
+    CHECK(visibility IN ('private', 'shared')),
+  git_branch TEXT,
+  git_head TEXT,
+  git_dirty INTEGER NOT NULL DEFAULT 0,
+  changed_paths_json TEXT NOT NULL DEFAULT '[]',
+  registered_at INTEGER NOT NULL,
+  reconciled_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active', 'paused', 'completed', 'archived')),
+  priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN -100 AND 100),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+  CHECK((kind = 'repository' AND path IS NOT NULL)
+     OR (kind = 'non_code' AND path IS NULL))
+);
+
+INSERT INTO projects_v23
+  (id, name, path, kind, visibility, git_branch, git_head, git_dirty,
+   changed_paths_json, registered_at, reconciled_at, status, priority, revision)
+SELECT id, name, path, 'repository', 'shared', git_branch, git_head, git_dirty,
+       changed_paths_json, registered_at, reconciled_at, status, priority, revision
+FROM projects;
+
+DROP TABLE projects;
+ALTER TABLE projects_v23 RENAME TO projects;
+CREATE UNIQUE INDEX projects_repository_path_unique
+  ON projects(path) WHERE path IS NOT NULL;
+
+CREATE TRIGGER projects_create_logical_pm AFTER INSERT ON projects
+BEGIN
+  INSERT INTO logical_agent_roles
+    (role_key, role_kind, project_id, memory_scope_key, receiver_scope_key, tool_profile_key, created_at)
+  VALUES ('project-manager:' || NEW.id, 'project_manager', NEW.id, 'project:' || NEW.id,
+          'scope:project-manager:' || NEW.id, 'project-manager-v1', NEW.registered_at);
+END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (23, CAST(strftime('%s','now') AS INTEGER));
+"#;

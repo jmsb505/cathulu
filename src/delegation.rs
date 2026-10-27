@@ -3212,17 +3212,7 @@ impl Store {
 }
 
 fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<String>, String> {
-    let project_path = store
-        .connection()?
-        .raw()
-        .query_row(
-            "SELECT path FROM projects WHERE id = ?1",
-            params![project_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(sqlite_error)?
-        .ok_or_else(|| format!("registered project {project_id} was not found"))?;
+    let project_path = store.project_repository_path(project_id)?;
     let mut command = Command::new("git");
     crate::suppress_windows_console(&mut command);
     let output = command
@@ -3240,7 +3230,7 @@ fn current_registered_head(store: &Store, project_id: i64) -> Result<Option<Stri
     Ok((!head.is_empty()).then(|| head.to_string()))
 }
 
-fn normalize_and_validate_packet(
+pub(crate) fn normalize_and_validate_packet(
     packet: &DelegationTaskPacket,
 ) -> Result<DelegationTaskPacket, String> {
     let mut packet = packet.clone();
@@ -3303,7 +3293,7 @@ fn normalize_and_validate_packet(
     Ok(packet)
 }
 
-fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String> {
+pub(crate) fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String> {
     let mut report = report.clone();
     report.summary = report.summary.trim().to_string();
     report.outcome = report.outcome.trim().to_string();
@@ -3395,7 +3385,7 @@ fn normalize_worker_report(report: &WorkerReport) -> Result<WorkerReport, String
     Ok(report)
 }
 
-fn validate_report_scope(
+pub(crate) fn validate_report_scope(
     report: &WorkerReport,
     packet: &DelegationTaskPacket,
 ) -> Result<(), String> {
@@ -3919,7 +3909,7 @@ fn unresolved_owner_approval_count(
         .map_err(sqlite_error)
 }
 
-fn validate_packet_references(
+pub(crate) fn validate_packet_references(
     transaction: &Transaction<'_>,
     project_id: i64,
     objective_id: i64,

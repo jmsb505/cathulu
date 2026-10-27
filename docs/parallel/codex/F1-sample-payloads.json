@@ -1,0 +1,204 @@
+{
+  "contractVersion": 1,
+  "error": {
+    "kind": "uncertain",
+    "message": "Submission acknowledgement was lost; reconcile before another attempt."
+  },
+  "event": {
+    "event": {
+      "kind": "turn_completed",
+      "outcome": "completed",
+      "turn": {
+        "session": {
+          "providerId": "codex",
+          "sessionId": "sample-session"
+        },
+        "turnId": "sample-turn"
+      }
+    },
+    "eventId": "sample-event",
+    "providerId": "codex",
+    "sequence": 1
+  },
+  "routingCandidate": {
+    "allRequiredDisclosuresGranted": false,
+    "availability": {
+      "observedAt": null,
+      "providerId": "codex",
+      "source": "unknown",
+      "state": {
+        "kind": "unknown"
+      }
+    },
+    "capabilities": {
+      "adapterVersion": "fixture-v1",
+      "contractVersion": 1,
+      "credentialSource": "subscription",
+      "harnessVersion": "synthetic-no-io",
+      "interrupt": "unsupported",
+      "isolation": {
+        "instructions": "supported",
+        "mcpServers": "supported",
+        "memory": "supported",
+        "plugins": "supported",
+        "settings": "supported"
+      },
+      "maxPromptBytes": 65536,
+      "notes": [
+        "Fixture mechanics only; no live provider capability claim."
+      ],
+      "perTurnModel": "unsupported",
+      "providerId": "codex",
+      "resumeSession": "supported",
+      "statusQuery": "unsupported",
+      "structuredResult": "supported"
+    }
+  },
+  "routingRequest": {
+    "now": 1,
+    "ownerExcluded": [],
+    "ownerPin": null,
+    "ownerPreference": [],
+    "requiredReview": true,
+    "requiresWrite": true,
+    "risk": "low",
+    "taskShape": {
+      "kind": "bounded"
+    }
+  },
+  "unknownAvailability": {
+    "kind": "unknown"
+  },
+  "workOrder": {
+    "envelope": {
+      "artifactId": 1,
+      "createdAt": 1,
+      "evidenceArtifactIds": [],
+      "observedHarnessVersion": null,
+      "observedModel": null,
+      "parentArtifactIds": [],
+      "payloadHash": "9220ae1f8458137e4e9868cae1351aa36891885a591b627ea6425809d3be175b",
+      "permissionManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "repository": {
+        "baseCommit": null,
+        "dirtyFingerprint": null,
+        "headCommit": null
+      },
+      "role": "worker",
+      "schemaVersion": 1,
+      "scope": {
+        "attemptKey": "sample-attempt-1",
+        "delegationId": 1,
+        "projectId": 1,
+        "runId": 1,
+        "taskId": 1,
+        "taskRevision": 1
+      },
+      "session": {
+        "providerId": "codex",
+        "sessionId": "sample-session"
+      },
+      "sourceEventId": 1,
+      "turn": null,
+      "verification": "unverified",
+      "workspaceLeaseId": null
+    },
+    "payload": {
+      "contextManifest": {
+        "entries": [
+          {
+            "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "delivery": "full",
+            "memoryId": 1
+          }
+        ],
+        "excludedPrivateCount": 0
+      },
+      "taskPacket": {
+        "acceptanceCriteria": [
+          "Contract fixture round-trips"
+        ],
+        "allowedScope": [
+          "src/**"
+        ],
+        "constraints": [
+          "No provider or live data"
+        ],
+        "objective": "Demonstrate a bounded typed handoff",
+        "referencedArtifactIds": [],
+        "referencedMemoryIds": [
+          1
+        ],
+        "requestedReportFields": [
+          "summary",
+          "changed_paths",
+          "checks"
+        ],
+        "schemaVersion": 1,
+        "title": "Synthetic contract task"
+      }
+    }
+  },
+  "workResult": {
+    "envelope": {
+      "artifactId": 2,
+      "createdAt": 1,
+      "evidenceArtifactIds": [],
+      "observedHarnessVersion": null,
+      "observedModel": null,
+      "parentArtifactIds": [
+        1
+      ],
+      "payloadHash": "583a345fb3ef4b0c48bb68a578e07866ebb7c31d27770fcc20b23a276c9bdc85",
+      "permissionManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "repository": {
+        "baseCommit": null,
+        "dirtyFingerprint": null,
+        "headCommit": null
+      },
+      "role": "worker",
+      "schemaVersion": 1,
+      "scope": {
+        "attemptKey": "sample-attempt-1",
+        "delegationId": 1,
+        "projectId": 1,
+        "runId": 1,
+        "taskId": 1,
+        "taskRevision": 1
+      },
+      "session": {
+        "providerId": "codex",
+        "sessionId": "sample-session"
+      },
+      "sourceEventId": 1,
+      "turn": {
+        "session": {
+          "providerId": "codex",
+          "sessionId": "sample-session"
+        },
+        "turnId": "sample-turn"
+      },
+      "verification": "reported",
+      "workspaceLeaseId": null
+    },
+    "report": {
+      "artifactIds": [],
+      "blockers": [],
+      "changedFiles": [
+        "src/example.rs"
+      ],
+      "checkResults": [
+        {
+          "name": "fixture",
+          "status": "passed",
+          "summary": "Synthetic check only"
+        }
+      ],
+      "commits": [],
+      "outcome": "completed",
+      "qualityCheckIds": [],
+      "schemaVersion": 1,
+      "summary": "Synthetic result available for Cathulu review"
+    }
+  }
+}

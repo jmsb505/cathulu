@@ -1,6 +1,7 @@
 use cathulu_core::delegation::DelegationTaskPacket;
-use cathulu_core::dispatcher::{role_allowed_tools, RoleCapabilityScope};
+use cathulu_core::dispatcher::role_allowed_tools;
 use cathulu_core::Store;
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,10 +16,53 @@ fn temporary_data_dir() -> PathBuf {
     std::env::current_dir()
         .expect("resolve repository root")
         .join("target")
+        .join("manual-dev")
+        .join("codex")
         .join(format!(
             "cathulu-role-capability-{}-{stamp}",
             std::process::id()
         ))
+}
+
+fn insert_workspace_lease_fixture(
+    store: &Store,
+    project_id: i64,
+    delegation_id: i64,
+    role_kind: &str,
+    binding_key: &str,
+    access: &str,
+) -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_secs() as i64;
+    let connection = Connection::open(store.database_path()).expect("open lease fixture DB");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("enable foreign keys");
+    connection
+        .execute(
+            "INSERT INTO workspace_leases
+             (project_id, delegation_id, role_kind, role_binding_key, access, owner_id,
+              workspace_path, workspace_path_hash, common_dir_hash, base_commit, status,
+              lease_expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'role-capability-fixture',
+                     ?6, ?7, ?8, 'abcdef0', 'active', ?9, ?10, ?10)",
+            rusqlite::params![
+                project_id,
+                delegation_id,
+                role_kind,
+                binding_key,
+                access,
+                format!("C:/fixture/role-capability-worktree/{delegation_id}"),
+                format!("{delegation_id:064x}"),
+                "b".repeat(64),
+                now + 3600,
+                now
+            ],
+        )
+        .expect("insert active role workspace lease");
+    connection.last_insert_rowid()
 }
 
 fn task_packet(title: &str) -> DelegationTaskPacket {
@@ -108,8 +152,12 @@ fn activate_assignment(store: &Store, delegation_id: i64, project_id: i64, recei
         .expect("record complete memory activation");
 }
 
-fn role_mcp_responses(data_dir: &PathBuf, capability: &str) -> Vec<Value> {
-    let requests = [
+fn role_mcp_responses(
+    data_dir: &PathBuf,
+    capability: &str,
+    extra_requests: &[Value],
+) -> Vec<Value> {
+    let mut requests = vec![
         json!({
             "jsonrpc":"2.0", "id":1, "method":"initialize",
             "params":{
@@ -124,6 +172,7 @@ fn role_mcp_responses(data_dir: &PathBuf, capability: &str) -> Vec<Value> {
             "params":{"name":"review_role_work_plan", "arguments":{}}
         }),
     ];
+    requests.extend_from_slice(extra_requests);
     let mut command = Command::new(env!("CARGO_BIN_EXE_cathulu-mcp"));
     command
         .env("CATHULU_DATA_DIR", data_dir)
@@ -225,21 +274,41 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .mark_delegation_dispatched(manager.id)
         .expect("dispatch Project Manager assignment");
     let manager_binding = format!("project-manager:{project_id}");
+    let manager_lease_id = insert_workspace_lease_fixture(
+        &store,
+        project_id,
+        manager.id,
+        "sub_overseer",
+        &manager_binding,
+        "read_only",
+    );
     let manager_capability = store
-        .issue_role_thread_capability(&manager_binding, "sub_overseer", project_id, manager.id)
+        .issue_role_thread_capability_for_workspace(
+            &manager_binding,
+            "sub_overseer",
+            project_id,
+            manager.id,
+            manager_lease_id,
+        )
         .expect("issue Project Manager capability");
     assert_eq!(manager_capability.token.len(), 32);
     let manager_scope = store
         .resolve_role_thread_capability(&manager_capability.token)
         .expect("resolve Project Manager capability");
-    assert_eq!(
-        manager_scope,
-        RoleCapabilityScope {
-            role_kind: "sub_overseer".to_string(),
-            project_id: Some(project_id),
-            delegation_id: Some(manager.id),
-        }
-    );
+    assert_eq!(manager_scope.role_kind, "sub_overseer");
+    assert_eq!(manager_scope.project_id, Some(project_id));
+    assert_eq!(manager_scope.delegation_id, Some(manager.id));
+    assert_eq!(manager_scope.capability_hash.len(), 64);
+    let stored_capability_hash = Connection::open(data_dir.join("cathulu.sqlite3"))
+        .expect("open capability hash database")
+        .query_row(
+            "SELECT capability_hash FROM role_thread_capabilities WHERE binding_key = ?1",
+            [&manager_binding],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read stored capability hash");
+    assert_eq!(manager_scope.capability_hash, stored_capability_hash);
+    assert_ne!(manager_scope.capability_hash, manager_capability.token);
 
     store
         .authorize_role_tool_call(
@@ -259,7 +328,28 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .authorize_role_tool_call(&manager_scope, "review_role_work_plan", &json!({}))
         .is_err());
     assert!(!role_allowed_tools("sub_overseer").contains(&"review_role_work_plan"));
-    let role_responses = role_mcp_responses(&data_dir, &manager_capability.token);
+    let role_responses = role_mcp_responses(
+        &data_dir,
+        &manager_capability.token,
+        &[
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/resume")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{}/resume", project_id + 1)}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 6, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/checkpoints/latest")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{}/checkpoints/latest", project_id + 1)}
+            }),
+        ],
+    );
     let listed_tools = role_responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(2)))
@@ -278,6 +368,22 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .find(|message| message.get("id") == Some(&json!(3)))
         .expect("restricted tool response");
     assert!(denied_call.get("error").is_some());
+    for id in [4, 6] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .pointer("/result/contents/0/text")
+            .is_some());
+    }
+    for id in [5, 7] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .get("error")
+            .is_some());
+    }
 
     let manager_plan = json!({
         "schema_version": 1,
@@ -329,8 +435,37 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
         .mark_delegation_dispatched(worker.id)
         .expect("dispatch Worker assignment");
     let worker_binding = format!("worker:{}", worker.id);
-    let worker_capability = store
+    let worker_lease_id = insert_workspace_lease_fixture(
+        &store,
+        project_id,
+        worker.id,
+        "worker",
+        &worker_binding,
+        "workspace_write",
+    );
+    let unbound_worker_capability = store
         .issue_role_thread_capability(&worker_binding, "worker", project_id, worker.id)
+        .expect("issue legacy unbound Worker capability fixture");
+    let unbound_worker_scope = store
+        .resolve_role_thread_capability(&unbound_worker_capability.token)
+        .expect("resolve unbound Worker capability");
+    assert!(store
+        .authorize_role_tool_call(
+            &unbound_worker_scope,
+            "record_delegation_update",
+            &json!({"delegation_id":worker.id}),
+        )
+        .unwrap_err()
+        .contains("require a bound workspace lease"));
+
+    let worker_capability = store
+        .issue_role_thread_capability_for_workspace(
+            &worker_binding,
+            "worker",
+            project_id,
+            worker.id,
+            worker_lease_id,
+        )
         .expect("issue Worker capability");
     let worker_scope = store
         .resolve_role_thread_capability(&worker_capability.token)
@@ -353,6 +488,14 @@ fn per_thread_capabilities_are_hashed_revocable_and_argument_scoped() {
     assert!(store
         .authorize_role_tool_call(&worker_scope, "dispatch_prepared_delegations", &json!({}))
         .is_err());
+    assert!(store
+        .authorize_role_tool_call(&worker_scope, "list_workspace_recovery_cases", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
+    assert!(store
+        .authorize_role_tool_call(&worker_scope, "reconcile_workspace_lease", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
 
     store
         .revoke_role_thread_capability(&worker_binding)
@@ -486,8 +629,37 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
     assert!(store
         .authorize_role_tool_call(&scope, "dispatch_prepared_delegations", &json!({}))
         .is_err());
+    assert!(store
+        .authorize_role_tool_call(&scope, "list_workspace_recovery_cases", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
+    assert!(store
+        .authorize_role_tool_call(&scope, "reconcile_workspace_lease", &json!({}))
+        .unwrap_err()
+        .contains("cannot call"));
 
-    let role_responses = role_mcp_responses(&data_dir, &capability.token);
+    let role_responses = role_mcp_responses(
+        &data_dir,
+        &capability.token,
+        &[
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                "params": {"uri": "cathulu://portfolio/tasks"}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/planning")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 6, "method": "resources/read",
+                "params": {"uri": format!("cathulu://projects/{project_id}/resume")}
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": {"name": "list_workspace_recovery_cases", "arguments": {"limit": 10}}
+            }),
+        ],
+    );
     let listed_tools = role_responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(2)))
@@ -504,6 +676,22 @@ fn global_main_capability_can_review_and_escalate_but_cannot_implement_or_dispat
     assert!(!listed_tools
         .iter()
         .any(|tool| tool["name"] == "prepare_delegation"));
+    for id in [4, 5, 6] {
+        assert!(role_responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap()
+            .pointer("/result/contents/0/text")
+            .is_some());
+    }
+    let recovery_tool_denial = role_responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(7)))
+        .expect("Main recovery-tool call response");
+    assert!(recovery_tool_denial.get("error").is_some());
+    assert!(recovery_tool_denial["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("cannot call")));
     store
         .revoke_role_thread_capability("main-overseer")
         .expect("revoke global Main capability");

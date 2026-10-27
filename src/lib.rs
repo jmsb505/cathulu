@@ -1,4 +1,8 @@
+pub mod agent_provider;
 pub mod app_server;
+pub mod checkpoints;
+pub mod claude_code;
+pub mod codex_adapter;
 pub mod codex_config;
 pub mod codex_config_files;
 pub mod context_extraction;
@@ -6,6 +10,7 @@ pub mod dashboard;
 pub mod delegation;
 pub mod dispatcher;
 mod events;
+pub mod execution_artifacts;
 pub mod gardener;
 pub mod graphify;
 mod hash;
@@ -15,7 +20,10 @@ mod migrations;
 pub mod optimization;
 pub mod provider_adapters;
 mod provider_credentials;
+pub mod provider_routing;
+pub mod provider_sessions;
 pub mod roles;
+pub mod routing_policy;
 mod sqlite;
 pub mod telemetry;
 pub mod terminal;
@@ -46,13 +54,53 @@ pub fn suppress_windows_console(_: &mut Command) {}
 pub struct ProjectSnapshot {
     pub id: i64,
     pub name: String,
-    pub path: String,
+    pub path: Option<String>,
+    pub kind: ProjectKind,
+    pub visibility: ProjectVisibility,
     pub branch: Option<String>,
     pub head: Option<String>,
     pub dirty: bool,
     pub changed_paths: Vec<String>,
     pub registered_at: i64,
     pub reconciled_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    Repository,
+    NonCode,
+}
+
+impl ProjectKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "repository" => Ok(Self::Repository),
+            "non_code" => Ok(Self::NonCode),
+            _ => Err(format!(
+                "database returned unsupported project kind `{value}`"
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectVisibility {
+    Private,
+    Shared,
+}
+
+impl ProjectVisibility {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "private" => Ok(Self::Private),
+            "shared" => Ok(Self::Shared),
+            _ => Err(format!(
+                "database returned unsupported project visibility `{value}`"
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -67,6 +115,7 @@ pub struct ReconciliationFailure {
 pub struct ReconciliationReport {
     pub checked: usize,
     pub refreshed: usize,
+    pub skipped: usize,
     pub failures: Vec<ReconciliationFailure>,
 }
 
@@ -125,9 +174,9 @@ impl Store {
         let connection = self.connection()?;
         connection
             .query(
-                "SELECT id, name, path, git_branch, git_head, git_dirty, \
+                "SELECT id, name, path, kind, visibility, git_branch, git_head, git_dirty, \
                  changed_paths_json, registered_at, reconciled_at \
-                 FROM projects ORDER BY name COLLATE NOCASE, path",
+                 FROM projects ORDER BY name COLLATE NOCASE, COALESCE(path, '')",
             )?
             .iter()
             .map(project_from_row)
@@ -137,11 +186,92 @@ impl Store {
     pub fn get_project(&self, id: i64) -> Result<Option<ProjectSnapshot>, String> {
         let connection = self.connection()?;
         let rows = connection.query(&format!(
-            "SELECT id, name, path, git_branch, git_head, git_dirty, \
+            "SELECT id, name, path, kind, visibility, git_branch, git_head, git_dirty, \
              changed_paths_json, registered_at, reconciled_at \
              FROM projects WHERE id = {id}"
         ))?;
         rows.first().map(project_from_row).transpose()
+    }
+
+    pub(crate) fn project_repository_path(&self, id: i64) -> Result<String, String> {
+        let project = self
+            .get_project(id)?
+            .ok_or_else(|| format!("project {id} is not registered"))?;
+        match (project.kind, project.path) {
+            (ProjectKind::Repository, Some(path)) => Ok(path),
+            _ => Err("project_has_no_repository".into()),
+        }
+    }
+
+    pub(crate) fn project_is_private(&self, id: i64) -> Result<bool, String> {
+        let connection = self.connection()?;
+        connection
+            .raw()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND visibility = 'private')",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("cannot check project visibility: {error}"))
+    }
+
+    pub(crate) fn has_private_projects(&self) -> Result<bool, String> {
+        let connection = self.connection()?;
+        connection
+            .raw()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE visibility = 'private')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("cannot check project visibility: {error}"))
+    }
+
+    pub(crate) fn shared_project_ids(&self) -> Result<std::collections::HashSet<i64>, String> {
+        self.list_projects().map(|projects| {
+            projects
+                .into_iter()
+                .filter(|project| project.visibility == ProjectVisibility::Shared)
+                .map(|project| project.id)
+                .collect()
+        })
+    }
+
+    /// Create a provider-free project with no repository association. It never inspects Git.
+    pub fn create_non_code_project(&self, name: &str) -> Result<ProjectSnapshot, String> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 120 {
+            return Err("project name must contain 1 to 120 bytes".into());
+        }
+        let now = unix_time();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .raw_mut()
+            .transaction()
+            .map_err(|error| format!("cannot begin non-code project creation: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO projects
+                 (name, path, kind, visibility, git_dirty, changed_paths_json,
+                  registered_at, reconciled_at)
+                 VALUES (?1, NULL, 'non_code', 'private', 0, '[]', ?2, ?2)",
+                params![name, now],
+            )
+            .map_err(|error| format!("cannot create non-code project: {error}"))?;
+        let id = transaction.last_insert_rowid();
+        crate::events::append_event(
+            &transaction,
+            "project",
+            id,
+            "project_non_code_created",
+            &serde_json::json!({ "kind": "non_code", "visibility": "private" }),
+            now,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("cannot commit non-code project creation: {error}"))?;
+        self.get_project(id)?
+            .ok_or_else(|| "created non-code project disappeared from the database".into())
     }
 
     pub fn codex_selector_preferences(
@@ -341,9 +471,10 @@ impl Store {
         transaction
             .execute(
                 "INSERT INTO projects
-                 (name, path, git_branch, git_head, git_dirty, changed_paths_json, registered_at, reconciled_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-                 ON CONFLICT(path) DO UPDATE SET
+                 (name, path, kind, visibility, git_branch, git_head, git_dirty,
+                  changed_paths_json, registered_at, reconciled_at)
+                 VALUES (?1, ?2, 'repository', 'shared', ?3, ?4, ?5, ?6, ?7, ?7)
+                 ON CONFLICT(path) WHERE path IS NOT NULL DO UPDATE SET
                    name = excluded.name, git_branch = excluded.git_branch, git_head = excluded.git_head,
                    git_dirty = excluded.git_dirty, changed_paths_json = excluded.changed_paths_json,
                    reconciled_at = excluded.reconciled_at",
@@ -405,7 +536,10 @@ impl Store {
         let existing = self
             .get_project(id)?
             .ok_or_else(|| format!("project {id} is not registered"))?;
-        let git = inspect_git_repository(Path::new(&existing.path))?;
+        let Some(path) = existing.path.as_deref() else {
+            return Err("not_applicable:project_has_no_repository".into());
+        };
+        let git = inspect_git_repository(Path::new(path))?;
         let now = unix_time();
         let changed_paths = serde_json::to_string(&git.changed_paths)
             .map_err(|error| format!("cannot serialize changed paths: {error}"))?;
@@ -477,6 +611,10 @@ impl Store {
             ..ReconciliationReport::default()
         };
         for project in projects {
+            if project.kind == ProjectKind::NonCode {
+                report.skipped += 1;
+                continue;
+            }
             match self.reconcile_project(project.id) {
                 Ok(_) => report.refreshed += 1,
                 Err(message) => report.failures.push(ReconciliationFailure {
@@ -520,7 +658,7 @@ impl Store {
     }
 
     fn initialize(&self) -> Result<(), String> {
-        let connection = self.connection()?;
+        let mut connection = self.connection()?;
         connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations \
              (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
@@ -532,7 +670,7 @@ impl Store {
             .map(|row| row_i64(Some(row), 0))
             .transpose()?
             .unwrap_or(0);
-        if version > 18 {
+        if version > 23 {
             return Err(format!(
                 "Cathulu database schema version {version} is newer than this application supports"
             ));
@@ -696,6 +834,41 @@ impl Store {
             }
             connection.execute("COMMIT")?;
         }
+        if version < 19 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_19) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 20 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_20) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 21 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_21) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 22 {
+            connection.execute("BEGIN IMMEDIATE")?;
+            if let Err(error) = connection.execute(migrations::VERSION_22) {
+                let _ = connection.execute("ROLLBACK");
+                return Err(error);
+            }
+            connection.execute("COMMIT")?;
+        }
+        if version < 23 {
+            migrate_projects_to_v23(&mut connection)?;
+        }
         Ok(())
     }
 
@@ -705,6 +878,75 @@ impl Store {
         } else {
             sqlite::Connection::open(&self.database_path)
         }
+    }
+}
+
+fn migrate_projects_to_v23(connection: &mut sqlite::Connection) -> Result<(), String> {
+    let previous_foreign_keys: bool = connection
+        .raw()
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("cannot read SQLite foreign-key setting: {error}"))?
+        != 0;
+    let previous_sequence: Option<i64> = connection
+        .raw()
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'projects'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("cannot read the project identity sequence: {error}"))?;
+    connection.execute("PRAGMA foreign_keys = OFF")?;
+
+    let migration = (|| {
+        connection.execute("BEGIN IMMEDIATE")?;
+        connection.execute(migrations::VERSION_23)?;
+        if let Some(previous_sequence) = previous_sequence {
+            let updated = connection
+                .raw()
+                .execute(
+                    "UPDATE sqlite_sequence SET seq = MAX(seq, ?1) WHERE name = 'projects'",
+                    params![previous_sequence],
+                )
+                .map_err(|error| format!("cannot preserve project identity sequence: {error}"))?;
+            if updated == 0 {
+                connection
+                    .raw()
+                    .execute(
+                        "INSERT INTO sqlite_sequence(name, seq) VALUES ('projects', ?1)",
+                        params![previous_sequence],
+                    )
+                    .map_err(|error| {
+                        format!("cannot restore project identity sequence: {error}")
+                    })?;
+            }
+        }
+        let violations = connection.query("PRAGMA foreign_key_check")?;
+        if !violations.is_empty() {
+            return Err(format!(
+                "schema v23 project migration would violate foreign keys: {violations:?}"
+            ));
+        }
+        connection.execute("COMMIT")
+    })();
+    if migration.is_err() {
+        let _ = connection.execute("ROLLBACK");
+    }
+    let restore_sql = if previous_foreign_keys {
+        "PRAGMA foreign_keys = ON"
+    } else {
+        "PRAGMA foreign_keys = OFF"
+    };
+    let restore_foreign_keys = connection.execute(restore_sql);
+    match (migration, restore_foreign_keys) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(migration_error), Ok(())) => Err(migration_error),
+        (Ok(()), Err(restore_error)) => Err(format!(
+            "project migration succeeded but could not restore SQLite foreign-key setting: {restore_error}"
+        )),
+        (Err(migration_error), Err(restore_error)) => Err(format!(
+            "{migration_error}; additionally could not restore SQLite foreign-key setting: {restore_error}"
+        )),
     }
 }
 
@@ -830,20 +1072,22 @@ fn parse_changed_paths(output: &[u8]) -> Vec<String> {
 
 fn project_from_row(row: &Vec<Option<String>>) -> Result<ProjectSnapshot, String> {
     let changed_paths = row
-        .get(6)
+        .get(8)
         .and_then(Option::as_deref)
         .ok_or_else(|| "database returned no changed path list".to_string())?;
     Ok(ProjectSnapshot {
         id: row_i64(Some(row), 0)?,
         name: row_string(row, 1)?,
-        path: row_string(row, 2)?,
-        branch: row.get(3).cloned().flatten(),
-        head: row.get(4).cloned().flatten(),
-        dirty: row_i64(Some(row), 5)? != 0,
+        path: row.get(2).cloned().flatten(),
+        kind: ProjectKind::parse(&row_string(row, 3)?)?,
+        visibility: ProjectVisibility::parse(&row_string(row, 4)?)?,
+        branch: row.get(5).cloned().flatten(),
+        head: row.get(6).cloned().flatten(),
+        dirty: row_i64(Some(row), 7)? != 0,
         changed_paths: serde_json::from_str(changed_paths)
             .map_err(|error| format!("stored changed paths are invalid: {error}"))?,
-        registered_at: row_i64(Some(row), 7)?,
-        reconciled_at: row_i64(Some(row), 8)?,
+        registered_at: row_i64(Some(row), 9)?,
+        reconciled_at: row_i64(Some(row), 10)?,
     })
 }
 
@@ -871,7 +1115,7 @@ fn unix_time() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_changed_paths;
+    use super::{migrate_projects_to_v23, parse_changed_paths, sqlite};
 
     #[test]
     fn parses_porcelain_paths_without_treating_header_as_a_path() {
@@ -880,5 +1124,81 @@ mod tests {
             parse_changed_paths(output),
             vec!["changed.txt", "moved.txt", "new.txt"]
         );
+    }
+
+    #[test]
+    fn project_migration_restores_the_existing_foreign_key_setting() {
+        let root = std::env::current_dir()
+            .expect("resolve repository root")
+            .join("target/manual-dev/codex/cx06-m50");
+        std::fs::create_dir_all(&root).expect("create isolated migration scratch folder");
+        let path = root.join(format!(
+            "foreign-keys-{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut connection = sqlite::Connection::open(&path).expect("open migration fixture");
+        connection
+            .execute(
+                "CREATE TABLE schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   applied_at INTEGER NOT NULL
+                 );
+                 INSERT INTO schema_migrations(version, applied_at) VALUES (22, 1);
+                 CREATE TABLE logical_agent_roles (
+                   role_key TEXT PRIMARY KEY,
+                   role_kind TEXT NOT NULL,
+                   project_id INTEGER,
+                   memory_scope_key TEXT,
+                   receiver_scope_key TEXT,
+                   tool_profile_key TEXT,
+                   created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE projects (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   name TEXT NOT NULL,
+                   path TEXT NOT NULL,
+                   git_branch TEXT,
+                   git_head TEXT,
+                   git_dirty INTEGER NOT NULL DEFAULT 0,
+                   changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                   registered_at INTEGER NOT NULL,
+                   reconciled_at INTEGER NOT NULL,
+                   status TEXT NOT NULL DEFAULT 'active',
+                   priority INTEGER NOT NULL DEFAULT 0,
+                   revision INTEGER NOT NULL DEFAULT 1
+                 );
+                 INSERT INTO projects
+                   (name, path, changed_paths_json, registered_at, reconciled_at)
+                 VALUES ('Cathulu', '/fixture/cathulu', '[]', 1, 1);",
+            )
+            .expect("create minimal v22 migration fixture");
+        connection
+            .execute("PRAGMA foreign_keys = OFF")
+            .expect("disable foreign keys for state-preservation case");
+
+        migrate_projects_to_v23(&mut connection).expect("migrate minimal v22 project schema");
+
+        let foreign_keys: i64 = connection
+            .raw()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read restored foreign-key setting");
+        assert_eq!(
+            foreign_keys, 0,
+            "migration must restore the prior OFF setting"
+        );
+        let kind: String = connection
+            .raw()
+            .query_row(
+                "SELECT kind FROM projects WHERE name = 'Cathulu'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated project");
+        assert_eq!(kind, "repository");
+
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
     }
 }
