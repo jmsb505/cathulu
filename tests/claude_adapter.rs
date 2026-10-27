@@ -200,6 +200,8 @@ fn environment_strips_provider_selectors_in_any_case_and_sets_isolation() {
             ("ANTHROPIC_BASE_URL", "https://example.invalid"),
             ("CLAUDE_CODE_OAUTH_TOKEN", "oauth"),
             ("claude_code_use_bedrock", "1"),
+            ("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1"),
+            ("claude_code_use_mantle", "1"),
         ]),
     )
     .unwrap();
@@ -212,6 +214,8 @@ fn environment_strips_provider_selectors_in_any_case_and_sets_isolation() {
     assert!(!upper.iter().any(|key| key.starts_with("ANTHROPIC_")));
     assert!(!upper.contains(&"CLAUDE_CODE_OAUTH_TOKEN".to_string()));
     assert!(!upper.contains(&"CLAUDE_CODE_USE_BEDROCK".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_USE_ANTHROPIC_AWS".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_USE_MANTLE".to_string()));
     assert_eq!(
         invocation.env["CLAUDE_CONFIG_DIR"],
         "C:\\cathulu\\claude-config"
