@@ -25,6 +25,8 @@ const WRITE_TOOLS: &str = "Read,Grep,Glob,Edit,Write";
 /// Provider-selecting variables removed from the child environment. Every `ANTHROPIC_*` variable
 /// is removed too, so an inherited API key cannot silently replace the subscription. The
 /// `CLAUDE_CODE_USE_*` selectors route the child to another provider, so they are removed as well.
+/// `CLAUDE_CODE_API_BASE_URL` and `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` are not covered by the
+/// `ANTHROPIC_` rule, so they are listed explicitly.
 /// Re-check this list against the official environment-variable reference when the CLI changes.
 const PROVIDER_ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -33,6 +35,10 @@ const PROVIDER_ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_ANTHROPIC_AWS",
     "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_GATEWAY",
+    "CLAUDE_CODE_API_BASE_URL",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
 ];
 
 /// Exit status Claude Code reports for SIGTERM. SIGTERM records no result (headless docs).

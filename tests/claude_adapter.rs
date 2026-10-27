@@ -202,6 +202,10 @@ fn environment_strips_provider_selectors_in_any_case_and_sets_isolation() {
             ("claude_code_use_bedrock", "1"),
             ("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1"),
             ("claude_code_use_mantle", "1"),
+            ("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "1"),
+            ("claude_code_use_gateway", "1"),
+            ("CLAUDE_CODE_API_BASE_URL", "https://example.invalid"),
+            ("claude_code_provider_managed_by_host", "1"),
         ]),
     )
     .unwrap();
@@ -216,6 +220,10 @@ fn environment_strips_provider_selectors_in_any_case_and_sets_isolation() {
     assert!(!upper.contains(&"CLAUDE_CODE_USE_BEDROCK".to_string()));
     assert!(!upper.contains(&"CLAUDE_CODE_USE_ANTHROPIC_AWS".to_string()));
     assert!(!upper.contains(&"CLAUDE_CODE_USE_MANTLE".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_USE_GATEWAY".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_API_BASE_URL".to_string()));
+    assert!(!upper.contains(&"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST".to_string()));
     assert_eq!(
         invocation.env["CLAUDE_CONFIG_DIR"],
         "C:\\cathulu\\claude-config"
